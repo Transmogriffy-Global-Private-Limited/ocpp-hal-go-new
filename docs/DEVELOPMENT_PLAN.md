@@ -1,55 +1,101 @@
-# Development plan
+# Development Plan
 
 ## Objective
 
-Maintain a compatibility-focused OCPP 1.6J HAL with durable transaction truth,
-CMS callback delivery, frontend live status, and hardware-independent regression
-and operator tooling.
+Evolve this repository into the independently owned OCPP HAL for `ev-cms-backend-new`, preserving reliable charger-side OCPP behavior while establishing an explicit authenticated boundary to the CMS. The old `OCPPHAL_Go` and old-CMS relationship are not migration targets of this plan.
 
-## Permanent invariants
+## Permanent Direction
 
-- The HAL owns OCPP transport, charger state, transaction persistence and callbacks.
-- Exact Central System transaction IDs remain stable across HAL, CMS and frontend flows.
-- Only charger-originated StartTransaction and StopTransaction open and close normal sessions.
-- Durable PostgreSQL state and callback outbox state remain authoritative.
-- Simulator and smoke clients must use the same OCPP library and public HAL contracts as hardware.
+- HAL owns charger/OCPP truth and command delivery; CMS owns identity, eligibility, tariffs, wallets, billing, and customer-facing projections.
+- CMS and HAL have separate databases and cross an authenticated service boundary.
+- Charger-originated StartTransaction/StopTransaction remain the source of OCPP start/completion truth; remote command acknowledgements do not replace those events.
+- New public or service surfaces require an approved contract, authentication, authorization, durable identity/auditability, failure/retry/recovery design, and matching documentation.
 
-## Current execution
+## Current Execution
 
-Current phase: compatibility verification and operational tooling.
+Current phase: architecture bootstrap + inherited-system audit.
 
-Active feature: none.
+Active feature: repository-purpose and inherited-HAL bootstrap.
 
-Last completed slice: terminal-controlled cross-platform OCPP 1.6J virtual charger.
+Current implementation slice: documentation-only architecture boundary and inherited behavior inventory. No Go runtime behavior is changed.
 
-Next approved work: none; select the next slice with the human.
+Last completed slice: inherited project-memory correction.
 
-## Feature registry
+Next expected slice: detailed inherited-HAL audit together with the relevant `ev-cms-backend-new` wallet, tariff, and charging-session requirements before implementation.
 
-### Terminal-controlled virtual charger
+Blocked by: no new CMS/HAL runtime contract has been approved.
 
-Status: Implemented
+## Feature Registry
 
-Objective: Allow realistic local or hosted end-to-end charging tests without
-physical hardware, using a standalone configurable charge point executable.
+### Architecture Bootstrap and Inherited-System Audit
 
-Implemented surfaces:
+Status: In Progress
 
-- OCPP connection, boot and connector state flow;
-- local and remote transaction flow;
-- coherent cumulative meter generation;
-- remote command, failure-policy and firmware/diagnostic handling;
-- Windows and Linux builds;
-- focused tests and operator documentation.
+Phase: architecture bootstrap + inherited-system audit
 
-Verification: focused tests, `go test ./...`, repository build, Linux cross-build,
-and a loopback memory-store charge flow passed. The canonical PostgreSQL
-regression remains required before changing this status to Verified.
+Objective: establish accurate ownership, project rules, inherited behavior evidence, and deliberate open decisions before changing runtime integration.
 
-## Remediation backlog
+Scope:
 
-- Inventory all active REST routes into an authoritative OpenAPI document.
-- Serve the same OpenAPI through environment-controlled Swagger UI and raw schema routes.
-- Add route/schema drift checks without changing the existing compatibility contracts.
+- repository operating contract;
+- permanent HAL/CMS boundary;
+- KEEP/MODIFY/REPLACE/REMOVE/INVESTIGATE audit;
+- present-state, README, and changelog correction;
+- safe verification of the documentation-only change.
 
-These items are recorded work, not implemented behavior.
+Non-goals:
+
+- changing Go runtime behavior;
+- approving a new API, event, callback, schema, auth mechanism, or migration;
+- modifying `OCPPHAL_Go` or `ev-cms-backend-new`.
+
+Acceptance criteria:
+
+- future agents can locate authoritative project memory and distinguish permanent decisions from inherited facts and open architecture questions;
+- inherited components and their correctness/recovery properties are inventoried;
+- documentation does not represent legacy compatibility as the new project's purpose or as an approved new-CMS contract;
+- the source worktree remains runtime-code unchanged.
+
+Verification:
+
+- complete documentation diff review;
+- `git diff --check`;
+- safe source checks in this checkout where they do not invoke the legacy-root scripts;
+- residue scan for legacy-purpose claims in changed project-memory files.
+
+### New CMS/HAL Contract Design
+
+Status: Approved for analysis, not approved for implementation
+
+Phase: contract and integration design
+
+Depends on:
+
+- completion of the detailed inherited-HAL audit;
+- relevant `ev-cms-backend-new` wallet, tariff, session, identity, and CPO requirements.
+
+Objective: define the authenticated service boundary and the minimum coherent command, OCPP-truth, and recovery integration needed by the new CMS.
+
+Non-goals:
+
+- copying the legacy REST/callback/foreground WebSocket contracts by default;
+- shared-database integration;
+- prematurely selecting endpoint, event, or table schemas.
+
+Acceptance criteria before implementation starts:
+
+- ownership, identities, authorization, idempotency, duplicate/out-of-order handling, and recovery semantics are approved;
+- authoritative contracts and migration/rollout approach are identified;
+- all affected HAL and CMS consumers/producers are mapped.
+
+## Next Approved Work
+
+1. Complete the detailed inherited-HAL audit with the relevant `ev-cms-backend-new` wallet, tariff, and charging-session requirements.
+2. Produce an explicit, reviewable CMS/HAL service-boundary design from that evidence.
+3. Implement only the first approved vertical slice, including contract, authorization, durable state, recovery, verification, and documentation.
+
+## Deferred Remediation
+
+- Replace legacy-root assumptions in local build and regression automation without weakening loopback-only regression coverage.
+- Establish machine-readable contract and interactive documentation only after the first new service/API contract is approved; the inherited routes are not a suitable authoritative new-CMS specification.
+- Plan any Go module/import identity change separately because it has broad repository impact.

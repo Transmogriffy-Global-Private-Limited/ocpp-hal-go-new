@@ -1,154 +1,79 @@
-# AI Agent Instructions for OCPPHAL Go
+# Project Operating Contract
 
-This repository is a work codebase. Keep all changes professional, production-oriented, and compatibility-focused.
+## Project Identity
 
-## Project purpose
+`ocpp-hal-go-new` is the independently evolving OCPP HAL for `ev-cms-backend-new`. It is not the legacy `OCPPHAL_Go` service and it does not own or preserve the legacy CMS-to-HAL integration by default.
 
-OCPPHAL Go is a Go-based OCPP 1.6 compatibility service. It preserves the active behavior of the previous OCPP compatibility layer while using github.com/lorenzodonini/ocpp-go for protocol handling.
+The HAL owns OCPP transport and protocol behavior, charger connections and reconnections, charger-originated transaction truth, raw/live meter handling, and charger-command delivery. The CMS owns customer and CPO identity, business eligibility and authorization, tariffs, wallet/payment/billing, and customer-facing charging-session and business projections.
 
-The service owns charger communication, CMS-facing REST compatibility APIs, transaction persistence, callback delivery, charger directory validation, frontend status snapshots, and local regression testing.
+The old repository and its old CMS integration are outside this repository's scope. Do not edit them while working here.
 
-## Non-negotiable rules
-
-1. Do not manually reimplement OCPP protocol framing when ocpp-go already provides the capability.
-2. Preserve compatibility with the active old REST and WebSocket surface.
-3. Do not add speculative endpoints just because a library supports them.
-4. Do not commit generated binaries from builds/.
-5. Do not commit local workspaces such as _review/, _parity/, or _git_review/.
-6. Do not commit .env or real secrets.
-7. Do not change callback payload shapes casually. They are compatibility contracts.
-8. Do not break the local regression script.
-9. Keep code boring, explicit, observable, and rollback-friendly.
-10. Prefer small, reviewable changes over broad rewrites.
-
-## Required validation before completing changes
-
-Run these from the repository root before considering a change complete:
-
-    .\scripts\build-all.ps1
-    .\scripts\regression-local.ps1 -SkipBuild
-
-If PostgreSQL or local services are unavailable, state that clearly and provide the exact command that failed.
-
-## Architecture map
-
-- cmd/ocpphal: main server binary.
-- cmd/mockhooks: local mock backend for CMS hooks and charger directory.
-- cmd/cpsmoke: general charger smoke client.
-- cmd/cplimitsmoke: max-kWh auto-stop smoke client.
-- cmd/cpsinglesmoke: single-session smoke client.
-- cmd/frontendwssmoke: frontend WebSocket smoke client.
-- cmd/cpconsole: standalone interactive OCPP 1.6J virtual charger.
-- internal/ocpp16hal: OCPP 1.6 HAL, central handlers, outbound charger commands.
-- internal/httpapi: CMS REST compatibility API and frontend WebSocket route.
-- internal/store: memory and PostgreSQL stores.
-- internal/hooks: durable callback outbox worker.
-- internal/chargerdir: external charger directory client and cache.
-- internal/config: environment-based configuration.
-- migrations: PostgreSQL schema migrations.
-- scripts: build and regression scripts.
-- docs: operational docs.
-
-## Required project memory and documentation
+## Required Reading
 
 Before meaningful planning or implementation, read:
 
-- docs/README.md
-- docs/DEVELOPMENT_PLAN.md
-- docs/PROJECT_STATE.md
-- docs/AI_CHANGELOG.md
-- the relevant focused guide under docs/
+- `README.md`
+- `docs/README.md`
+- `docs/ARCHITECTURE_BOUNDARY.md`
+- `docs/INHERITED_HAL_AUDIT.md`
+- `docs/DEVELOPMENT_PLAN.md`
+- `docs/PROJECT_STATE.md`
+- `docs/AI_CHANGELOG.md`
+- the focused code, tests, configuration, migrations, and integration documents for the surface being changed
 
-Update these files in the same slice when implemented behavior, contracts,
-verification status, or approved sequencing changes.
+Treat the architecture boundary document as the source for decided ownership and unresolved design questions. Treat the inherited audit as evidence about the current code, not as approval to preserve legacy behavior.
 
-## Active compatibility surface
+## Engineering Rules
 
-The following REST routes are active compatibility routes:
+1. Use `github.com/lorenzodonini/ocpp-go` for OCPP protocol framing and normal OCPP 1.6 handling. Do not manually recreate the protocol layer.
+2. Preserve the decided HAL/CMS ownership boundary. CMS and HAL must not share a database; integration crosses an explicit authenticated service boundary.
+3. A `RemoteStartTransaction` acknowledgement is command delivery evidence, not charging-start evidence. Only charger-originated `StartTransaction` creates normal OCPP start truth. The equivalent rule applies to `RemoteStopTransaction` and charger-originated `StopTransaction`.
+4. Do not treat inherited REST routes, callback payloads, WebSocket payloads, environment names, single-session behavior, or database fields as approved new-CMS contracts. First identify the correctness or recovery property they provide, then obtain or record the replacement contract.
+5. Fail safely at boundaries. Do not infer authority from malformed, inconsistent, unauthorized, duplicate, stale, out-of-order, or ambiguous state. Preserve durable identity and auditability.
+6. Keep the design boring and explicit: one durable source of truth per fact, no speculative endpoints or transport abstractions, and no duplicate orchestration paths without a documented reason.
+7. Preserve unrelated work. Do not commit generated `builds/` artifacts, local review workspaces, `.env`, or real secrets.
 
-- GET /api/hello
-- POST /api/status
-- POST /api/start_transaction
-- POST /api/stop_transaction
-- POST /api/change_availability
-- POST /api/change_configuration
-- POST /api/clear_cache
-- POST /api/unlock_connector
-- POST /api/get_diagnostics
-- POST /api/update_firmware
-- POST /api/reset
-- POST /api/get_configuration
-- POST /api/trigger_message
-- POST /api/check_charger_inactivity
-- POST /api/charger_analytics
+## Change Workflow
 
-The following WebSocket routes are active:
+Before editing, inspect the worktree, applicable instructions, relevant call sites, route wiring, configuration, tests, migrations, and current project memory. Map the affected causal chain: input, trusted scope, domain decision, durable state, downstream command or integration, recovery, and verification.
 
-- OCPP charger connection on /{charger_id}
-- OCPP charger connection on /{charger_id}/{serialnumber}
-- Frontend status snapshots on /frontend/ws/{uid}
+For a contract or behavior change, update all relevant producers, consumers, fixtures, tests, scripts, and documentation in the same slice. Update `docs/ARCHITECTURE_BOUNDARY.md` when a decided boundary changes, `docs/INHERITED_HAL_AUDIT.md` when inherited behavior is newly evidenced or reclassified, `docs/DEVELOPMENT_PLAN.md` for approved sequencing and status, `docs/PROJECT_STATE.md` for verified present reality, and `docs/AI_CHANGELOG.md` for meaningful completed work.
 
-## Intentionally not implemented unless requested
+No new CMS/HAL runtime contract may be presented as approved until it has been explicitly decided and recorded in the architecture boundary and appropriate machine-readable/human-readable contract documentation.
 
-- Message persistence history for every charger-to-CMS or CMS-to-charger frame.
-- DataTransfer as a REST endpoint.
-- SendLocalList and GetLocalListVersion based local-auth-list synchronization.
-- Reservation and smart charging workflows.
+## Verification
 
-These may exist in OCPP or ocpp-go, but they were not part of the confirmed active compatibility surface.
+Use the smallest focused check first, then the broadest appropriate check. For runtime changes, the intended repository checks are:
 
-## Compatibility behavior that must be preserved
+```powershell
+.\scripts\build-all.ps1
+.\scripts\regression-local.ps1 -SkipBuild
+```
 
-- /api/status must support specific charger IDs, all, and all_online.
-- /api/status must use charger directory validation when APICHARGERDATA is configured.
-- Known but offline chargers return Offline status, not 404.
-- Unknown chargers return not found for status and are rejected at OCPP connection validation.
-- Start transaction callbacks must store max_kwh when returned by CMS.
-- MeterValues must trigger automatic RemoteStopTransaction when max_kwh is crossed.
-- Single-session start and completed callbacks must use single-session hook URLs when configured.
-- Callback delivery must go through the durable outbox.
-- Remote-only/local-auth config enforcement must remain best-effort and non-fatal.
-- Duplicate charger connections must be generation-guarded: a stale disconnect from an older connection must not mark a newer active connection offline.
-- Boot/reconnect recovery must preserve open transaction truth: hydrate open DB sessions, recover ghost sessions conservatively, and use RemoteStop/Unlock retries without force-closing normal active sessions.
-- RemoteStartTransaction and RemoteStopTransaction acknowledgements must not create or finalize DB transactions by themselves; only charger-originated StartTransaction and StopTransaction should create/finalize normal sessions.
+The inherited scripts currently contain an absolute legacy-repository path. Do not run them if that would operate on `OCPPHAL_Go`; record the exact limitation and use safe local checks that operate in this checkout. Do not claim database, charger, CMS, or end-to-end verification without executing it against the correct services.
 
-## Database expectations
+Before completion, inspect the complete diff, run `git diff --check`, confirm `git status --short`, and verify no secrets, generated binaries, or unrelated artifacts were introduced.
 
-PostgreSQL migrations live in migrations/. Apply them in order for new environments.
+## Documentation Ownership
 
-- 001_create_transactions.sql
-- 002_create_callback_outbox.sql
-- 003_add_limit_stop_requested.sql
+- `docs/ARCHITECTURE_BOUNDARY.md`: permanent decisions, inherited facts, and unresolved architecture questions.
+- `docs/INHERITED_HAL_AUDIT.md`: evidence-based KEEP/MODIFY/REPLACE/REMOVE/INVESTIGATE inventory and preservation properties.
+- `docs/DEVELOPMENT_PLAN.md`: approved work, dependencies, status, and next work.
+- `docs/PROJECT_STATE.md`: verified current system reality and known gaps.
+- `docs/AI_CHANGELOG.md`: meaningful completed changes and verification facts.
+- `docs/README.md`: documentation navigation.
 
-The memory store is for local/no-database fallback only. Production should use PostgreSQL.
+## Coordination
 
-## Environment
+For a substantial active slice, inspect `docs/work/active/` before changing a
+shared surface. Create one `WI-YYYYMMDD-short-slug.md` record with status,
+owner, scope, claimed surfaces, contract impact, dependencies, verification,
+and handoff state. Move it to `docs/work/archive/` when complete. The active
+directory is the coordination ledger; do not create a competing status table.
 
-Use .env.example as the reference. Do not invent new env names unless necessary.
+Use `docs/work/README.md` for the record template and protocol. Keep this
+lightweight: tiny isolated corrections do not need ceremonial coordination.
 
-Important env keys include API_KEY, APIAUTHKEY, DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSLMODE, APICHARGERDATA, CHARGER_DATA_CACHE_TTL_SECONDS, MAIN_CMS_START_TXN_HOOK_URL, MAIN_CMS_COMPLETED_TXN_URL, SINGLE_SESSION_START_TXN_HOOK_URL, and SINGLE_SESSION_COMPLETED_TXN_URL.
+## Git and Operational Safety
 
-## Development workflow for agents
-
-1. Inspect relevant code before editing.
-2. Make the smallest compatible change.
-3. Run gofmt via scripts/build-all.ps1.
-4. Run regression-local.ps1 -SkipBuild.
-5. Show exact failures if validation cannot complete.
-6. Keep commits focused by feature or fix.
-
-## PowerShell command guidance
-
-When providing PowerShell commands for this repo, avoid here-strings and fragile multiline quoting. Prefer simple commands, script files, or line-by-line file creation. Backticks in markdown can break double-quoted PowerShell strings.
-
-## Git hygiene
-
-- main is the deployable branch.
-- rewrite/ocpp-go-clean-20260625_141148 is the preserved parity rewrite branch.
-- Keep main and the parity rewrite branch synchronized when requested.
-- Do not push without explicit user approval.
-- Do not delete branches without explicit confirmation.
-
-## Operational posture
-
-This service should be deployed with an explicit env file, PostgreSQL migrations, a systemd unit, smoke checks, reverse proxy switch-over, and rollback path to the previous production service.
+Never commit, stage, push, merge, rebase, deploy, modify a remote service, or make destructive database changes without explicit human permission. Keep local development services loopback-bound. Do not modify `OCPPHAL_Go` or `ev-cms-backend-new` as part of work in this repository unless the human explicitly expands the scope.

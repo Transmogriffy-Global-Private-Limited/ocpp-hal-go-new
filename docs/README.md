@@ -1,22 +1,25 @@
-# OCPPHAL Go documentation
+# Documentation Index
 
-This index identifies the canonical documentation surfaces for the repository.
-
-## System and operations
+## Start Here
 
 - [Repository overview](../README.md)
-- [Local regression](LOCAL_REGRESSION.md)
-- [Project state](PROJECT_STATE.md)
+- [HAL and CMS architecture boundary](ARCHITECTURE_BOUNDARY.md)
+- [Inherited HAL audit](INHERITED_HAL_AUDIT.md)
+- [Current project state](PROJECT_STATE.md)
 - [Living development plan](DEVELOPMENT_PLAN.md)
 - [Agent-assisted changelog](AI_CHANGELOG.md)
 
-## Charger and frontend integrations
+Read the architecture boundary before treating any copied behavior as a new-CMS contract. Read the inherited audit before removing or redesigning an existing subsystem, because it records the correctness and recovery property that the subsystem currently provides.
 
+## Inherited Operational and Test Documentation
+
+The following documents describe copied implementation behavior and tooling. They are useful audit evidence, but do not approve legacy CMS/frontend payloads or routes as the new HAL contract.
+
+- [Local regression](LOCAL_REGRESSION.md)
 - [Terminal-controlled OCPP 1.6J virtual charger](SOFTWARE_CHARGER.md)
-- [Frontend transaction WebSocket](FRONTEND_TRANSACTION_WEBSOCKET.md)
-- [User frontend live transaction integration](USER_FRONTEND_LIVE_TRANSACTION_INTEGRATION.md)
+- [Inherited frontend transaction WebSocket](FRONTEND_TRANSACTION_WEBSOCKET.md)
+- [Inherited user frontend live transaction integration](USER_FRONTEND_LIVE_TRANSACTION_INTEGRATION.md)
 
-The OCPP wire contract is provided by `github.com/lorenzodonini/ocpp-go` and the
-OCPP 1.6J specification. The HAL REST compatibility surface is currently
-documented in the repository README and implementation; complete machine-readable
-REST coverage remains recorded as remediation work in the development plan.
+## Contract Documentation
+
+No new `ev-cms-backend-new` service/API/event contract is approved yet. When a contract is approved, add its authoritative machine-readable schema and its human-readable integration guide here. Do not use inherited REST, callback, or WebSocket documentation as a substitute for that decision.

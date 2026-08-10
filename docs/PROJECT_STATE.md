@@ -1,28 +1,46 @@
-# Project state
+# Project State
 
-OCPPHAL Go is an implemented OCPP 1.6 compatibility service with PostgreSQL
-transaction persistence, durable callback delivery, charger-directory validation,
-remote commands, frontend status snapshots, recovery behavior and local regression.
+## Current Purpose
 
-## Virtual charger
+This repository is now the independently evolving OCPP HAL for `ev-cms-backend-new`. The architecture bootstrap establishes that purpose; it does not change the copied Go runtime in this slice.
 
-`cmd/cpconsole` is a standalone interactive OCPP 1.6J charge point client. It:
+## Inherited Functionality That Currently Exists
 
-- accepts a configurable Central System URL and charger ID;
-- performs BootNotification and Available status during startup;
-- supports realistic local and remote charging flows;
-- advances a cumulative Wh register using elapsed time and power;
-- publishes energy, power, current, voltage and SoC samples;
-- supports automatic periodic metering, faults and remote-response policies;
-- handles the HAL's active Core, Firmware Management and Remote Trigger commands;
-- builds for Windows and Linux amd64/arm64.
+The copied service currently contains:
 
-It does not embed the HAL, listen for inbound traffic, persist its own local
-business state, or fabricate Central System transaction IDs. The selected ID
-must be recognized by the connected HAL.
+- an OCPP 1.6 central system implemented through `ocpp-go`;
+- charger connection tracking with a stale-disconnect generation guard;
+- charger-originated StartTransaction/StopTransaction persistence in PostgreSQL when configured, with a memory fallback for non-durable local use;
+- live energy-register handling, local transaction snapshots, and max-kWh RemoteStop retry logic;
+- a durable callback outbox with retry, dedupe, and reconciliation behavior;
+- boot/reconnect recovery of local open transactions;
+- an optional external charger-directory validator and cache;
+- legacy REST command/status routes, frontend status and transaction WebSockets, virtual chargers, smoke clients, mock hooks, and regression scripts.
 
-## Known documentation limitation
+These are implementation facts, not a promise that each behavior is retained or exposed to the new CMS. The evidence and preservation properties are in `INHERITED_HAL_AUDIT.md`.
 
-Operational and focused integration documentation exists. Complete authoritative
-OpenAPI/Swagger coverage for the established HAL REST compatibility routes is not
-yet implemented and is tracked in `docs/DEVELOPMENT_PLAN.md`.
+## Legacy-Shaped Functionality Still Present
+
+- `/api/*` commands, static API-key protection, flexible legacy JSON aliases, and status semantics originate from the old integration.
+- Config contains old CMS callback URL names/defaults and an optional legacy charger-directory endpoint.
+- Start/completion callback payloads and the `max_kwh` response are legacy integration behavior.
+- Single-session flags and alternate callback routing are inherited and process-local.
+- Frontend WebSockets expose legacy status/transaction shapes without new-CMS customer/CPO authorization.
+- The Go module/import path and build/regression scripts still refer to the legacy repository identity; the scripts currently contain a legacy absolute path.
+
+None of these are an approved permanent new-CMS contract.
+
+## Not Yet Implemented for `ev-cms-backend-new`
+
+- an explicit authenticated HAL-to-CMS and CMS-to-HAL service boundary;
+- CPO/customer/service identity, authorization, and audit context propagation;
+- approved command, result, OCPP-start, meter, OCPP-stop, recovery, or billing contracts;
+- approved correlation between OCPP transaction truth and CMS charging-session projections;
+- CMS-owned wallet/tariff/eligibility decision integration;
+- approved source of truth and access policy for charger directory/status and customer realtime projections;
+- new-CMS machine-readable API/event contracts, interactive documentation, and contract-drift checks;
+- migration/rollout plan for replacing legacy callbacks, routes, and frontend surfaces.
+
+## Verification Status
+
+This architecture-bootstrap slice changes documentation only. It does not claim new runtime, database, charger, CMS, or end-to-end verification. `go test ./...` was terminated after 124 seconds with no diagnostic output, and `go build ./...` failed while linking `cmd/cpconsole` because the Go runtime could not allocate memory. The inherited build/regression scripts must be repaired before they can be treated as safe checks for this checkout because they currently target the legacy repository path.

@@ -1,200 +1,63 @@
-# OCPPHAL Go
+# OCPP HAL for ev-cms-backend-new
 
-OCPPHAL Go is a Go-based OCPP 1.6 compatibility service for charger communication, CMS-facing REST APIs, transaction persistence, callback delivery, charger status visibility, and operational smoke/regression testing.
+This repository is the independently evolving OCPP 1.6 HAL for `ev-cms-backend-new`. It was copied with Git history from `OCPPHAL_Go`, but it does not exist to preserve the old CMS/frontend compatibility surface. The old HAL and its old CMS relationship remain separate and out of scope.
 
-The service replaces the legacy OCPP compatibility layer while preserving the active REST and WebSocket behavior required by the existing CMS/frontend integration.
+## Architecture Boundary
 
-## Core capabilities
+The HAL owns OCPP transport/protocol behavior, charger connectivity and reconnection, charger-originated transaction truth, raw/live meter handling, and charger-command delivery. `ev-cms-backend-new` owns CPO/customer identity, business eligibility, tariffs/pricing, wallets/payments/billing, and customer-facing charging-session/business projections.
 
-- OCPP 1.6 central system using github.com/lorenzodonini/ocpp-go.
-- Charger WebSocket support through OCPP charge point IDs.
-- CMS REST compatibility endpoints for charger control and status.
-- PostgreSQL-backed transaction persistence.
-- Durable callback outbox for start/completed transaction hooks.
-- Main-session and single-session hook routing.
-- Max-kWh limit enforcement with automatic RemoteStopTransaction.
-- Charger directory validation from an external charger-data endpoint.
-- Remote-only authorization configuration sync for chargers.
-- Duplicate charger connection generation guard to prevent stale disconnects from marking a reconnected charger offline.
-- Boot-time open transaction recovery for charger reconnect/reboot scenarios.
-- Frontend WebSocket status snapshots.
-- Local smoke clients and regression scripts.
-- Interactive, terminal-controlled OCPP 1.6J virtual charger for hardware-free testing.
+CMS and HAL must not share a database. They will integrate through an explicit authenticated service boundary. A remote start or stop acknowledgement means that a charger accepted a command; only charger-originated StartTransaction or StopTransaction establishes OCPP start or completion truth.
 
-## Repository layout
+The complete record of decided boundaries, inherited facts, and unresolved decisions is [docs/ARCHITECTURE_BOUNDARY.md](docs/ARCHITECTURE_BOUNDARY.md).
+
+## Current Inherited Implementation
+
+The current Go code contains useful inherited OCPP behavior:
+
+- an `ocpp-go` OCPP 1.6 central system;
+- generation-guarded charger connections;
+- local PostgreSQL transaction/outbox persistence with a memory fallback;
+- live meter updates, max-kWh RemoteStop retry behavior, and boot recovery;
+- an optional charger directory/cache;
+- copied REST command/status APIs, callback URLs/payloads, frontend WebSockets, virtual chargers, smoke clients, and regression scripts.
+
+These are observations, not approved new-CMS contracts. See [docs/INHERITED_HAL_AUDIT.md](docs/INHERITED_HAL_AUDIT.md) for each subsystem's KEEP/MODIFY/REPLACE/REMOVE/INVESTIGATE classification and the property that a future replacement must preserve.
+
+## Repository Layout
 
 | Path | Purpose |
 | --- | --- |
-| cmd/ocpphal | Main OCPPHAL server binary. |
-| cmd/mockhooks | Local mock backend for CMS callback and charger-data testing. |
-| cmd/cpsmoke | General charge point smoke client. |
-| cmd/cplimitsmoke | Pure max-kWh auto-stop smoke client. |
-| cmd/cpsinglesmoke | Single-session smoke client. |
-| cmd/frontendwssmoke | Frontend WebSocket smoke client. |
-| cmd/cpconsole | Standalone interactive OCPP 1.6J virtual charger. |
-| internal/ocpp16hal | OCPP 1.6 HAL, central system handlers, and outbound charger commands. |
-| internal/httpapi | CMS-facing REST API and frontend WebSocket compatibility layer. |
-| internal/store | PostgreSQL and memory stores for transactions, analytics, and callbacks. |
-| internal/hooks | Durable callback outbox worker. |
-| internal/chargerdir | Charger directory client and cache. |
-| internal/config | Environment-based configuration. |
-| migrations | PostgreSQL schema migrations. |
-| scripts | Build and local regression scripts. |
-| docs | Operational documentation. |
+| `cmd/ocpphal` | Main OCPP HAL binary. |
+| `cmd/cpconsole` | Interactive OCPP 1.6J virtual charge point. |
+| `cmd/cpsmoke`, `cmd/cplimitsmoke`, `cmd/cpsinglesmoke` | Inherited OCPP smoke clients. |
+| `cmd/frontendwssmoke` | Inherited frontend WebSocket smoke client. |
+| `cmd/mockhooks` | Legacy-shaped local callback/directory mock. |
+| `internal/ocpp16hal` | OCPP central handlers, connection behavior, recovery, and outbound charger commands. |
+| `internal/httpapi` | Inherited REST and frontend WebSocket surfaces. |
+| `internal/store` | HAL-local PostgreSQL and memory transaction/outbox implementations. |
+| `internal/hooks` | Inherited durable callback-outbox worker. |
+| `internal/chargerdir` | Inherited external charger-directory client/cache. |
+| `internal/config` | Environment configuration. |
+| `migrations` | HAL-local PostgreSQL migrations. |
+| `scripts` | Build and local regression automation. |
+| `docs` | Architecture, audit, planning, state, and operational documentation. |
 
-## REST API compatibility
+## Development Status
 
-The following active compatibility endpoints are implemented:
+The current phase is architecture bootstrap plus inherited-system audit. No new CMS/HAL runtime contract is approved. The next work is a detailed audit paired with relevant `ev-cms-backend-new` wallet, tariff, and charging-session requirements before implementation begins.
 
-- GET /api/hello
-- POST /api/status
-- POST /api/start_transaction
-- POST /api/stop_transaction
-- POST /api/change_availability
-- POST /api/change_configuration
-- POST /api/clear_cache
-- POST /api/unlock_connector
-- POST /api/get_diagnostics
-- POST /api/update_firmware
-- POST /api/reset
-- POST /api/get_configuration
-- POST /api/trigger_message
-- POST /api/check_charger_inactivity
-- POST /api/charger_analytics
+Read [docs/README.md](docs/README.md) for the canonical documentation map and [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md) for approved sequencing.
 
-All protected REST endpoints expect the configured API key in the x-api-key header.
+## Local Development
 
-## WebSocket endpoints
+Use `.env.example` only as a reference; do not commit `.env` or real secrets. Keep local listeners on loopback. The inherited source exposes build and regression scripts, but both currently contain a hard-coded legacy repository path and must not be run if that would operate on `OCPPHAL_Go`.
 
-- ws://host:{OCPP_LISTEN_PORT}/{charger_id} for OCPP 1.6 charger connection.
-- ws://host:{OCPP_LISTEN_PORT}/{charger_id}/{serialnumber} for OCPP 1.6 charger connection with serial suffix compatibility.
-- ws://host:{F_SERVER_PORT}/frontend/ws/{uid} for frontend status snapshots.
-- ws://host:{F_SERVER_PORT}/frontend/ws/transaction?transaction_id={transaction_id}&id_tag={id_tag} for exact live transaction snapshots.
+For safe source-level checks in this checkout:
 
-Passenger frontend integration for start, live transaction updates, exact stop,
-completion, and CMS history is documented in
-[docs/USER_FRONTEND_LIVE_TRANSACTION_INTEGRATION.md](docs/USER_FRONTEND_LIVE_TRANSACTION_INTEGRATION.md).
+```powershell
+go test ./...
+go build ./...
+git diff --check
+```
 
-## Configuration
-
-Use .env.example as the reference template.
-
-Important variables:
-
-- F_SERVER_HOST: REST bind host.
-- F_SERVER_PORT: REST bind port.
-- OCPP_LISTEN_PORT: OCPP central system port.
-- OCPP_LISTEN_PATH: OCPP WebSocket path pattern.
-- API_KEY: REST API key expected in x-api-key.
-- APIAUTHKEY: API auth key sent to CMS hook/charger-data endpoints.
-- DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSLMODE: PostgreSQL connection settings.
-- DATABASE_URL: Optional PostgreSQL connection URL alternative.
-- MAIN_CMS_START_TXN_HOOK_URL: Main transaction start callback URL.
-- MAIN_CMS_COMPLETED_TXN_URL: Main transaction completion callback URL.
-- SINGLE_SESSION_START_TXN_HOOK_URL: Single-session start callback URL.
-- SINGLE_SESSION_COMPLETED_TXN_URL: Single-session completion callback URL.
-- APICHARGERDATA: External charger directory endpoint.
-- CHARGER_DATA_CACHE_TTL_SECONDS: Charger directory cache TTL.
-- LOG_LEVEL: debug, info, warn, or error.
-
-## Database
-
-PostgreSQL is used for transaction persistence and callback outbox durability.
-
-Run migrations before starting the service in a new environment:
-
-- migrations/001_create_transactions_postgres.sql
-- migrations/002_create_callback_outbox.sql
-- migrations/003_add_limit_stop_requested.sql
-- migrations/004_require_transaction_id.sql
-
-Example:
-
-    $env:PGPASSWORD = Read-Host "PostgreSQL password"
-    psql -h 127.0.0.1 -p 5432 -U ocppgodbadmin -d ocppgo -f ./migrations/001_create_transactions_postgres.sql
-    psql -h 127.0.0.1 -p 5432 -U ocppgodbadmin -d ocppgo -f ./migrations/002_create_callback_outbox.sql
-    psql -h 127.0.0.1 -p 5432 -U ocppgodbadmin -d ocppgo -f ./migrations/003_add_limit_stop_requested.sql
-    psql -h 127.0.0.1 -p 5432 -U ocppgodbadmin -d ocppgo -f ./migrations/004_require_transaction_id.sql
-
-## Build
-
-    ./scripts/build-all.ps1
-
-This builds:
-
-- builds/ocpphal.exe
-- builds/cpconsole.exe
-- builds/mockhooks.exe
-- builds/cpsmoke.exe
-- builds/cplimitsmoke.exe
-- builds/cpsinglesmoke.exe
-- builds/frontendwssmoke.exe
-
-## Virtual charger
-
-`cpconsole` is a standalone virtual EV charger. It is not hosted inside the HAL
-process. Like physical hardware, it connects to an OCPP 1.6J Central System and
-uses a caller-selected charge point identity.
-
-Local example:
-
-    ./builds/cpconsole.exe -id CP-SIM-001 -url ws://127.0.0.1:18081
-
-Hosted example:
-
-    ./builds/cpconsole.exe -id CP-SIM-001 -url wss://ocpp.example.com
-
-The selected charger ID must be recognized by the target HAL charger directory.
-See [docs/SOFTWARE_CHARGER.md](docs/SOFTWARE_CHARGER.md) for the complete command,
-state-flow, Linux-build, and troubleshooting guide.
-
-## Local regression
-
-    ./scripts/regression-local.ps1
-
-Skip build if binaries are already current:
-
-    ./scripts/regression-local.ps1 -SkipBuild
-
-The regression script starts mockhooks and OCPPHAL locally, then verifies charger status, charger validation, core smoke flow, single-session flow, frontend WebSocket snapshots, unknown charger rejection, max-kWh auto-stop, and PostgreSQL visibility.
-
-## Local development notes
-
-- Do not commit generated binaries from builds/.
-- Do not commit local review/audit workspaces such as _review/, _parity/, or _git_review/.
-- Keep .env and real secrets out of Git.
-- Use .env.example for configuration reference only.
-- Run ./scripts/build-all.ps1 and ./scripts/regression-local.ps1 -SkipBuild before merging or deploying.
-
-## Deployment notes
-
-Deployment should be done with an explicit environment file, PostgreSQL migrations, a systemd service, and a rollback plan to the previous production service.
-
-Recommended deployment order:
-
-- Build Linux binary or build directly on the VPS.
-- Apply PostgreSQL migrations.
-- Create production environment file.
-- Install systemd service.
-- Start service on a non-conflicting port first.
-- Run smoke checks.
-- Switch reverse proxy only after verification.
-- Keep rollback path to the previous service until production is confirmed stable.
-
-## Operational status
-
-The current implementation has passed local parity and regression checks for the active old REST/WebSocket surface.
-
-Active parity covered:
-
-- Charger status and frontend status snapshots.
-- Remote start/stop.
-- Core charger commands.
-- Firmware, diagnostics, reset, and trigger message commands.
-- Inactivity and analytics routes.
-- Main-session and single-session callbacks.
-- Max-kWh automatic remote stop.
-- Charger directory validation.
-- Remote-only/local-auth configuration enforcement.
-- Duplicate connection stale-disconnect protection.
-- Boot recovery for open transaction hydration, ghost-session force-close, and RemoteStop/Unlock retry.
+Do not commit, push, deploy, or modify `OCPPHAL_Go` or `ev-cms-backend-new` without explicit human permission.
