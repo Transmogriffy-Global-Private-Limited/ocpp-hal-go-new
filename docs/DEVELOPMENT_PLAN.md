@@ -2,44 +2,36 @@
 
 ## Objective
 
-Deliver an independent, recoverable OCPP HAL integration for
-`ev-cms-backend-new` by 2026-08-14 without sharing a database or preserving
-legacy CMS behavior as the new contract.
-
-## Permanent Direction
-
-- HAL owns OCPP and charger truth; CMS owns business/customer/financial truth.
-- Remote command acknowledgement is not transaction truth; charger-originated
-  StartTransaction and StopTransaction are.
-- PostgreSQL is production durable truth. CMS/HAL integration is authenticated
-  HTTP with exact identities and reconciliation queries.
+Deliver one independently deployable OCPP HAL for `ev-cms-backend-new`, with
+no shared database and no supported old-CMS compatibility runtime.
 
 ## Current Execution
 
-Current phase: first HAL-side v1 vertical.
+Current phase: v1 consumer-boundary verification and legacy retirement.
 
-Completed implementation: mapping enrollment, opaque bearer service
-authentication, PostgreSQL commands/credentials/transactions/stop workflows,
-OCPP RemoteStart/Authorize/StartTransaction/MeterValues/StopTransaction
-wiring, runtime and reconciliation sockets, immutable fact outbox/delivery,
-RFC 8785 canonical fact digests, expired fact-lease recovery, and OpenAPI.
+Completed in this slice:
+
+- v1-only process startup, mapping-based charger admission, authenticated HTTP
+  command/query boundary, durable OCPP truth, facts, and reconciliation;
+- generic contract-receiver test covering real PostgreSQL, HAL HTTP, OCPP
+  remote commands, StartTransaction, MeterValues, StopTransaction, and fact
+  delivery;
+- retirement of legacy `/api/*`, callback/max-kWh, directory, frontend
+  WebSocket, single-session, automatic offline-auth policy, and legacy smoke
+  runtime; and
+- Go module identity correction.
 
 ## Next Approved Work
 
-1. Complete real PostgreSQL/OCPP/fact-receiver lifecycle and remaining
-   crash/recovery torture coverage for the HAL vertical, including manual,
-   energy-limit, time-limit/restart, and natural-stop completion scenarios.
-2. Produce the CMS integration handoff with the verified contract behavior and
-   receiver expectations.
-3. Implement CMS-owned durable operational/session projections, financial
-   flow, and customer/CPO surfaces in `ev-cms-backend-new`.
+1. Expand real-device acceptance coverage for energy/time stop races and
+   charger-specific MeterValues variants before production rollout.
+2. Implement CMS-owned consumer projections, commercial flow, and UI in
+   `ev-cms-backend-new` using the frozen v1 contract.
 
 ## Open Decisions
 
-- Service-token rotation and production transport/deployment topology.
-- Commercial overshoot/debt policy and any future charger-capability-supported
-  predictive stop guard.
-- RFID/offline authorization, generalized realtime, and legacy retirement.
-
-No item above authorizes a CMS business API, shared database, broker, or legacy
-contract adoption.
+- token rotation and production transport topology;
+- RFID/offline authorization and future OCPP control commands;
+- commercial overshoot/debt policy; and
+- whether historical legacy database tables warrant a separate destructive
+  retirement migration.

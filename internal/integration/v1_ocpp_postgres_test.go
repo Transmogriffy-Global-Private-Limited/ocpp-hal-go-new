@@ -17,11 +17,11 @@ import (
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/types"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/config"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/httpapi"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/ocpp16hal"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/state"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/store"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/config"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/httpapi"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/ocpp16hal"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/state"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 )
 
 type v1ChargePoint struct{ cp ocpp16.ChargePoint }
@@ -75,9 +75,7 @@ func TestV1PostgresHTTPToOCPPStart(t *testing.T) {
 		t.Fatal(err)
 	}
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{Level: slog.LevelError}))
-	legacyStore := store.NewMemoryStore()
-	hal := ocpp16hal.New(state.NewRegistry(), legacyStore, nil, logger)
-	hal.SetV1Store(v1Store)
+	hal := ocpp16hal.New(state.NewRegistry(), v1Store, logger)
 	port := freePort(t)
 	go hal.Start(port, "/{ws}")
 	defer hal.Stop()
@@ -85,10 +83,12 @@ func TestV1PostgresHTTPToOCPPStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cfg := config.Config{V1Enabled: true, V1CMSBearerToken: "v1-test-service-token", RESTHost: "127.0.0.1", RESTPort: "0"}
-	api := httptest.NewServer(httpapi.NewServer(cfg, logger, state.NewRegistry(), hal, legacyStore, store.NewTransactionUpdates(), v1Store).Routes())
+	cfg := config.Config{V1CMSBearerToken: "v1-test-service-token", RESTHost: "127.0.0.1", RESTPort: "0"}
+	api := httptest.NewServer(httpapi.NewServer(cfg, logger, hal, v1Store).Routes())
 	defer api.Close()
 	clientID := "CP-V1-OCPP-" + store.NewUUIDString()[:8]
+	cpoID, chargerID, connectorID, commandID, intentID, customerID := store.NewUUIDString(), store.NewUUIDString(), store.NewUUIDString(), store.NewUUIDString(), store.NewUUIDString(), store.NewUUIDString()
+	putJSON(t, api.URL+"/v1/mappings/chargers/"+chargerID, chargerID, map[string]any{"cpo_id": cpoID, "cms_charger_id": chargerID, "charger_ocpp_identity": clientID, "enabled": true, "connectors": []map[string]any{{"cms_connector_id": connectorID, "ocpp_connector_number": 1}}})
 	chargePoint := &v1ChargePoint{}
 	chargePoint.cp = ocpp16.NewChargePoint(clientID, nil, nil)
 	chargePoint.cp.SetCoreHandler(chargePoint)
@@ -110,8 +110,6 @@ func TestV1PostgresHTTPToOCPPStart(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	cpoID, chargerID, connectorID, commandID, intentID, customerID := store.NewUUIDString(), store.NewUUIDString(), store.NewUUIDString(), store.NewUUIDString(), store.NewUUIDString(), store.NewUUIDString()
-	putJSON(t, api.URL+"/v1/mappings/chargers/"+chargerID, chargerID, map[string]any{"cpo_id": cpoID, "cms_charger_id": chargerID, "charger_ocpp_identity": clientID, "enabled": true, "connectors": []map[string]any{{"cms_connector_id": connectorID, "ocpp_connector_number": 1}}})
 	now := time.Now().UTC()
 	putJSON(t, api.URL+"/v1/remote-commands/start", commandID, map[string]any{"cms_command_id": commandID, "cms_start_intent_id": intentID, "cpo_id": cpoID, "customer_id": customerID, "cms_charger_id": chargerID, "cms_connector_id": connectorID, "charger_ocpp_identity": clientID, "ocpp_connector_number": 1, "id_tag": "appv1_" + store.NewUUIDString()[:12], "credential_expires_at": now.Add(time.Minute), "command_expires_at": now.Add(2 * time.Minute), "energy_limit_wh": 9000, "max_duration_seconds": 3600})
 	deadline = time.Now().Add(8 * time.Second)

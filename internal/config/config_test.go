@@ -16,17 +16,17 @@ func TestLoadLocalEnvPreservesProcessEnvironment(t *testing.T) {
 	if err := os.Chdir(temporary); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(temporary, ".env"), []byte("F_SERVER_PORT=19999\nHAL_V1_ENABLED=true\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(temporary, ".env"), []byte("F_SERVER_PORT=19999\nHAL_V1_CMS_BEARER_TOKEN=local-token\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("F_SERVER_PORT", "18888")
-	t.Setenv("HAL_V1_ENABLED", "")
+	t.Setenv("HAL_V1_CMS_BEARER_TOKEN", "")
 	loaded := Load()
 	if loaded.RESTPort != "18888" {
 		t.Fatalf("RESTPort=%q, want process value", loaded.RESTPort)
 	}
-	if !loaded.V1Enabled {
-		t.Fatal("HAL_V1_ENABLED should load from .env")
+	if loaded.V1CMSBearerToken != "local-token" {
+		t.Fatalf("V1CMSBearerToken=%q", loaded.V1CMSBearerToken)
 	}
 }
 

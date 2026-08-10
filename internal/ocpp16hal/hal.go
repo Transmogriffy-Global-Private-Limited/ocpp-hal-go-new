@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"strconv"
 	"strings"
 	"time"
 
@@ -13,38 +12,30 @@ import (
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/types"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/state"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/store"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/state"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 )
 
 const heartbeatIntervalSeconds = 900
 
-type HookSink interface {
-	EnqueueStartTransaction(ctx context.Context, tx *store.Transaction) error
-	EnqueueCompletedTransaction(ctx context.Context, tx *store.Transaction) error
-}
-
 type HAL struct {
 	cs          ocpp16.CentralSystem
 	registry    *state.Registry
-	store       store.TransactionStore
-	hooks       HookSink
 	connections *connectionTracker
 	logger      *slog.Logger
 	v1Store     store.V1Store
 }
 
-func New(registry *state.Registry, txStore store.TransactionStore, hookSink HookSink, logger *slog.Logger) *HAL {
+func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *HAL {
 	h := &HAL{
 		cs:          ocpp16.NewCentralSystem(nil, nil),
 		registry:    registry,
-		store:       txStore,
-		hooks:       hookSink,
 		connections: newConnectionTracker(),
 		logger:      logger,
+		v1Store:     v1Store,
 	}
 
-	h.cs.SetNewChargingStationValidationHandler(validateIncomingCharger)
+	h.cs.SetNewChargingStationValidationHandler(h.validateIncomingCharger)
 
 	h.cs.SetNewChargePointHandler(func(chargePoint ocpp16.ChargePointConnection) {
 		chargePointID := chargePoint.ID()
@@ -121,12 +112,6 @@ func New(registry *state.Registry, txStore store.TransactionStore, hookSink Hook
 	h.cs.SetFirmwareManagementHandler(h)
 
 	return h
-}
-
-// SetV1Store wires the new-CMS integration state without changing the legacy
-// transaction or callback path. A nil store leaves inherited behavior intact.
-func (h *HAL) SetV1Store(v1Store store.V1Store) {
-	h.v1Store = v1Store
 }
 
 func (h *HAL) Start(port int, path string) {
@@ -506,18 +491,14 @@ func (h *HAL) GetConfiguration(ctx context.Context, chargerID string, keys []str
 
 func (h *HAL) OnAuthorize(chargePointID string, request *core.AuthorizeRequest) (*core.AuthorizeConfirmation, error) {
 	h.registry.Touch(chargePointID)
-	if isV1AppIDTag(request.IdTag) {
-		if h.v1Store == nil || h.v1Store.AuthorizeV1Credential(context.Background(), chargePointID, request.IdTag, time.Now().UTC()) != nil {
-			return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid)), nil
-		}
+	if h.v1Store == nil || h.v1Store.AuthorizeV1Credential(context.Background(), chargePointID, request.IdTag, time.Now().UTC()) != nil {
+		return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid)), nil
 	}
 	return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusAccepted)), nil
 }
 
 func (h *HAL) OnBootNotification(chargePointID string, request *core.BootNotificationRequest) (*core.BootNotificationConfirmation, error) {
 	h.registry.Touch(chargePointID)
-	h.scheduleRemoteOnlyConfigSync(chargePointID)
-	h.scheduleBootRecovery(chargePointID)
 
 	return core.NewBootNotificationConfirmation(
 		types.NewDateTime(time.Now().UTC()),
@@ -568,223 +549,42 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 
 func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransactionRequest) (*core.StartTransactionConfirmation, error) {
 	h.registry.Touch(chargePointID)
-	if isV1AppIDTag(request.IdTag) {
-		if h.v1Store == nil {
-			return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid), 0), nil
-		}
-		startedAt := time.Now().UTC()
-		if request.Timestamp != nil && !request.Timestamp.IsZero() {
-			startedAt = request.Timestamp.UTC()
-		}
-		for attempts := 0; attempts < 8; attempts++ {
-			tx, duplicate, err := h.v1Store.MaterializeV1Start(context.Background(), store.V1StartMaterialization{
-				ChargerOCPPIdentity: chargePointID,
-				OCPPConnectorNumber: request.ConnectorId,
-				IDTag:               request.IdTag,
-				MeterStartWh:        int64(request.MeterStart),
-				ActualStartedAt:     startedAt,
-				OCPPTransactionID:   store.RandomTransactionID(),
-			})
-			if err != nil {
-				if errors.Is(err, store.ErrV1CredentialRejected) {
-					return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid), 0), nil
-				}
-				h.logger.Error("failed to materialize v1 start transaction", "charge_point_id", chargePointID, "connector_id", request.ConnectorId, "error", err)
-				return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusBlocked), 0), nil
-			}
-			h.registry.ApplyStartTransaction(chargePointID, request.ConnectorId, tx.OCPPTransactionID, float64(request.MeterStart))
-			_ = duplicate
-			return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusAccepted), int(tx.OCPPTransactionID)), nil
-		}
-		return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusBlocked), 0), nil
+	if h.v1Store == nil || !strings.HasPrefix(request.IdTag, "appv1_") {
+		return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid), 0), nil
 	}
-
-	openTransactions, err := h.store.ListOpenTransactionsByCharger(context.Background(), chargePointID)
-	if err != nil {
-		h.logger.Error("failed to check existing transactions", "charge_point_id", chargePointID, "error", err)
-		return nil, fmt.Errorf("check existing transactions: %w", err)
+	startedAt := time.Now().UTC()
+	if request.Timestamp != nil && !request.Timestamp.IsZero() {
+		startedAt = request.Timestamp.UTC()
 	}
-
-	for _, existing := range openTransactions {
-		if existing == nil || existing.ConnectorID != request.ConnectorId {
-			continue
-		}
-
-		sameStart := existing.IDTag == request.IdTag &&
-			existing.MeterStart == float64(request.MeterStart)
-		if !sameStart {
-			h.logger.Warn(
-				"rejecting overlapping transaction on connector",
-				"charge_point_id", chargePointID,
-				"connector_id", request.ConnectorId,
-				"existing_transaction_id", existing.TransactionID,
-			)
-			return core.NewStartTransactionConfirmation(
-				types.NewIdTagInfo(types.AuthorizationStatusBlocked),
-				0,
-			), nil
-		}
-
-		h.registry.ApplyStartTransaction(
-			chargePointID,
-			request.ConnectorId,
-			existing.TransactionID,
-			float64(request.MeterStart),
-		)
-
-		if h.hooks != nil {
-			if err := h.hooks.EnqueueStartTransaction(context.Background(), existing); err != nil {
-				return nil, fmt.Errorf("enqueue retried start transaction callback: %w", err)
-			}
-		}
-
-		return core.NewStartTransactionConfirmation(
-			types.NewIdTagInfo(types.AuthorizationStatusAccepted),
-			int(existing.TransactionID),
-		), nil
-	}
-
-	tx, err := h.store.CreateTransaction(context.Background(), store.CreateTransactionInput{
-		ChargerID:       chargePointID,
-		ConnectorID:     request.ConnectorId,
-		MeterStart:      float64(request.MeterStart),
-		IDTag:           request.IdTag,
-		IsSingleSession: h.consumePendingSingleSession(chargePointID, request.ConnectorId, request.IdTag),
+	tx, _, err := h.v1Store.MaterializeV1Start(context.Background(), store.V1StartMaterialization{
+		ChargerOCPPIdentity: chargePointID,
+		OCPPConnectorNumber: request.ConnectorId,
+		IDTag:               request.IdTag,
+		MeterStartWh:        int64(request.MeterStart),
+		ActualStartedAt:     startedAt,
+		OCPPTransactionID:   store.RandomTransactionID(),
 	})
 	if err != nil {
-		h.logger.Error("failed to create transaction", "charge_point_id", chargePointID, "error", err)
+		if errors.Is(err, store.ErrV1CredentialRejected) {
+			return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid), 0), nil
+		}
+		h.logger.Error("failed to materialize v1 start transaction", "charge_point_id", chargePointID, "connector_id", request.ConnectorId, "error", err)
 		return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusBlocked), 0), nil
 	}
-
-	h.registry.ApplyStartTransaction(
-		chargePointID,
-		request.ConnectorId,
-		tx.TransactionID,
-		float64(request.MeterStart),
-	)
-
-	if h.hooks != nil {
-		if err := h.hooks.EnqueueStartTransaction(context.Background(), tx); err != nil {
-			h.logger.Error("failed to enqueue start transaction hook", "charge_point_id", chargePointID, "transaction_id", tx.TransactionID, "error", err)
-			return nil, fmt.Errorf("enqueue start transaction callback: %w", err)
-		}
-	}
-
-	return core.NewStartTransactionConfirmation(
-		types.NewIdTagInfo(types.AuthorizationStatusAccepted),
-		int(tx.TransactionID),
-	), nil
-}
-
-func isV1AppIDTag(idTag string) bool {
-	return strings.HasPrefix(idTag, "appv1_")
+	h.registry.ApplyStartTransaction(chargePointID, request.ConnectorId, tx.OCPPTransactionID, float64(request.MeterStart))
+	return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusAccepted), int(tx.OCPPTransactionID)), nil
 }
 
 func (h *HAL) OnMeterValues(chargePointID string, request *core.MeterValuesRequest) (*core.MeterValuesConfirmation, error) {
 	h.registry.Touch(chargePointID)
-	if h.HandleV1MeterValues(chargePointID, request) {
-		return core.NewMeterValuesConfirmation(), nil
-	}
-
-	meterValueWh, ok := extractMeterValueWh(request)
-	if ok {
-		var txID64 *int64
-
-		if request.TransactionId != nil && *request.TransactionId > 0 {
-			v := int64(*request.TransactionId)
-			txID64 = &v
-		} else if v, found := h.registry.TransactionIDForConnector(chargePointID, request.ConnectorId); found {
-			txID64 = &v
-		}
-
-		h.registry.ApplyMeterValue(chargePointID, request.ConnectorId, txID64, meterValueWh)
-
-		if txID64 != nil {
-			if _, err := h.store.UpdateLiveMeter(context.Background(), store.UpdateLiveMeterInput{
-				ChargerID:     chargePointID,
-				TransactionID: *txID64,
-				MeterStop:     meterValueWh,
-			}); err != nil {
-				h.logger.Warn(
-					"failed to update live meter",
-					"charge_point_id", chargePointID,
-					"transaction_id", *txID64,
-					"error", err,
-				)
-			} else {
-				h.checkAndRemoteStopIfLimitExceeded(chargePointID, *txID64)
-			}
-		}
-	}
-
+	_ = h.HandleV1MeterValues(chargePointID, request)
 	return core.NewMeterValuesConfirmation(), nil
 }
 
 func (h *HAL) OnStopTransaction(chargePointID string, request *core.StopTransactionRequest) (*core.StopTransactionConfirmation, error) {
 	h.registry.Touch(chargePointID)
-	if h.HandleV1StopTransaction(chargePointID, request) {
-		return core.NewStopTransactionConfirmation(), nil
-	}
-
-	txID := int64(request.TransactionId)
-
-	tx, err := h.store.StopTransaction(context.Background(), store.StopTransactionInput{
-		ChargerID:     chargePointID,
-		TransactionID: txID,
-		MeterStop:     float64(request.MeterStop),
-	})
-	if err != nil {
-		h.logger.Error(
-			"failed to stop transaction",
-			"charge_point_id", chargePointID,
-			"transaction_id", txID,
-			"error", err,
-		)
-		return nil, fmt.Errorf("persist stop transaction: %w", err)
-	}
-
-	if h.hooks != nil {
-		if err := h.hooks.EnqueueCompletedTransaction(context.Background(), tx); err != nil {
-			h.logger.Error("failed to enqueue completed transaction hook", "charge_point_id", chargePointID, "transaction_id", tx.TransactionID, "error", err)
-			return nil, fmt.Errorf("enqueue completed transaction callback: %w", err)
-		}
-	}
-
-	h.registry.ApplyStopTransaction(chargePointID, tx.ConnectorID, float64(request.MeterStop))
-
+	_ = h.HandleV1StopTransaction(chargePointID, request)
 	return core.NewStopTransactionConfirmation(), nil
-}
-
-func extractMeterValueWh(request *core.MeterValuesRequest) (float64, bool) {
-	for i := len(request.MeterValue) - 1; i >= 0; i-- {
-		mv := request.MeterValue[i]
-		if len(mv.SampledValue) == 0 {
-			continue
-		}
-
-		selected := mv.SampledValue[0]
-
-		for _, sample := range mv.SampledValue {
-			if strings.EqualFold(string(sample.Measurand), "Energy.Active.Import.Register") {
-				selected = sample
-				break
-			}
-		}
-
-		value, err := strconv.ParseFloat(strings.TrimSpace(selected.Value), 64)
-		if err != nil {
-			continue
-		}
-
-		unit := strings.ToLower(strings.TrimSpace(string(selected.Unit)))
-		if unit == "kwh" || unit == "kilowatthour" {
-			value *= 1000.0
-		}
-
-		return value, true
-	}
-
-	return 0, false
 }
 
 func ConnectedURL(host string, port int, chargerID string) string {

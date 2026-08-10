@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/store"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 )
 
 type factDeliveryMark struct {

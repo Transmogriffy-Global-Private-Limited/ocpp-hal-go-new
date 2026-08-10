@@ -1,73 +1,26 @@
 # OCPP HAL for ev-cms-backend-new
 
-This repository is the independently evolving OCPP 1.6 HAL for `ev-cms-backend-new`. It was copied with Git history from `OCPPHAL_Go`, but it does not exist to preserve the old CMS/frontend compatibility surface. The old HAL and its old CMS relationship remain separate and out of scope.
+This is the independent OCPP 1.6 HAL for `ev-cms-backend-new`. It owns OCPP
+transport, charger connection/status, charger command delivery, exact
+charger-originated transaction truth, and raw meter facts. CMS owns customer
+identity, commercial policy, settlement, and customer/CPO projections.
 
-## Architecture Boundary
+The legacy `OCPPHAL_Go` repository and old CMS relationship are separate and
+untouched. This runtime does not register legacy CMS `/api/*` compatibility,
+callbacks, frontend WebSockets, external charger-directory access, or
+single-session routing.
 
-The HAL owns OCPP transport/protocol behavior, charger connectivity and reconnection, charger-originated transaction truth, raw/live meter handling, and charger-command delivery. `ev-cms-backend-new` owns CPO/customer identity, business eligibility, tariffs/pricing, wallets/payments/billing, and customer-facing charging-session/business projections.
+## Runtime
 
-CMS and HAL must not share a database. They will integrate through an explicit authenticated service boundary. A remote start or stop acknowledgement means that a charger accepted a command; only charger-originated StartTransaction or StopTransaction establishes OCPP start or completion truth.
+PostgreSQL and `HAL_V1_CMS_BEARER_TOKEN` are required. Charger connection is
+allowed only for an enabled v1 mapping. CMS uses the authenticated v1 command,
+runtime, and reconciliation routes; HAL sends immutable facts to the configured
+authenticated `/v1/hal-facts` receiver.
 
-The complete record of decided boundaries, inherited facts, and unresolved decisions is [docs/ARCHITECTURE_BOUNDARY.md](docs/ARCHITECTURE_BOUNDARY.md).
+`cpconsole` is the retained OCPP-native virtual charge point. Use
+`scripts/build-all.ps1` and `scripts/regression-local.ps1` from any checkout
+directory; both derive the repository root from their own location.
 
-## Current Inherited Implementation
-
-The current Go code contains useful inherited OCPP behavior:
-
-- an `ocpp-go` OCPP 1.6 central system;
-- generation-guarded charger connections;
-- local PostgreSQL transaction/outbox persistence with a memory fallback;
-- live meter updates, max-kWh RemoteStop retry behavior, and boot recovery;
-- an optional charger directory/cache;
-- copied REST command/status APIs, callback URLs/payloads, frontend WebSockets, virtual chargers, smoke clients, and regression scripts.
-
-These are observations, not approved new-CMS contracts. See [docs/INHERITED_HAL_AUDIT.md](docs/INHERITED_HAL_AUDIT.md) for each subsystem's KEEP/MODIFY/REPLACE/REMOVE/INVESTIGATE classification and the property that a future replacement must preserve.
-
-## Repository Layout
-
-| Path | Purpose |
-| --- | --- |
-| `cmd/ocpphal` | Main OCPP HAL binary. |
-| `cmd/cpconsole` | Interactive OCPP 1.6J virtual charge point. |
-| `cmd/cpsmoke`, `cmd/cplimitsmoke`, `cmd/cpsinglesmoke` | Inherited OCPP smoke clients. |
-| `cmd/frontendwssmoke` | Inherited frontend WebSocket smoke client. |
-| `cmd/mockhooks` | Legacy-shaped local callback/directory mock. |
-| `internal/ocpp16hal` | OCPP central handlers, connection behavior, recovery, and outbound charger commands. |
-| `internal/httpapi` | Inherited REST and frontend WebSocket surfaces. |
-| `internal/store` | HAL-local PostgreSQL and memory transaction/outbox implementations. |
-| `internal/hooks` | Inherited durable callback-outbox worker. |
-| `internal/chargerdir` | Inherited external charger-directory client/cache. |
-| `internal/config` | Environment configuration. |
-| `migrations` | HAL-local PostgreSQL migrations. |
-| `scripts` | Build and local regression automation. |
-| `docs` | Architecture, audit, planning, state, and operational documentation. |
-
-## Development Status
-
-The active phase is the first HAL-side v1 vertical. The HAL implementation now
-includes authenticated PostgreSQL-backed mapping/start/stop/reconciliation and
-runtime sockets, exact integer-Wh MeterValues, durable fact delivery, one stop
-workflow, and charger-originated completion truth. CMS projections, financial
-behavior, and deployment remain outside this repository.
-
-Read [docs/README.md](docs/README.md) for the canonical documentation map and [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md) for approved sequencing.
-
-## Local Development
-
-Use `.env.example` only as a reference; do not commit `.env` or real secrets.
-`scripts/generate-env.ps1` writes a local `.env` from the repository root,
-prompts only for `DATABASE_URL`, and generates replaceable local secrets. The
-application uses process environment over `.env` over defaults. Keep local
-listeners on loopback. The build and regression scripts derive the checkout
-root from their own script location, so they can be invoked from any current
-PowerShell directory without operating on `OCPPHAL_Go`.
-
-For safe source-level checks in this checkout:
-
-```powershell
-go test ./...
-go build ./...
-git diff --check
-```
-
-Do not commit, push, deploy, or modify `OCPPHAL_Go` or `ev-cms-backend-new` without explicit human permission.
+Read [docs/README.md](docs/README.md) for the contract, architecture, audit,
+and verification map. Do not commit, push, deploy, or modify the legacy or CMS
+repositories without explicit human permission.

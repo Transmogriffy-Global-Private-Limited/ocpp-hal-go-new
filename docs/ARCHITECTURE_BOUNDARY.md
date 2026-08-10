@@ -7,11 +7,12 @@ This is the canonical architecture record for `ocpp-hal-go-new` and
 [CMS/HAL Charging Integration v1](contracts/CMS_HAL_CHARGING_V1.md).
 
 The v1 architecture is approved. The HAL-side first vertical implements
-additive PostgreSQL state, opaque bearer service authentication, mapping
-enrollment, durable start/stop command coordination, charger-originated
-start/completion truth, integer-Wh meter facts, live runtime projections,
-reconciliation queries, and PostgreSQL outbox delivery. CMS-side projection,
-deployment topology, and legacy-surface retirement remain outside this work.
+PostgreSQL state, opaque bearer service authentication, mapping enrollment,
+durable start/stop command coordination, charger-originated start/completion
+truth, integer-Wh meter facts, live runtime projections, reconciliation
+queries, and PostgreSQL outbox delivery. The inherited legacy runtime was
+retired from this process. CMS-side projection and deployment topology remain
+outside this work.
 
 ## Permanent Approved Invariants
 
@@ -104,22 +105,22 @@ and first-slice criteria are authoritative only in
 
 ## Current Inherited Facts
 
-These are copied-runtime observations, not proof of v1 implementation.
+These describe the cloned code before the current v1-only process retirement.
+They explain why behavior was preserved or replaced; they are not current
+runtime contracts.
 
-- Current central handlers already create/close local transaction rows only from
-  charger-originated StartTransaction/StopTransaction, and use a connection
-  generation guard against stale disconnects.
-- Current MeterValues selects one usable energy-register sample and may trigger
-  a legacy max-kWh stop workflow. It does not persist raw meter history.
-- Current PostgreSQL transaction/outbox state has an in-memory fallback. The
-  approved production rule now prohibits that fallback in production, but code
-  has not yet been changed.
-- Existing callback URLs/payloads, `max_kwh` response coupling, `POST /api/*`,
-  optional charger-directory behavior, and frontend WebSockets are legacy
-  behavior, not v1 routes or contracts.
-- The copied module/import identity still names the legacy repository. Scripts
-  derive this checkout root from their script location; that remediation did not
-  change runtime test semantics.
+- Central handlers already created/closed local transactions only from
+  charger-originated StartTransaction/StopTransaction and carried a generation
+  guard. V1 retains both correctness properties in its own state.
+- MeterValues selected usable energy-register samples and legacy max-kWh
+  handling triggered a stop. V1 replaces it with persisted integer-Wh meter
+  facts and the shared v1 energy-limit stop workflow.
+- Callback URLs/payloads, `max_kwh` response coupling, `POST /api/*`, optional
+  charger-directory behavior, and frontend WebSockets were legacy behavior.
+  They are no longer registered by this process.
+- The copied module/import identity named the legacy repository. The module and
+  repository-local imports now identify this repository; scripts derive the
+  checkout root from their own location.
 
 ## Open Decisions
 
@@ -133,8 +134,9 @@ implementation:
    threshold and preserves actual overshoot.
 4. RFID lifecycle and offline authorization policy.
 5. Generalized realtime/live-availability projection.
-6. Legacy REST/callback/WebSocket retirement sequencing.
-7. Detailed migration/table design and implementation retry constants.
+6. Whether historical legacy tables require a separately approved destructive
+   retirement migration.
+7. Detailed future migration/table design and implementation retry constants.
 
 ## Required Implementation Method
 

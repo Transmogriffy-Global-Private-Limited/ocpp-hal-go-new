@@ -228,6 +228,7 @@ type V1StartMaterialization struct {
 type V1Store interface {
 	SyncV1Mapping(context.Context, V1MappingInput) (*V1ChargerMapping, bool, error)
 	ValidateV1Mapping(context.Context, string, string, string, string, int) error
+	ValidateV1ChargerAdmission(context.Context, string) error
 	CreateV1StartCommand(context.Context, V1StartCommandInput) (*V1RemoteCommand, bool, error)
 	CreateV1StopCommand(context.Context, V1StopCommandInput) (*V1RemoteCommand, bool, error)
 	GetV1Command(context.Context, string) (*V1RemoteCommand, error)

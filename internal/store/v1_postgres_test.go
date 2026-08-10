@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/config"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/config"
 )
 
 func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
@@ -35,6 +35,12 @@ func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 	}
 	if err = s.ValidateV1Mapping(ctx, input.CPOID, input.CMSChargerID, input.Connectors[0].CMSConnectorID, input.ChargerOCPPIdentity, 1); err != nil {
 		t.Fatal(err)
+	}
+	if err = s.ValidateV1ChargerAdmission(ctx, input.ChargerOCPPIdentity); err != nil {
+		t.Fatal(err)
+	}
+	if err = s.ValidateV1ChargerAdmission(ctx, "CP-V1-UNKNOWN-"+NewUUIDString()[:8]); err != ErrV1MappingNotFound {
+		t.Fatalf("unknown charger admission=%v", err)
 	}
 
 	now := time.Now().UTC().Truncate(time.Millisecond)

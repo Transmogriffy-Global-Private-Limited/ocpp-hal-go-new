@@ -1,42 +1,37 @@
 # Inherited HAL Audit
 
-## Purpose and Method
+## Disposition
 
-This is an evidence-based inventory of the copied HAL. A classification is a planning signal, not an immediate code-change instruction. `KEEP` means retain the identified property while integrating it correctly; `MODIFY` means retain a property but redesign the legacy coupling; `REPLACE` means the exposed legacy surface is not the new-CMS contract; `REMOVE` means no new-CMS requirement is known; and `INVESTIGATE` means evidence is insufficient for a safe decision.
+This is the evidence record for the clone cleanup. `RETAINED` and `ADAPTED`
+identify code still used by the new HAL runtime. `RETIRED` is absent from the
+supported runtime. `DEFERRED WITH REASON` is not a supported surface but
+remains as historical migration/code material until a separately safe data
+retirement is approved.
 
-The assessment follows runtime data and recovery behavior rather than package names. It must be updated before replacing any listed mechanism.
+| Inherited subsystem | Final disposition | Evidence and preserved property |
+| --- | --- | --- |
+| OCPP central-system handlers | RETAINED | `ocpp-go` still owns protocol framing; boot, status, authorize, start, meter, and stop handlers preserve charger-originated transaction truth. |
+| Charger authorization | ADAPTED | Every authorization now validates a durable v1 credential; unknown and ambiguous idTags fail closed. |
+| Charger connection generation guard | RETAINED | The connection tracker still ignores stale disconnects, while durable v1 runtime records the generation and sequence. |
+| Transaction persistence | ADAPTED | V1 PostgreSQL commands, credentials, transactions, stop workflows, and facts own new-runtime truth. Exact OCPP IDs remain durable and only StopTransaction completes them. |
+| MeterValues handling | ADAPTED | V1 accepts exact integer Wh only, rejects non-integral/regressive samples, preserves sequence/observation time, and never fabricates samples. |
+| Legacy `max_kwh` callback policy | RETIRED | Callback-derived kWh limits and their retry loop were removed. Persisted `energy_limit_wh` and the unified v1 stop workflow are the sole HAL enforcement path. |
+| Callback/outbox machinery | RETIRED | Legacy start/completion callback worker, payloads, auth, and routes were removed. Immutable v1 fact outbox delivery preserves durable retry, idempotency, terminal reconciliation, and lease recovery. |
+| Boot/reconnect recovery | ADAPTED | V1 recovery reconstructs only durable command/stop/deadline state; it never turns a RemoteStop acknowledgement into completion. |
+| CMS-facing `/api/*` REST facade | RETIRED | Static-key, flexible-alias legacy routes are not registered. Only authenticated v1 mapping, command, runtime, and reconciliation routes remain. |
+| Charger directory | RETIRED | External CMS directory lookup/cache was removed. Enabled v1 mapping is the connection-time admission authority; unmapped chargers cannot create runtime state. |
+| Frontend WebSockets | RETIRED | Direct frontend status/transaction WebSockets were removed. CMS owns customer/CPO projections and realtime. |
+| Single-session compatibility | RETIRED | Process-local pending-start routing and callback selection were removed; no replacement business distinction was invented. |
+| Remote-only/local-auth sync | RETIRED | Unapproved automatic charger configuration policy was removed. Future offline/RFID policy requires an explicit contract. |
+| Configuration/environment model | ADAPTED | Runtime requires PostgreSQL and `HAL_V1_CMS_BEARER_TOKEN`; only v1 fact-delivery and API-doc settings remain. |
+| PostgreSQL schema/migrations | ADAPTED | Migrations `005`-`007` are active HAL-owned v1 state. Historical `transactions`/`callback_outbox` tables remain migration history but have no new-runtime caller. |
+| Memory store | DEFERRED WITH REASON | The legacy in-memory implementation remains test-only source material and is not selectable by the production v1 process. Removing historical test code has no runtime safety benefit. |
+| Virtual charger tooling | RETAINED | `cpconsole` remains an OCPP-native virtual charge point; legacy REST smoke binaries were retired. |
+| Regression/build tooling | ADAPTED | Build produces only `ocpphal` and `cpconsole`; local regression runs the PostgreSQL HTTP/OCPP/fact-receiver v1 tests. |
+| Go module identity | ADAPTED | Module and all repository-local imports now use `github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new`. |
 
-| Inherited subsystem | Classification | Current evidence | Property that must not be lost |
-| --- | --- | --- | --- |
-| OCPP central-system handlers | KEEP | `internal/ocpp16hal` uses `ocpp-go` central-system handlers for boot, status, start, meter, stop, firmware, and charger commands. Start/stop persistence is charger-originated. | Standards-based OCPP handling and the rule that remote command acknowledgements do not fabricate transaction start/completion truth. |
-| Charger authorization handler | MODIFY | `OnAuthorize` currently accepts every ID tag locally. | A charger receives a deterministic protocol response; the replacement must use a trusted CMS eligibility decision and fail safely when unavailable or ambiguous. |
-| Charger connection generation guard | KEEP | `connectionTracker` registers monotonically increasing per-connection generations and ignores a disconnect whose key is no longer current. | A stale socket close cannot overwrite a newer charger's online state. |
-| Transaction persistence | MODIFY | PostgreSQL/memory stores create a random OCPP transaction ID on charger StartTransaction and idempotently set stop state only on StopTransaction. | Durable, unique OCPP transaction identity; one completion transition; charger/transaction ownership checks; replay-safe start/stop behavior. |
-| MeterValues handling | MODIFY | The handler extracts an energy import register or first sample, updates live meter state, and persists the current meter value for a known local transaction. It does not preserve a raw meter-value history. | Live meter progression remains tied to exact charger transaction truth, does not silently attach to the wrong transaction, supports recovery/limit enforcement, and must publish the approved selected integer-Wh operational fact without fabrication. |
-| Max-kWh enforcement | MODIFY | A start callback response populates `max_kwh`; a durable claim prevents concurrent limit stops; RemoteStop retries until StopTransaction or exhaustion, then releases the claim. | At-most-one active stop workflow, no false completion from command acknowledgement, and a controlled, idempotent, observable delivery path with an explicit terminal/reconciliation state. CMS pricing policy must not be embedded in HAL. The current bounded retry count is not a permanent requirement. |
-| Callback/outbox machinery | MODIFY | PostgreSQL outbox uses dedupe keys, due-task claims, retry/fatal states, and reconciliation for missing start/completion callbacks. Payloads and targets are legacy shaped. | Durable handoff intent, idempotent enqueueing, retry visibility, terminal failure recording, and recovery after process interruption. |
-| Boot/reconnect recovery | MODIFY | On boot, open local rows are loaded; a narrowly detected Available ghost row can be force-closed; other rows hydrate state and get RemoteStop/Unlock retries. | Restart/reconnect does not discard open OCPP truth, does not treat RemoteStop acknowledgement as completion, and has a conservative ghost-session path. New business policy requires review. |
-| CMS-facing REST API | REPLACE | `/api/*` is a legacy compatibility facade using one static API key and flexible legacy JSON aliases. Remote start/stop return charger-command status. | CMS command callers need an authenticated, authorized, idempotent route and clear separation between command acceptance and charger-originated result. The existing routes are not an approved new-CMS API. |
-| Charger directory | MODIFY | An optional HTTP endpoint is fetched with `apiauthkey`, recursively extracts `uid` fields, caches IDs, and gates status/OCPP connection validation when configured. | Unknown charger admission is rejected without treating an unavailable or malformed directory answer as positive authorization. Ownership, schema, freshness, and failure behavior must be agreed with CMS. |
-| Frontend WebSocket surfaces | REPLACE | Status WebSockets poll the in-memory registry; transaction snapshots read local storage by transaction ID plus ID tag. The upgrader accepts every origin and the paths have no customer/CPO authentication. | Realtime is a derived view, not durable truth; consumers need a snapshot/resync path; cross-customer data must not leak. New CMS owns customer-facing projections. |
-| Single-session compatibility | REMOVE | A process-local pending remote-start map tags a subsequent StartTransaction and selects alternate legacy callback URLs. It has no durable restart recovery. | Remove the inherited callback-routing mechanism, not a potentially legitimate future business distinction. If a new distinction is needed, define its authority, durability, authorization, audit, and recovery first; it is currently unresolved. |
-| Remote-only/local-auth configuration sync | INVESTIGATE | Boot schedules one best-effort configuration sequence to disable local/offline authorization settings. It is non-fatal and process-local. | Any policy that affects offline authorization needs an explicit CPO/CMS decision, charger-capability handling, auditability, and failure behavior. |
-| Configuration and environment model | MODIFY | Config still has legacy module terminology, static API keys, legacy callback defaults, optional directory URLs, and a memory-store fallback. | Explicit, secret-safe configuration; loopback-safe development defaults; no hidden legacy production target. New service-boundary credentials and validation need design. |
-| PostgreSQL schema and migrations | MODIFY | `transactions` and `callback_outbox` hold HAL-local state, dedupe metadata, callback payloads, and a limit-stop claim. Migration `004` requires a transaction ID. | Additive migrations, local HAL ownership, durable audit/recovery data, uniqueness and retry indexes. CMS must not read or write these tables. |
-| Memory store | KEEP | An in-memory implementation supports tests/no-database startup with the same transaction/outbox interfaces but loses state on restart. | Keep it for tests and intentional local development. Production HAL now requires PostgreSQL and must fail safely rather than silently using this store. |
-| Virtual charger and smoke tooling | KEEP | `cpconsole` plus OCPP smoke binaries use `ocpp-go` against public OCPP/HTTP surfaces and exercise remote commands and meter/stop flow. | Hardware-independent, protocol-realistic regression capability. Scenarios and CMS-facing assumptions must evolve with approved contracts. |
-| Regression and build scripts | MODIFY | The scripts exercise legacy CMS callbacks/directory through `mockhooks`, prompt for PostgreSQL, and derive this checkout root from their own script location. | One reproducible, loopback-only verification path that tests real charger/OCPP recovery behavior without mutating another repository. |
+## Historical Data
 
-## Important Cross-Cutting Observations
-
-- Inherited state is split between PostgreSQL (when configured), in-memory registry state, and a callback outbox. The intended durable source is local PostgreSQL, not the CMS database.
-- The current start callback is both a delivery mechanism and a policy input: its response supplies `max_kwh`. This coupling is legacy behavior and cannot become the new pricing contract without an explicit design.
-- The transaction WebSocket avoids sending from an in-memory event payload: it uses notifications only to trigger a store re-read, then periodically resynchronizes. That recovery property is worth retaining even though the customer-facing surface must be replaced.
-- The copied Go module/import path still identifies `OCPPHAL_Go`. This is a repository identity defect to plan, not a reason to alter runtime behavior in the bootstrap slice.
-
-## Next Audit Work
-
-The approved v1 contract now selects replacement command/fact paths and payload
-vocabulary. Pair each implementation with its listed wallet, tariff, session,
-identity, CPO, migration, and recovery requirement. Do not treat an inherited
-legacy surface as a v1 implementation shortcut.
+No landed migration was rewritten or dropped. Historical legacy tables are
+not a supported integration surface and must not be read by CMS. Any physical
+schema removal needs its own additive, backup-aware migration decision.

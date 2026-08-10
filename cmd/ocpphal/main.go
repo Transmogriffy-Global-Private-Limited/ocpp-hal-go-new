@@ -8,18 +8,15 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/chargerdir"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/config"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/hooks"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/httpapi"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/ocpp16hal"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/state"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/store"
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/v1facts"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/config"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/httpapi"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/ocpp16hal"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/state"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/v1facts"
 )
 
 func main() {
@@ -29,61 +26,41 @@ func main() {
 		Level: cfg.LogLevel,
 	}))
 
-	chargerDirectory := chargerdir.NewService(cfg, logger)
-	ocpp16hal.SetChargerDirectory(chargerDirectory, logger)
-	httpapi.SetChargerDirectory(chargerDirectory)
-
-	txStore, err := chooseTransactionStore(cfg, logger)
-	if err != nil {
-		logger.Error("failed to initialize transaction store", "error", err)
-		os.Exit(1)
-	}
-
-	v1Store, err := chooseV1Store(context.Background(), cfg, txStore)
+	v1Store, err := chooseV1Store(context.Background(), cfg)
 	if err != nil {
 		logger.Error("failed to initialize v1 store", "error", err)
 		os.Exit(1)
 	}
 
-	txUpdates := store.NewTransactionUpdates()
-	txStore = store.WithTransactionUpdates(txStore, txUpdates)
-
-	hookManager := hooks.NewManager(cfg, txStore, logger)
-	hookManager.Start()
-
 	registry := state.NewRegistry()
-	hal := ocpp16hal.New(registry, txStore, hookManager, logger)
-	hal.SetV1Store(v1Store)
-	hookManager.SetLimitStopper(hal)
+	hal := ocpp16hal.New(registry, v1Store, logger)
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
-	if v1Store != nil {
-		if err := hal.RecoverV1Lifecycle(workerCtx); err != nil {
-			logger.Error("failed to recover v1 lifecycle", "error", err)
-			os.Exit(1)
-		}
-		go func() {
-			ticker := time.NewTicker(2 * time.Second)
-			defer ticker.Stop()
-			for {
-				select {
-				case <-workerCtx.Done():
-					return
-				case <-ticker.C:
-					if err := hal.EnforceV1Deadlines(workerCtx); err != nil {
-						logger.Warn("v1 deadline pass failed", "error", err)
-					}
+	if err := hal.RecoverV1Lifecycle(workerCtx); err != nil {
+		logger.Error("failed to recover v1 lifecycle", "error", err)
+		os.Exit(1)
+	}
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-workerCtx.Done():
+				return
+			case <-ticker.C:
+				if err := hal.EnforceV1Deadlines(workerCtx); err != nil {
+					logger.Warn("v1 deadline pass failed", "error", err)
 				}
 			}
-		}()
-		factWorker, err := v1facts.New(cfg, v1Store, logger)
-		if err != nil {
-			logger.Error("failed to initialize v1 fact delivery", "error", err)
-			os.Exit(1)
 		}
-		if factWorker != nil {
-			go factWorker.Start(workerCtx)
-		}
+	}()
+	factWorker, err := v1facts.New(cfg, v1Store, logger)
+	if err != nil {
+		logger.Error("failed to initialize v1 fact delivery", "error", err)
+		os.Exit(1)
+	}
+	if factWorker != nil {
+		go factWorker.Start(workerCtx)
 	}
 
 	go func() {
@@ -96,7 +73,7 @@ func main() {
 		}
 	}()
 
-	api := httpapi.NewServer(cfg, logger, registry, hal, txStore, txUpdates, v1Store)
+	api := httpapi.NewServer(cfg, logger, hal, v1Store)
 
 	restServer := &http.Server{
 		Addr:              cfg.RESTListenAddr(),
@@ -126,7 +103,6 @@ func main() {
 
 	hal.Stop()
 	cancelWorkers()
-	hookManager.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -139,38 +115,16 @@ func main() {
 	logger.Info("shutdown complete")
 }
 
-func chooseV1Store(ctx context.Context, cfg config.Config, txStore store.TransactionStore) (store.V1Store, error) {
-	if !cfg.V1Enabled {
-		return nil, nil
+func chooseV1Store(ctx context.Context, cfg config.Config) (*store.PostgresStore, error) {
+	if cfg.V1CMSBearerToken == "" {
+		return nil, errors.New("HAL_V1_CMS_BEARER_TOKEN is required")
 	}
-	if strings.TrimSpace(cfg.V1CMSBearerToken) == "" {
-		return nil, errors.New("HAL_V1_CMS_BEARER_TOKEN is required when HAL_V1_ENABLED=true")
-	}
-	postgresStore, ok := txStore.(*store.PostgresStore)
-	if !ok {
-		return nil, errors.New("PostgreSQL is required when HAL_V1_ENABLED=true")
+	postgresStore, err := store.NewPostgresStore(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("connect PostgreSQL: %w", err)
 	}
 	if err := postgresStore.ResetV1ConnectionRuntime(ctx); err != nil {
 		return nil, fmt.Errorf("reset persisted v1 connection runtime: %w", err)
 	}
 	return postgresStore, nil
-}
-
-func chooseTransactionStore(cfg config.Config, logger *slog.Logger) (store.TransactionStore, error) {
-	if cfg.HasDatabase() {
-		pgStore, err := store.NewPostgresStore(cfg)
-		if err == nil {
-			logger.Info("using PostgreSQL transaction store", "db_host", cfg.DBHost, "db_name", cfg.DBName)
-			return pgStore, nil
-		}
-
-		return nil, fmt.Errorf("connect PostgreSQL: %w", err)
-	}
-
-	if cfg.RequiresDatabase() {
-		return nil, errors.New("PostgreSQL configuration is required when HAL_ENVIRONMENT=production")
-	}
-
-	logger.Warn("DB env not configured; using in-memory store for non-production development only")
-	return store.NewMemoryStore(), nil
 }

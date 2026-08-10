@@ -12,7 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/config"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/config"
 )
 
 type PostgresStore struct {

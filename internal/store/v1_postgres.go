@@ -132,6 +132,23 @@ func (s *PostgresStore) ValidateV1Mapping(ctx context.Context, cpoID, cmsCharger
 	return nil
 }
 
+// ValidateV1ChargerAdmission is the connection-time guard. A mapped identity
+// must also be enabled before it may create any runtime observation.
+func (s *PostgresStore) ValidateV1ChargerAdmission(ctx context.Context, identity string) error {
+	var enabled bool
+	err := s.db.QueryRowContext(ctx, `SELECT enabled FROM v1_charger_mappings WHERE charger_ocpp_identity=$1`, identity).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrV1MappingNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return ErrV1CredentialRejected
+	}
+	return nil
+}
+
 func (s *PostgresStore) CreateV1StartCommand(ctx context.Context, input V1StartCommandInput) (*V1RemoteCommand, bool, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -539,6 +556,18 @@ func (s *PostgresStore) RecordV1ChargerConnection(ctx context.Context, identity 
 		return err
 	}
 	defer tx.Rollback()
+	var cpoID, chargerID string
+	var enabled bool
+	err = tx.QueryRowContext(ctx, `SELECT cpo_id::text,cms_charger_id::text,enabled FROM v1_charger_mappings WHERE charger_ocpp_identity=$1 FOR SHARE`, identity).Scan(&cpoID, &chargerID, &enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrV1MappingNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return ErrV1CredentialRejected
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO v1_charger_runtime (charger_ocpp_identity,connection_state,connection_generation,connection_sequence,connected_at,last_observed_at,updated_at) VALUES ($1,$2,$3,1,CASE WHEN $2='ONLINE' THEN $4::timestamptz ELSE NULL END,$4::timestamptz,$4::timestamptz) ON CONFLICT (charger_ocpp_identity) DO UPDATE SET connection_state=EXCLUDED.connection_state,connection_generation=EXCLUDED.connection_generation,connection_sequence=v1_charger_runtime.connection_sequence+1,connected_at=CASE WHEN EXCLUDED.connection_state='ONLINE' THEN EXCLUDED.last_observed_at ELSE v1_charger_runtime.connected_at END,last_observed_at=EXCLUDED.last_observed_at,updated_at=EXCLUDED.updated_at WHERE EXCLUDED.connection_generation>=v1_charger_runtime.connection_generation`, identity, state, generation, at)
 	if err != nil {
 		return err
@@ -549,14 +578,6 @@ func (s *PostgresStore) RecordV1ChargerConnection(ctx context.Context, identity 
 	}
 	if rows == 0 {
 		return tx.Commit()
-	}
-	var cpoID, chargerID string
-	err = tx.QueryRowContext(ctx, `SELECT cpo_id::text,cms_charger_id::text FROM v1_charger_mappings WHERE charger_ocpp_identity=$1`, identity).Scan(&cpoID, &chargerID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return tx.Commit()
-	}
-	if err != nil {
-		return err
 	}
 	var sequence int64
 	if err := tx.QueryRowContext(ctx, `SELECT connection_sequence FROM v1_charger_runtime WHERE charger_ocpp_identity=$1`, identity).Scan(&sequence); err != nil {

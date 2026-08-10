@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/store"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 )
 
 const v1PathPrefix = "/v1/"
@@ -108,7 +108,7 @@ func (s *Server) v1Mapping(w http.ResponseWriter, r *http.Request) {
 	connectors := make([]store.V1ConnectorMappingInput, 0, len(req.Connectors))
 	seen := map[int]bool{}
 	for _, c := range req.Connectors {
-		if !validUUID(c.CMSConnectorID) || c.OCPPConnectorNumber < 0 || seen[c.OCPPConnectorNumber] {
+		if !validUUID(c.CMSConnectorID) || c.OCPPConnectorNumber <= 0 || seen[c.OCPPConnectorNumber] {
 			writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid connector mapping"})
 			return
 		}
@@ -141,7 +141,7 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSStartIntentID) || !validUUID(req.CPOID) || !validUUID(req.CustomerID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || req.OCPPConnectorNumber < 0 || !strings.HasPrefix(req.IDTag, "appv1_") || len(req.IDTag) > 20 || req.EnergyLimitWh <= 0 || req.MaxDurationSeconds <= 0 || !req.CredentialExpiresAt.After(time.Now().UTC()) || !req.CommandExpiresAt.After(req.CredentialExpiresAt) {
+	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSStartIntentID) || !validUUID(req.CPOID) || !validUUID(req.CustomerID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || req.OCPPConnectorNumber <= 0 || !strings.HasPrefix(req.IDTag, "appv1_") || len(req.IDTag) > 20 || req.EnergyLimitWh <= 0 || req.MaxDurationSeconds <= 0 || !req.CredentialExpiresAt.After(time.Now().UTC()) || !req.CommandExpiresAt.After(req.CredentialExpiresAt) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid start command"})
 		return
 	}
@@ -197,7 +197,7 @@ func (s *Server) v1Stop(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSChargingSessionID) || !validUUID(req.CPOID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || !validUUID(req.HALTransactionID) || req.OCPPTransactionID <= 0 || req.OCPPConnectorNumber < 0 || !req.CommandExpiresAt.After(time.Now().UTC()) || !validV1StopInitiator(req.RequestedStopInitiator) || strings.TrimSpace(req.RequestedStopReason) == "" {
+	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSChargingSessionID) || !validUUID(req.CPOID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || !validUUID(req.HALTransactionID) || req.OCPPTransactionID <= 0 || req.OCPPConnectorNumber <= 0 || !req.CommandExpiresAt.After(time.Now().UTC()) || !validV1StopInitiator(req.RequestedStopInitiator) || strings.TrimSpace(req.RequestedStopReason) == "" {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid stop command"})
 		return
 	}

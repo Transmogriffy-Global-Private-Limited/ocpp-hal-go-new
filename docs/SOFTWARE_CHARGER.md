@@ -11,9 +11,9 @@ directly.
 terminal commands or HAL remote commands
 → cpconsole charge-point state machine
 → OCPP 1.6J WebSocket messages
-→ OCPPHAL (or another OCPP 1.6J Central System)
-→ durable HAL transaction and callback flow
-→ CMS and frontend consumers
+→ this HAL (or another OCPP 1.6J Central System)
+→ durable HAL v1 transaction and fact flow
+→ authenticated CMS fact receiver
 ```
 
 The simulator is useful only when connected to a Central System. Running it
@@ -36,9 +36,9 @@ For a hosted TLS endpoint:
 .\builds\cpconsole.exe -id CP-SIM-001 -url wss://ocpp.example.com
 ```
 
-The ID must be present in the target HAL's charger directory. Local regression
-may instead include it in `MOCK_CHARGER_IDS`. A directory-rejected identity will
-fail during the WebSocket handshake, exactly as unknown hardware would.
+The ID must be enrolled as an enabled v1 mapping in the target HAL. An unmapped
+or disabled identity is rejected during the WebSocket handshake, exactly as
+unknown hardware should be.
 
 The URL must be an absolute `ws://` or `wss://` base URL and may include a base
 path. Do not include the charger ID, query string, or fragment; the selected
@@ -63,7 +63,7 @@ client settings; they are not consumed by the HAL server.
 ## Build and run on Windows
 
 ```powershell
-Set-Location C:\path\to\OCPPHAL_Go
+Set-Location C:\path\to\ocpp-hal-go-new
 .\scripts\build-all.ps1
 .\builds\cpconsole.exe -id CP-SIM-001 -url ws://127.0.0.1:18081
 ```
@@ -73,7 +73,7 @@ Set-Location C:\path\to\OCPPHAL_Go
 For the usual x86-64 VPS:
 
 ```powershell
-Set-Location C:\path\to\OCPPHAL_Go
+Set-Location C:\path\to\ocpp-hal-go-new
 .\scripts\build-cpconsole-linux.ps1 -Architecture amd64
 ```
 
@@ -151,8 +151,7 @@ assigned by the Central System and never fabricated by the simulator.
 
 By default, valid `RemoteStartTransaction` and `RemoteStopTransaction` requests
 are accepted and executed after their confirmation is returned. This models a
-normal connected charger and lets the existing CMS `/api/start_transaction` and
-`/api/stop_transaction` flow operate without extra terminal commands.
+normal connected charger for the authenticated v1 remote-command boundary.
 
 For manual failure and timing tests:
 
@@ -217,7 +216,7 @@ the simulator process; durable business truth remains in the Central System.
   durable transaction in HAL and reconnecting the same charger ID, then using
   the HAL's recovery commands.
 - `Ctrl+C` or `quit` stops the client. Use an explicit `stop` first when the test
-  requires a normal completed transaction and CMS callback.
+  requires a normal completed transaction and HAL fact delivery.
 
 ## Verification
 
@@ -236,6 +235,10 @@ Full repository verification:
 .\scripts\regression-local.ps1 -SkipBuild
 ```
 
-For an end-to-end manual check, register the selected charger ID, run the HAL,
-start `cpconsole`, execute the normal charging flow, then verify the HAL
-transaction row, callback delivery, CMS session, and frontend live snapshot.
+The complete PostgreSQL fact-receiver lifecycle test is deliberately enabled by
+`regression-local.ps1`. It consumes a shared durable outbox and therefore is
+not run during a concurrent package-wide `go test ./...` pass.
+
+For an end-to-end manual check, enroll an enabled mapping for the selected
+charger ID, run the HAL, start `cpconsole`, execute the normal charging flow,
+then verify the HAL v1 transaction/runtime rows and immutable fact delivery.

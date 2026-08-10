@@ -775,7 +775,8 @@ The following remain deliberately not fixed or not yet implemented:
 - RFID credential lifecycle and offline authorization policy;
 - generalized customer realtime and discovery/map live-availability projection
   beyond the required active-session polling projection;
-- legacy REST/callback/WebSocket retirement sequencing; and
+- whether historical legacy tables require a separately approved destructive
+  retirement migration; and
 - detailed future migration/table designs and implementation-level retry
   constants.
 

@@ -1,80 +1,34 @@
 # Project State
 
-## Purpose
+`ocpp-hal-go-new` is a PostgreSQL-backed OCPP 1.6 HAL for
+`ev-cms-backend-new`. It accepts only enabled durable v1 charger mappings and
+only exposes the authenticated v1 service boundary.
 
-`ocpp-hal-go-new` is the independent OCPP HAL for `ev-cms-backend-new`.
-It owns OCPP transport, charger connection/status, charger command delivery,
-and charger-originated protocol truth. It does not own customer identity,
-eligibility, pricing, wallets, billing, or customer-facing projections.
+## Implemented
 
-## Verified v1 HAL Functionality
+- Mapping-based charger admission, generation-safe connection runtime,
+  connector OCPP status, exact credential authorization, charger-originated
+  transaction start/completion, integer-Wh meter progression, energy/time stop
+  workflows, recovery queries, and immutable fact delivery.
+- `POST /v1/hal-facts` delivery supports stable fact identity/digest,
+  idempotent retry, transient/terminal classification, lost acknowledgement,
+  and expired-lease reclaim. API docs are served only when
+  `API_DOCS_ENABLED=true`.
+- The Go module identity is
+  `github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new`.
 
-- `.env` loading uses process environment over local `.env` over defaults;
-  `.env` remains ignored and `scripts/generate-env.ps1` creates local values.
-- Additive migrations `005`, `006`, and `007` create HAL-owned v1 command,
-  credential, mapping, transaction, stop-workflow, runtime, and fact-outbox
-  state.
-- `HAL_V1_ENABLED=true` requires PostgreSQL and
-  `HAL_V1_CMS_BEARER_TOKEN`; production still requires PostgreSQL.
-- `PUT /v1/mappings/chargers/{cms_charger_id}` persists auditable,
-  conflict-safe CPO/charger/connector mappings.
-- Authenticated v1 start persists an idempotent command and short-lived,
-  one-use `appv1_` credential before inherited RemoteStart dispatch.
-- `Authorize` rejects unknown/expired/wrong-charger v1 credentials while
-  preserving the inherited non-v1 credential path.
-- Charger-originated `StartTransaction` atomically creates exactly one v1
-  transaction, preserves retransmission identity, stores integer Wh start,
-  limit/duration, and derives deadline from actual start time.
-- Authenticated command/transaction reconciliation and mapped charger/connector
-  runtime queries exist. Connection reset on startup makes historical ONLINE
-  state `UNKNOWN`; stale disconnect persistence is generation-guarded.
-- `StatusNotification` preserves exact OCPP status and supplied fault details.
-  Runtime responses expose freshness as false unless connection state is ONLINE.
-- Exact v1 MeterValues identify the transaction by charger OCPP identity plus
-  OCPP transaction ID, convert exact integer Wh (including integral kWh), keep
-  an accepted monotonic meter sequence, reject regressive values, and never
-  fabricate meter samples.
-- V1 energy limits use the approved accepted-sample threshold. Time limits use
-  the durable deadline derived from charger-originated actual start time. Both,
-  CMS customer stop, and CPO stop converge on one transaction stop workflow.
-- `POST /v1/remote-commands/stop` validates the complete mapping/transaction
-  correlation, is idempotent by CMS command ID, and does not treat RemoteStop
-  acknowledgement as completion. Charger-originated StopTransaction records
-  final meter and OCPP reason separately from requested stop provenance.
-- Immutable `transaction.started`, `transaction.meter`,
-  `transaction.completed`, `charger.connection.updated`,
-  `connector.status.updated`, and meaningful `command.updated` facts are
-  written atomically with the corresponding HAL state transition.
-- Optional `HAL_V1_FACT_DELIVERY_ENABLED=true` starts a PostgreSQL-backed HTTP
-  fact worker using the separate outbound URL/token configuration. It retries
-  transient receiver failures with the same fact ID, reclaims only expired
-  delivery leases after a worker crash, and marks non-retryable receiver
-  responses for reconciliation. Fact digests use RFC 8785 JCS canonical JSON.
-- `API_DOCS_ENABLED=true` serves `/openapi.json` and `/docs` from the same
-  v1 OpenAPI source and loopback request explorer.
+## Retired Legacy Runtime
 
-## Inherited Functionality Still Present
+No legacy `/api/*` route, callback worker, callback-derived `max_kwh` policy,
+external charger directory, frontend WebSocket, single-session path, legacy
+smoke binary, or automatic offline-authorisation configuration path is
+registered by `ocpphal`.
 
-The copied OCPP 1.6 system, legacy transaction/outbox store, callback worker,
-max-kWh stop behavior, boot recovery, charger directory, `/api/*` routes, and
-frontend WebSockets remain. They are not v1 CMS contracts and were not retired
-or redirected by this slice.
+Historical legacy schema and test-only store code remain unreferenced by the
+new runtime; they are not a CMS integration surface.
 
-## Not Implemented for the New CMS
+## Outside This Repository
 
-- CMS consumer implementation, CMS operational/session projections, business
-  authorization, tariffs, holds, billing, settlement, customer APIs, and
-  customer realtime.
-- Credential rotation/deployment topology, RFID, smart charging, and legacy
-  retirement sequencing.
-
-## Verification Status
-
-`go test ./...` and `go vet ./...` pass with the intentional `go 1.23.0`
-module target. The inherited hook test's Go-1.24-only `testing.T.Context()`
-usage was replaced with test-scoped cancellable standard-library context. The
-migration chain through `007` was applied to the disposable PostgreSQL database;
-focused PostgreSQL store/outbox concurrency tests and the real virtual-charger
-HTTP-to-RemoteStart-to-StartTransaction integration pass. Full manual-stop,
-energy-limit, time-limit/restart, and fact-receiver lifecycle coverage remains
-required before this active HAL vertical can be declared complete.
+CMS customer/CPO identity, authorization, tariffs, wallet holds, billing,
+settlement, projections, and customer realtime remain CMS-owned work. No CMS
+consumer implementation is included here.

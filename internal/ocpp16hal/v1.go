@@ -9,7 +9,7 @@ import (
 
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/store"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 )
 
 // DispatchV1Stop is the sole HAL-side RemoteStop dispatcher. The store claim

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/config"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/config"
 )
 
 func TestV1FactOutboxReclaimsExpiredDeliveryLease(t *testing.T) {

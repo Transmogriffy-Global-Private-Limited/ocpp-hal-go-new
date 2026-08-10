@@ -1,5 +1,39 @@
 # AI-assisted changelog
 
+## 2026-08-10 - v1-only HAL runtime and lifecycle proof
+
+- Replaced the inherited old-CMS process wiring with the authenticated v1
+  mapping, command, runtime, reconciliation, and immutable-fact boundary.
+  Enabled durable mappings now admit charge points; unknown charge points cannot
+  create runtime state.
+- Retired the runtime registrations and tooling for legacy `/api/*` routes,
+  callbacks, callback-derived `max_kwh`, external charger directory, frontend
+  WebSockets, single-session routing, remote-only auth configuration, and old
+  smoke binaries. The retained `cpconsole` remains an OCPP-native simulator.
+- Retained `ocpp-go`, charger connection-generation safety,
+  charger-originated StartTransaction/StopTransaction truth, integer-Wh meter
+  facts, durable command/stop recovery, and the PostgreSQL fact outbox.
+- Corrected the module identity to
+  `github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new`, made
+  scripts/configuration checkout-local and v1-only, and tightened mapped
+  connector validation to connector numbers greater than zero.
+- Added a generic authenticated `/v1/hal-facts` contract receiver integration
+  test that drives real PostgreSQL, HAL HTTP, OCPP RemoteStart/RemoteStop,
+  charger-originated start/meter/stop facts, reconciliation reads, and
+  idempotency conflict handling. The shared-outbox test is run sequentially by
+  `scripts/regression-local.ps1`, not concurrently with package-wide tests.
+
+Compatibility: this intentionally changes this repository's runtime from the
+inherited legacy CMS/frontend surface to v1 only. `OCPPHAL_Go` and
+`ev-cms-backend-new` were not modified.
+
+Verification: `gofmt`; focused HTTP/OCPP/store tests; `go test ./...`; `go vet
+./...`; `scripts/build-all.ps1`; and
+`scripts/regression-local.ps1 -SkipBuild` with a local PostgreSQL
+`DATABASE_URL` all passed. The regression includes the real PostgreSQL/OCPP
+fact-receiver lifecycle and fact-outbox tests. Real physical-charger coverage
+for vendor-specific meter variants and energy/time stop races remains pending.
+
 ## 2026-08-10 - v1 fact durability and contract-conformance hardening
 
 - Fixed v1 fact-outbox crash recovery: an expired `DELIVERING` lease is now

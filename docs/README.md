@@ -15,14 +15,13 @@
 
 Read the architecture boundary before treating any copied behavior as a new-CMS contract. Read the inherited audit before removing or redesigning an existing subsystem, because it records the correctness and recovery property that the subsystem currently provides.
 
-## Inherited Operational and Test Documentation
+## Operational Documentation
 
-The following documents describe copied implementation behavior and tooling. They are useful audit evidence, but do not approve legacy CMS/frontend payloads or routes as the new HAL contract.
-
-- [Local regression](LOCAL_REGRESSION.md)
 - [Terminal-controlled OCPP 1.6J virtual charger](SOFTWARE_CHARGER.md)
-- [Inherited frontend transaction WebSocket](FRONTEND_TRANSACTION_WEBSOCKET.md)
-- [Inherited user frontend live transaction integration](USER_FRONTEND_LIVE_TRANSACTION_INTEGRATION.md)
+
+Legacy local-regression, frontend-WebSocket, and frontend-transaction guides
+were retired with their runtime surfaces. Use the v1 contract and
+`scripts/regression-local.ps1` instead.
 
 ## Contract Documentation
 

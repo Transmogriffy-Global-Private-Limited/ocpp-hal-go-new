@@ -18,9 +18,7 @@ type Config struct {
 	OCPPListenPort int
 	OCPPListenPath string
 
-	APIKey     string
-	APIAuthKey string
-	LogLevel   slog.Level
+	LogLevel slog.Level
 
 	DatabaseURL string
 	DBName      string
@@ -30,16 +28,6 @@ type Config struct {
 	DBPort      int
 	DBSSLMode   string
 
-	MainCMSStartTxnHookURL       string
-	SingleSessionStartTxnHookURL string
-
-	MainCMSCompletedTxnURL       string
-	SingleSessionCompletedTxnURL string
-
-	ChargerDataURL             string
-	ChargerDataCacheTTLSeconds int
-
-	V1Enabled             bool
 	V1CMSBearerToken      string
 	V1FactDeliveryEnabled bool
 	V1CMSFactsURL         string
@@ -59,9 +47,7 @@ func Load() Config {
 		OCPPListenPort: envInt("OCPP_LISTEN_PORT", 18081),
 		OCPPListenPath: env("OCPP_LISTEN_PATH", "/{ws}"),
 
-		APIKey:     os.Getenv("API_KEY"),
-		APIAuthKey: os.Getenv("APIAUTHKEY"),
-		LogLevel:   parseLogLevel(env("LOG_LEVEL", "info")),
+		LogLevel: parseLogLevel(env("LOG_LEVEL", "info")),
 
 		DatabaseURL: os.Getenv("DATABASE_URL"),
 		DBName:      os.Getenv("DB_NAME"),
@@ -71,16 +57,6 @@ func Load() Config {
 		DBPort:      envInt("DB_PORT", 5432),
 		DBSSLMode:   env("DB_SSLMODE", "disable"),
 
-		MainCMSStartTxnHookURL:       env("MAIN_CMS_START_TXN_HOOK_URL", "https://be.cms.ocpp.transev.site/users/checkstartresponse"),
-		SingleSessionStartTxnHookURL: os.Getenv("SINGLE_SESSION_START_TXN_HOOK_URL"),
-
-		MainCMSCompletedTxnURL:       env("MAIN_CMS_COMPLETED_TXN_URL", "https://be.cms.ocpp.transev.site/users/deductcalculate"),
-		SingleSessionCompletedTxnURL: os.Getenv("SINGLE_SESSION_COMPLETED_TXN_URL"),
-
-		ChargerDataURL:             os.Getenv("APICHARGERDATA"),
-		ChargerDataCacheTTLSeconds: envInt("CHARGER_DATA_CACHE_TTL_SECONDS", 7200),
-
-		V1Enabled:             envBool("HAL_V1_ENABLED", false),
 		V1CMSBearerToken:      os.Getenv("HAL_V1_CMS_BEARER_TOKEN"),
 		V1FactDeliveryEnabled: envBool("HAL_V1_FACT_DELIVERY_ENABLED", false),
 		V1CMSFactsURL:         os.Getenv("HAL_V1_CMS_FACTS_URL"),
@@ -120,10 +96,6 @@ func loadLocalEnv() {
 	}
 }
 
-func (c Config) RequiresDatabase() bool {
-	return strings.EqualFold(strings.TrimSpace(c.Environment), "production")
-}
-
 func (c Config) RESTListenAddr() string {
 	return net.JoinHostPort(c.RESTHost, c.RESTPort)
 }
@@ -152,12 +124,10 @@ func envInt(key string, fallback int) int {
 	if raw == "" {
 		return fallback
 	}
-
 	value, err := strconv.Atoi(raw)
 	if err != nil {
 		return fallback
 	}
-
 	return value
 }
 

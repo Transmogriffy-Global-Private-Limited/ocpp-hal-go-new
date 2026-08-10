@@ -42,7 +42,7 @@ business service.
 | Actual completion and final energy | Charger-originated StopTransaction and final meter | transaction query; `transaction.completed` | Exact final integer Wh and completion reason retained | MUST SHIP BY 2026-08-14 | RemoteStop acknowledgement is not completion. |
 | Lost response, duplicate command, restart, reconnect | Idempotent command identity, authoritative queries, durable fact outbox, recovery | command/transaction/runtime queries; all required facts | Deduplication, retries, restart reconstruction, ordered operational sequences | MUST SHIP BY 2026-08-14 | CMS consumes facts idempotently and reconciles by query. |
 | CPO availability, reset, unlock, diagnostics, firmware/configuration | Existing inherited OCPP controls | None in new v1 initially | Existing behavior only | USEFUL BUT DEFER | Add a generic protocol-control socket only after CMS CPO workflow, authorization, audit, and recovery requirements are approved. |
-| Legacy `/api/*` REST and frontend WebSocket compatibility | Legacy copied surface | Existing routes only | Existing behavior only | INHERITED LEGACY ONLY | Neither defines new-CMS contracts nor substitutes for v1 queries/facts. |
+| Legacy `/api/*` REST and frontend WebSocket compatibility | Retired copied surface | None | None | RETIRED | Neither defines new-CMS contracts nor substitutes for v1 queries/facts. |
 | RFID/local auth list, reservations, smart charging, roaming | None | None | None | DEFER AFTER HAL HANDOFF | Not required for first vertical slice. |
 
 ## Must-Ship HAL Socket Families

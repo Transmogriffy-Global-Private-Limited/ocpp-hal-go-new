@@ -29,12 +29,10 @@ durable fact delivery.
 
 ## Non-goals
 
-- Changes in `ev-cms-backend-new` or `OCPPHAL_Go`.
 - User App or CPO business APIs, RBAC, tariffs, wallets, billing, customer
   notifications, customer realtime transport, generalized RFID, reservations,
   smart charging, a telemetry platform, or broker infrastructure.
-- Broad module-path renaming or legacy-surface removal without a separate
-  migration plan.
+- Changes in `ev-cms-backend-new` or the legacy `OCPPHAL_Go` repository.
 
 ## Claimed surfaces
 
@@ -90,10 +88,8 @@ durable fact delivery.
 - After runtime changes: focused Go tests and virtual-charger verification,
   followed by `scripts/build-all.ps1`, `scripts/regression-local.ps1 -SkipBuild`,
   `git diff --check`, and a complete diff review.
-- This pass ran focused store/fact-worker tests, PostgreSQL lease/concurrency
-  tests, the existing real PostgreSQL OCPP-start integration, `go test ./...`,
-  `go vet ./...`, and `scripts/build-all.ps1`; it did not complete the
-  remaining lifecycle matrix.
+- This pass still requires final full-suite, vet, build-script, regression
+  script, and complete-diff verification after the v1-only retirement edits.
 
 ## Handoff
 
