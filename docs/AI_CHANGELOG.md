@@ -1,5 +1,32 @@
 # AI-assisted changelog
 
+## 2026-08-10 - v1 HAL mapping/start/runtime vertical
+
+- Added additive migration `006_add_v1_mapping_and_runtime.sql`, PostgreSQL
+  mapping/audit state, durable start commands/credentials/transactions, command
+  state transitions, and charger/connector runtime projections.
+- Added opaque `HAL_V1_CMS_BEARER_TOKEN` authentication, mandatory mutation
+  idempotency/correlation headers, conflict-safe mapping enrollment, v1 start
+  and reconciliation/runtime routes, OpenAPI, and a loopback interactive API
+  explorer controlled by `API_DOCS_ENABLED`.
+- Wired the v1 credential namespace into inherited `ocpp-go` handlers:
+  `RemoteStartTransaction` only records command delivery, `Authorize` validates
+  persisted short-lived credentials, and `StartTransaction` atomically creates
+  exact durable v1 OCPP truth. Connection generation and StatusNotification
+  now project to mapped durable runtime state.
+- Added local `.env` precedence/loading, corrected the existing environment
+  generator to operate from the checkout root, and replaced inherited
+  production callback defaults in `.env.example` with safe loopback placeholders.
+
+Compatibility: inherited legacy REST, callbacks, WebSockets, transaction
+store, meter handling, and stop behavior remain in place. No CMS or legacy
+repository was modified. Meter/fact/stop completion for v1 remains deferred.
+
+Verification: applied migrations `001` through `006` to the disposable
+PostgreSQL database; `go test ./...`; focused PostgreSQL durability/concurrency
+test; and PostgreSQL-backed virtual OCPP HTTP-to-RemoteStart-to-Authorize-to-
+StartTransaction integration test passed. No secret values were printed.
+
 ## 2026-08-10 - v1 HAL foundation and production durability guard
 
 - Added the v1 consumer-demand matrix that derives generic HAL sockets/plugs

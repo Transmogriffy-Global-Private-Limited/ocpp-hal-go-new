@@ -11,12 +11,16 @@ var (
 	ErrV1CredentialRejected  = errors.New("v1 start credential rejected")
 	ErrV1TransactionNotFound = errors.New("v1 transaction not found")
 	ErrV1IdempotencyConflict = errors.New("v1 command idempotency conflict")
+	ErrV1MappingNotFound     = errors.New("v1 mapping not found")
+	ErrV1MappingConflict     = errors.New("v1 mapping conflict")
 )
 
 type V1StartCommandInput struct {
 	CMSCommandID        string
 	RequestDigest       string
 	CPOID               string
+	CustomerID          string
+	CorrelationID       string
 	CMSStartIntentID    string
 	CMSChargerID        string
 	CMSConnectorID      string
@@ -29,10 +33,43 @@ type V1StartCommandInput struct {
 	MaxDurationSeconds  *int64
 }
 
+type V1MappingInput struct {
+	CPOID               string
+	CMSChargerID        string
+	ChargerOCPPIdentity string
+	Enabled             bool
+	Connectors          []V1ConnectorMappingInput
+	CorrelationID       string
+	RequestDigest       string
+}
+
+type V1ConnectorMappingInput struct {
+	CMSConnectorID      string
+	OCPPConnectorNumber int
+}
+
+type V1ChargerMapping struct {
+	CPOID               string
+	CMSChargerID        string
+	ChargerOCPPIdentity string
+	Enabled             bool
+	Connectors          []V1ConnectorMapping
+}
+
+type V1ConnectorMapping struct {
+	CPOID               string
+	CMSChargerID        string
+	CMSConnectorID      string
+	ChargerOCPPIdentity string
+	OCPPConnectorNumber int
+}
+
 type V1StopCommandInput struct {
 	CMSCommandID           string
 	RequestDigest          string
 	CPOID                  string
+	CustomerID             string
+	CorrelationID          string
 	CMSChargingSessionID   string
 	CMSChargerID           string
 	CMSConnectorID         string
@@ -51,6 +88,8 @@ type V1RemoteCommand struct {
 	Kind                   string
 	RequestDigest          string
 	CPOID                  string
+	CustomerID             string
+	CorrelationID          string
 	CMSStartIntentID       string
 	CMSChargingSessionID   string
 	CMSChargerID           string
@@ -93,6 +132,7 @@ type V1Transaction struct {
 	CMSStartIntentID       string
 	CMSCommandID           string
 	CPOID                  string
+	CustomerID             string
 	CMSChargerID           string
 	CMSConnectorID         string
 	ChargerOCPPIdentity    string
@@ -115,6 +155,35 @@ type V1Transaction struct {
 	MeterStopWh            *int64
 }
 
+type V1ChargerRuntime struct {
+	CPOID                string
+	CMSChargerID         string
+	ChargerOCPPIdentity  string
+	ConnectionState      string
+	ConnectionGeneration int64
+	ConnectionSequence   int64
+	ConnectedAt          *time.Time
+	LastObservedAt       *time.Time
+	UpdatedAt            time.Time
+	Connectors           []V1ConnectorRuntime
+}
+
+type V1ConnectorRuntime struct {
+	CPOID               string
+	CMSChargerID        string
+	CMSConnectorID      string
+	ChargerOCPPIdentity string
+	OCPPConnectorNumber int
+	Status              string
+	ErrorCode           string
+	Info                string
+	VendorID            string
+	VendorErrorCode     string
+	ObservedAt          *time.Time
+	StatusSequence      int64
+	UpdatedAt           time.Time
+}
+
 type V1StartMaterialization struct {
 	ChargerOCPPIdentity string
 	OCPPConnectorNumber int
@@ -125,6 +194,8 @@ type V1StartMaterialization struct {
 }
 
 type V1Store interface {
+	SyncV1Mapping(context.Context, V1MappingInput) (*V1ChargerMapping, bool, error)
+	ValidateV1Mapping(context.Context, string, string, string, string, int) error
 	CreateV1StartCommand(context.Context, V1StartCommandInput) (*V1RemoteCommand, bool, error)
 	CreateV1StopCommand(context.Context, V1StopCommandInput) (*V1RemoteCommand, bool, error)
 	GetV1Command(context.Context, string) (*V1RemoteCommand, error)
@@ -134,4 +205,13 @@ type V1Store interface {
 	RequestV1Stop(context.Context, string, string, string) (*V1Transaction, bool, error)
 	CompleteV1Transaction(context.Context, string, int64, string, time.Time) (*V1Transaction, error)
 	GetV1Transaction(context.Context, string) (*V1Transaction, error)
+	GetV1TransactionByStartIntent(context.Context, string) (*V1Transaction, error)
+	AuthorizeV1Credential(context.Context, string, string, time.Time) error
+	ClaimV1StartDelivery(context.Context, string) (*V1RemoteCommand, bool, error)
+	MarkV1CommandDelivery(context.Context, string, string, string, string) (*V1RemoteCommand, error)
+	RecordV1ChargerConnection(context.Context, string, int64, bool, time.Time) error
+	RecordV1ConnectorStatus(context.Context, V1ConnectorRuntime) error
+	GetV1ChargerRuntime(context.Context, string) (*V1ChargerRuntime, error)
+	GetV1ConnectorRuntime(context.Context, string) (*V1ConnectorRuntime, error)
+	ResetV1ConnectionRuntime(context.Context) error
 }

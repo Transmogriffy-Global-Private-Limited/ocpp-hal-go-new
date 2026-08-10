@@ -77,10 +77,10 @@ connector UUIDs, customer identity, CPO authorization, financial decisions, and
 customer/CPO display states. No customer or CPO business endpoint belongs in
 HAL.
 
-## Open Implementation Decision
+## Current Implementation Boundary
 
-The selected service-authentication mechanism must secure every v1 socket and
-plug without reusing a legacy CMS compatibility key by assumption. This is the
-only open decision that blocks routing the external service boundary; it does
-not change the required HAL-owned command, credential, state, meter, or stop
-semantics above.
+Opaque bearer service authentication, mapping enrollment, durable start
+commands/credentials, StartTransaction materialization, reconciliation reads,
+and charger/connector runtime reads are now implemented. The table's meter,
+fact-delivery, and stop entries remain required but deferred. No inherited API
+key is reused for v1.

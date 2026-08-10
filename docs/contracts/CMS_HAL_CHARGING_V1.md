@@ -2,11 +2,17 @@
 
 ## Status
 
-**Human-approved architecture and contract. Not implemented.** This is the
-authoritative human-readable v1 contract for charging integration between
-`ev-cms-backend-new` (CMS) and `ocpp-hal-go-new` (HAL). Runtime routes, data
-models, migrations, authentication material, and deployment topology remain
-implementation work.
+**Human-approved architecture and partially implemented contract.** This is
+the authoritative human-readable v1 contract for charging integration between
+`ev-cms-backend-new` (CMS) and `ocpp-hal-go-new` (HAL).
+
+Implemented in this repository: authenticated mapping enrollment, durable
+PostgreSQL start commands and one-use `appv1_` credentials, RemoteStart
+delivery, `Authorize` validation, charger-originated StartTransaction
+materialization, command/transaction reconciliation, and mapped charger and
+connector runtime queries. Meter projection, facts/outbox delivery, stop
+coordination, StopTransaction completion, and CMS-side consumption remain
+future slices. This status statement outranks older target-only wording below.
 
 This contract does not replace a legacy route or callback merely by existing.
 The legacy `OCPPHAL_Go` to old-CMS integration remains outside its scope.
@@ -27,11 +33,12 @@ service-to-service HTTP boundary. A customer bearer token is never HAL service
 authentication, and HAL does not receive authority to make customer, tariff,
 tax, wallet, or billing decisions.
 
-The exact service-authentication implementation, credential/key rotation, and
-deployment topology are intentionally open. The selected implementation must
-provide mutually recognized service identities, request authorization, replay
-protection appropriate to the credentials, audit correlation, and secret-safe
-logging.
+The implemented v1 service identity is `Authorization: Bearer <opaque token>`
+using `HAL_V1_CMS_BEARER_TOKEN`. It is never a customer token, `API_KEY`, or
+`APIAUTHKEY`; comparison is constant-time and the value is never logged.
+Mutating calls require `Idempotency-Key` and `X-Correlation-ID`. Production
+transport TLS/private-network topology and token rotation remain deployment
+decisions; production must provide the opaque secret outside the repository.
 
 ## 2. Truth and Identifier Rules
 
@@ -150,8 +157,8 @@ All paths are service-internal logical routes. `v1` is the contract-major
 version; additive optional fields may be introduced compatibly, while
 incompatible semantics require a new major version. Every request must use
 mutually authenticated service identity and carry a trace/audit correlation ID.
-The exact auth header, certificate/signing design, and rotation mechanism remain
-open.
+V1 uses the opaque bearer mechanism defined above. Rotation and deployment
+topology remain operational decisions.
 
 `Idempotency-Key` is required on every mutating request. For CMS commands it is
 the canonical textual UUID form of `cms_command_id`; HAL rejects a header/body
@@ -164,6 +171,7 @@ cross-system audit and lookup.
 | Method and path | Semantics | Retry safety |
 | --- | --- | --- |
 | `POST /v1/remote-commands/start` | Persist and schedule one RemoteStart command. `202` only after durable HAL command creation/recovery; it is not OCPP acceptance or actual start. | Safe with the same idempotency key and immutable body. |
+| `PUT /v1/mappings/chargers/{cms_charger_id}` | Enroll the durable CMS CPO/charger/connector to OCPP mapping used for command and runtime validation. Conflicting identity changes fail. | Safe with the same immutable mapping. |
 | `POST /v1/remote-commands/stop` | Persist and schedule one RemoteStop command. `202` only after durable HAL command creation/recovery; it is not completion. | Safe with the same idempotency key and immutable body. |
 | `GET /v1/remote-commands?cms_command_id={uuid}` | Reconcile a CMS command after a lost response or delayed fact. `200` returns one durable command; `404` means HAL never accepted it. | Safe read. |
 | `GET /v1/transactions?cms_start_intent_id={uuid}` | Reconcile a start intent without a "latest" lookup. `200` returns zero or one snapshots whose command correlation proves the intent. | Safe read. |
@@ -753,10 +761,9 @@ A happy-path-only proof is insufficient.
 
 ## 16. Open Decisions
 
-The following are deliberately not fixed by v1 architecture approval:
+The following remain deliberately not fixed or not yet implemented:
 
-- exact service-authentication mechanism, credential/key rotation, and
-  deployment topology;
+- credential rotation and deployment topology;
 - wallet overshoot, debt, or negative-balance policy;
 - exact energy stop-guard formula and supporting charger capability evidence;
 - RFID credential lifecycle and offline authorization policy;

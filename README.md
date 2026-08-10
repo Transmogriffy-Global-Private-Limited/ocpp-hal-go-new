@@ -44,13 +44,23 @@ These are observations, not approved new-CMS contracts. See [docs/INHERITED_HAL_
 
 ## Development Status
 
-The current phase is architecture bootstrap plus inherited-system audit. No new CMS/HAL runtime contract is approved. The next work is a detailed audit paired with relevant `ev-cms-backend-new` wallet, tariff, and charging-session requirements before implementation begins.
+The active phase is the first HAL-side v1 vertical. The implemented portion is
+an authenticated PostgreSQL-backed mapping/start/reconciliation/runtime socket;
+it preserves inherited OCPP dispatch and StartTransaction truth. It does not
+yet deliver HAL facts, project MeterValues, coordinate stop conditions, or
+complete transactions for CMS consumption.
 
 Read [docs/README.md](docs/README.md) for the canonical documentation map and [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md) for approved sequencing.
 
 ## Local Development
 
-Use `.env.example` only as a reference; do not commit `.env` or real secrets. Keep local listeners on loopback. The build and regression scripts derive the checkout root from their own script location, so they can be invoked from any current PowerShell directory without operating on `OCPPHAL_Go`.
+Use `.env.example` only as a reference; do not commit `.env` or real secrets.
+`scripts/generate-env.ps1` writes a local `.env` from the repository root,
+prompts only for `DATABASE_URL`, and generates replaceable local secrets. The
+application uses process environment over `.env` over defaults. Keep local
+listeners on loopback. The build and regression scripts derive the checkout
+root from their own script location, so they can be invoked from any current
+PowerShell directory without operating on `OCPPHAL_Go`.
 
 For safe source-level checks in this checkout:
 

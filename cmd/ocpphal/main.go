@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -37,6 +38,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	v1Store, err := chooseV1Store(context.Background(), cfg, txStore)
+	if err != nil {
+		logger.Error("failed to initialize v1 store", "error", err)
+		os.Exit(1)
+	}
+
 	txUpdates := store.NewTransactionUpdates()
 	txStore = store.WithTransactionUpdates(txStore, txUpdates)
 
@@ -45,6 +52,7 @@ func main() {
 
 	registry := state.NewRegistry()
 	hal := ocpp16hal.New(registry, txStore, hookManager, logger)
+	hal.SetV1Store(v1Store)
 	hookManager.SetLimitStopper(hal)
 
 	go func() {
@@ -57,7 +65,7 @@ func main() {
 		}
 	}()
 
-	api := httpapi.NewServer(cfg, logger, registry, hal, txStore, txUpdates)
+	api := httpapi.NewServer(cfg, logger, registry, hal, txStore, txUpdates, v1Store)
 
 	restServer := &http.Server{
 		Addr:              cfg.RESTListenAddr(),
@@ -97,6 +105,23 @@ func main() {
 	}
 
 	logger.Info("shutdown complete")
+}
+
+func chooseV1Store(ctx context.Context, cfg config.Config, txStore store.TransactionStore) (store.V1Store, error) {
+	if !cfg.V1Enabled {
+		return nil, nil
+	}
+	if strings.TrimSpace(cfg.V1CMSBearerToken) == "" {
+		return nil, errors.New("HAL_V1_CMS_BEARER_TOKEN is required when HAL_V1_ENABLED=true")
+	}
+	postgresStore, ok := txStore.(*store.PostgresStore)
+	if !ok {
+		return nil, errors.New("PostgreSQL is required when HAL_V1_ENABLED=true")
+	}
+	if err := postgresStore.ResetV1ConnectionRuntime(ctx); err != nil {
+		return nil, fmt.Errorf("reset persisted v1 connection runtime: %w", err)
+	}
+	return postgresStore, nil
 }
 
 func chooseTransactionStore(cfg config.Config, logger *slog.Logger) (store.TransactionStore, error) {

@@ -47,16 +47,13 @@ durable fact delivery.
 ## Dependencies and blockers
 
 - The v1 charging contract is human-approved.
-- Exact service-authentication mechanism, key rotation, and deployment topology
-  remain an explicit open architectural decision. Do not silently repurpose a
-  legacy CMS API key as the new service identity.
+- Opaque bearer service authentication is implemented. Token rotation and
+  production transport topology remain operational decisions.
 
 ## Contract impact
 
-- Extends the approved v1 contract with the human-required time constraint and
-  consumer-demand implementation matrix.
-- Routed service authentication and machine-readable contract details require a
-  deliberately selected service-auth mechanism.
+- Implements the approved mapping/start/reconciliation/runtime portion of the
+  contract. Meter/fact/stop completion surfaces remain explicitly deferred.
 
 ## Data and migration impact
 
@@ -66,14 +63,11 @@ durable fact delivery.
 
 ## Current state
 
-- Consumer demand was inspected read-only in the CMS. Current User App
-  availability is intentionally `UNKNOWN`; its charging-session read model is
-  not implemented. Current CPO charger status is static administrative CMS
-  status, not live OCPP state.
-- HAL retains useful inherited OCPP and recovery behavior. The repository now
-  has an additive v1 schema and focused in-memory command/credential/
-  transaction state foundation, but no PostgreSQL v1-store implementation,
-  OCPP handler wiring, v1 route, or fact delivery worker.
+- PostgreSQL mapping, command, credential, transaction, and runtime state is
+  implemented and OCPP-wired. A virtual OCPP charger verifies RemoteStart,
+  Authorize, StartTransaction materialization, and runtime state.
+- Meter projection, fact delivery, unified stop coordination, StopTransaction
+  completion, and CMS consumer work are not implemented.
 
 ## Verification
 
@@ -85,10 +79,10 @@ durable fact delivery.
 
 ## Handoff
 
-Continue by implementing in dependency order: persistence/configuration, durable
-start command and credential validation, live state/facts, transaction meter and
-stop coordination, then authenticated routes/OpenAPI once service authentication
-is selected. The current foundation has not been wired to production paths.
+Continue in the dependency order in `docs/DEVELOPMENT_PLAN.md`: meter
+projection, durable fact delivery, unified stop coordination, completion truth,
+then lifecycle torture tests. Do not treat this partial HAL vertical as the full
+charging lifecycle.
 
 ## Completion
 

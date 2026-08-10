@@ -31,6 +31,7 @@ type HAL struct {
 	hooks       HookSink
 	connections *connectionTracker
 	logger      *slog.Logger
+	v1Store     store.V1Store
 }
 
 func New(registry *state.Registry, txStore store.TransactionStore, hookSink HookSink, logger *slog.Logger) *HAL {
@@ -70,6 +71,11 @@ func New(registry *state.Registry, txStore store.TransactionStore, hookSink Hook
 		}
 
 		h.registry.Touch(chargePointID)
+		if h.v1Store != nil {
+			if err := h.v1Store.RecordV1ChargerConnection(context.Background(), chargePointID, int64(current.Generation), true, current.ConnectedAt); err != nil && !errors.Is(err, store.ErrV1MappingNotFound) {
+				h.logger.Warn("failed to persist v1 charger connection", "charge_point_id", chargePointID, "error", err)
+			}
+		}
 	})
 
 	h.cs.SetChargePointDisconnectedHandler(func(chargePoint ocpp16.ChargePointConnection) {
@@ -104,12 +110,23 @@ func New(registry *state.Registry, txStore store.TransactionStore, hookSink Hook
 		)
 
 		h.registry.MarkOffline(chargePointID)
+		if h.v1Store != nil {
+			if err := h.v1Store.RecordV1ChargerConnection(context.Background(), chargePointID, int64(current.Generation), false, time.Now().UTC()); err != nil && !errors.Is(err, store.ErrV1MappingNotFound) {
+				h.logger.Warn("failed to persist v1 charger disconnect", "charge_point_id", chargePointID, "error", err)
+			}
+		}
 	})
 
 	h.cs.SetCoreHandler(h)
 	h.cs.SetFirmwareManagementHandler(h)
 
 	return h
+}
+
+// SetV1Store wires the new-CMS integration state without changing the legacy
+// transaction or callback path. A nil store leaves inherited behavior intact.
+func (h *HAL) SetV1Store(v1Store store.V1Store) {
+	h.v1Store = v1Store
 }
 
 func (h *HAL) Start(port int, path string) {
@@ -489,6 +506,11 @@ func (h *HAL) GetConfiguration(ctx context.Context, chargerID string, keys []str
 
 func (h *HAL) OnAuthorize(chargePointID string, request *core.AuthorizeRequest) (*core.AuthorizeConfirmation, error) {
 	h.registry.Touch(chargePointID)
+	if isV1AppIDTag(request.IdTag) {
+		if h.v1Store == nil || h.v1Store.AuthorizeV1Credential(context.Background(), chargePointID, request.IdTag, time.Now().UTC()) != nil {
+			return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid)), nil
+		}
+	}
 	return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusAccepted)), nil
 }
 
@@ -521,12 +543,61 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 		string(request.Status),
 		string(request.ErrorCode),
 	)
+	if h.v1Store != nil {
+		observedAt := time.Now().UTC()
+		if request.Timestamp != nil && !request.Timestamp.IsZero() {
+			observedAt = request.Timestamp.UTC()
+		}
+		err := h.v1Store.RecordV1ConnectorStatus(context.Background(), store.V1ConnectorRuntime{
+			ChargerOCPPIdentity: chargePointID,
+			OCPPConnectorNumber: request.ConnectorId,
+			Status:              string(request.Status),
+			ErrorCode:           string(request.ErrorCode),
+			Info:                request.Info,
+			VendorID:            request.VendorId,
+			VendorErrorCode:     request.VendorErrorCode,
+			ObservedAt:          &observedAt,
+		})
+		if err != nil && !errors.Is(err, store.ErrV1MappingNotFound) {
+			h.logger.Warn("failed to persist v1 connector status", "charge_point_id", chargePointID, "connector_id", request.ConnectorId, "error", err)
+		}
+	}
 
 	return core.NewStatusNotificationConfirmation(), nil
 }
 
 func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransactionRequest) (*core.StartTransactionConfirmation, error) {
 	h.registry.Touch(chargePointID)
+	if isV1AppIDTag(request.IdTag) {
+		if h.v1Store == nil {
+			return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid), 0), nil
+		}
+		startedAt := time.Now().UTC()
+		if request.Timestamp != nil && !request.Timestamp.IsZero() {
+			startedAt = request.Timestamp.UTC()
+		}
+		for attempts := 0; attempts < 8; attempts++ {
+			tx, duplicate, err := h.v1Store.MaterializeV1Start(context.Background(), store.V1StartMaterialization{
+				ChargerOCPPIdentity: chargePointID,
+				OCPPConnectorNumber: request.ConnectorId,
+				IDTag:               request.IdTag,
+				MeterStartWh:        int64(request.MeterStart),
+				ActualStartedAt:     startedAt,
+				OCPPTransactionID:   store.RandomTransactionID(),
+			})
+			if err != nil {
+				if errors.Is(err, store.ErrV1CredentialRejected) {
+					return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid), 0), nil
+				}
+				h.logger.Error("failed to materialize v1 start transaction", "charge_point_id", chargePointID, "connector_id", request.ConnectorId, "error", err)
+				return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusBlocked), 0), nil
+			}
+			h.registry.ApplyStartTransaction(chargePointID, request.ConnectorId, tx.OCPPTransactionID, float64(request.MeterStart))
+			_ = duplicate
+			return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusAccepted), int(tx.OCPPTransactionID)), nil
+		}
+		return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusBlocked), 0), nil
+	}
 
 	openTransactions, err := h.store.ListOpenTransactionsByCharger(context.Background(), chargePointID)
 	if err != nil {
@@ -603,6 +674,10 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 		types.NewIdTagInfo(types.AuthorizationStatusAccepted),
 		int(tx.TransactionID),
 	), nil
+}
+
+func isV1AppIDTag(idTag string) bool {
+	return strings.HasPrefix(idTag, "appv1_")
 }
 
 func (h *HAL) OnMeterValues(chargePointID string, request *core.MeterValuesRequest) (*core.MeterValuesConfirmation, error) {

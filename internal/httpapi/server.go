@@ -20,6 +20,7 @@ type Server struct {
 	hal       *ocpp16hal.HAL
 	txStore   store.TransactionStore
 	txUpdates *store.TransactionUpdates
+	v1Store   store.V1Store
 }
 
 func NewServer(
@@ -29,7 +30,12 @@ func NewServer(
 	hal *ocpp16hal.HAL,
 	txStore store.TransactionStore,
 	txUpdates *store.TransactionUpdates,
+	v1Stores ...store.V1Store,
 ) *Server {
+	var v1Store store.V1Store
+	if len(v1Stores) > 0 {
+		v1Store = v1Stores[0]
+	}
 	return &Server{
 		cfg:       cfg,
 		logger:    logger,
@@ -37,6 +43,7 @@ func NewServer(
 		hal:       hal,
 		txStore:   txStore,
 		txUpdates: txUpdates,
+		v1Store:   v1Store,
 	}
 }
 
@@ -46,6 +53,12 @@ func (s *Server) Routes() http.Handler {
 	mux.HandleFunc("/api/hello", s.hello)
 	mux.HandleFunc("/frontend/ws/transaction", s.frontendTransactionWebSocket)
 	mux.HandleFunc("/frontend/ws/", s.frontendWebSocket)
+	if s.cfg.V1Enabled && s.v1Store != nil {
+		s.registerV1Routes(mux)
+	}
+	if s.cfg.APIDocsEnabled {
+		s.registerAPIDocs(mux)
+	}
 
 	for _, path := range []string{
 		"/api/status",
@@ -620,7 +633,7 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 func setCORS(w http.ResponseWriter) {
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-api-key, Access-Control-Allow-Origin")
+	w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type, x-api-key, Idempotency-Key, X-Correlation-ID, Access-Control-Allow-Origin")
 }
 
 func writeJSON(w http.ResponseWriter, statusCode int, body any) {

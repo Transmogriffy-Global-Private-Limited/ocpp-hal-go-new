@@ -4,6 +4,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -37,9 +38,15 @@ type Config struct {
 
 	ChargerDataURL             string
 	ChargerDataCacheTTLSeconds int
+
+	V1Enabled        bool
+	V1CMSBearerToken string
+	APIDocsEnabled   bool
 }
 
 func Load() Config {
+	loadLocalEnv()
+
 	return Config{
 		Environment: env("HAL_ENVIRONMENT", "development"),
 
@@ -69,6 +76,41 @@ func Load() Config {
 
 		ChargerDataURL:             os.Getenv("APICHARGERDATA"),
 		ChargerDataCacheTTLSeconds: envInt("CHARGER_DATA_CACHE_TTL_SECONDS", 7200),
+
+		V1Enabled:        envBool("HAL_V1_ENABLED", false),
+		V1CMSBearerToken: os.Getenv("HAL_V1_CMS_BEARER_TOKEN"),
+		APIDocsEnabled:   envBool("API_DOCS_ENABLED", false),
+	}
+}
+
+// loadLocalEnv is intentionally small: it provides local development defaults
+// without changing already-supplied process configuration. Production deploys
+// provide their environment directly and do not depend on this file.
+func loadLocalEnv() {
+	if strings.EqualFold(strings.TrimSpace(os.Getenv("HAL_ENVIRONMENT")), "production") {
+		return
+	}
+	path := filepath.Join(".", ".env")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		key, value, ok := strings.Cut(line, "=")
+		if !ok {
+			continue
+		}
+		key = strings.TrimSpace(key)
+		value = strings.Trim(strings.TrimSpace(value), "\"'")
+		if key == "" || os.Getenv(key) != "" {
+			continue
+		}
+		_ = os.Setenv(key, value)
 	}
 }
 
@@ -110,6 +152,18 @@ func envInt(key string, fallback int) int {
 		return fallback
 	}
 
+	return value
+}
+
+func envBool(key string, fallback bool) bool {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.ParseBool(raw)
+	if err != nil {
+		return fallback
+	}
 	return value
 }
 

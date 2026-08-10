@@ -5,7 +5,8 @@
 - [Repository overview](../README.md)
 - [HAL and CMS architecture boundary](ARCHITECTURE_BOUNDARY.md)
 - [Inherited HAL audit](INHERITED_HAL_AUDIT.md)
-- [CMS/HAL charging integration v1 contract (approved, not implemented)](contracts/CMS_HAL_CHARGING_V1.md)
+- [CMS/HAL charging integration v1 contract](contracts/CMS_HAL_CHARGING_V1.md)
+- [Machine-readable v1 OpenAPI source](../internal/httpapi/v1_openapi.json)
 - [v1 consumer-demand to HAL-capability matrix](plans/HAL_V1_CONSUMER_DEMAND_MATRIX.md)
 - [CMS/HAL charging integration analysis (historical decision evidence)](plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md)
 - [Current project state](PROJECT_STATE.md)
@@ -27,12 +28,12 @@ The following documents describe copied implementation behavior and tooling. The
 
 The v1 human-readable service contract is
 [CMS/HAL Charging Integration v1](contracts/CMS_HAL_CHARGING_V1.md). It is
-approved architecture but not implemented. Its HTTP paths and JSON shapes are
-the canonical target until implementation produces the required machine-readable
-contract and interactive documentation. It includes HAL connection, connector
-OCPP status, and near-live MeterValues facts projected through CMS polling, not
-through inherited HAL frontend WebSockets. Do not use inherited REST, callback,
-or WebSocket documentation as a substitute for v1.
+approved architecture with a partially implemented HAL-side start/runtime
+vertical. The machine-readable source is `internal/httpapi/v1_openapi.json`;
+when `API_DOCS_ENABLED=true`, it is served as `/openapi.json` and a loopback
+interactive explorer is served at `/docs`. Meter/fact/stop paths remain target
+contract work. Do not use inherited REST, callback, or WebSocket documentation
+as a substitute for v1.
 
 The [consumer-demand matrix](plans/HAL_V1_CONSUMER_DEMAND_MATRIX.md) is the
 implementation prioritization source for the active first vertical slice. It
