@@ -1,5 +1,41 @@
 # AI-assisted changelog
 
+## 2026-08-10 - v1 fact durability and contract-conformance hardening
+
+- Fixed v1 fact-outbox crash recovery: an expired `DELIVERING` lease is now
+  reclaimable as the same durable fact without stealing an unexpired claim.
+- Replaced the local map-key canonicalizer with RFC 8785 JCS and added a
+  canonicalization vector covering nested values, Unicode, escaping, booleans,
+  nulls, and numbers.
+- Corrected v1 fact payload drift: `transaction.started` now emits
+  `started_at`; `command.updated` includes nullable error evidence; and
+  `transaction.completed` emits nullable stop-command correlation or the
+  correlated CMS/HAL command IDs when present.
+- Added PostgreSQL lease/concurrency tests and HTTP fact-worker response,
+  transport-loss, immutable-redelivery, and retry classification tests.
+
+Compatibility: additive hardening of the approved v1 outbox and fact contract.
+No legacy route, CMS repository, or legacy repository was modified.
+
+Verification: `go test ./internal/store ./internal/v1facts`; PostgreSQL v1
+store, outbox lease/concurrency, and real virtual-OCPP start integration;
+`go test ./...`; `go vet ./...`; and `scripts/build-all.ps1` passed. The full
+manual-stop, energy-limit, time-limit/restart, natural-stop, and fact-receiver
+lifecycle matrix remains in progress and is not claimed by this entry.
+
+## 2026-08-10 - Go 1.23 hook-test verification compatibility
+
+- Replaced the inherited Go-1.24-only `testing.T.Context()` calls in the
+  hook callback test with a test-scoped cancellable standard-library context.
+  The module remains at `go 1.23.0`.
+
+Compatibility: test-only change; no runtime behavior, API, persistence, or
+external contract changed. No CMS or legacy repository was modified.
+
+Verification: ran `gofmt` on the changed Go test, `go test ./internal/hooks`,
+`go test ./...`, and `go vet ./...`; all passed. The prior inherited
+Go-1.24-only test incompatibility is no longer a verification blocker.
+
 ## 2026-08-10 - v1 HAL meter, stop, completion, and fact vertical
 
 - Added additive migration `007_add_v1_lifecycle_and_facts.sql` and HAL-owned

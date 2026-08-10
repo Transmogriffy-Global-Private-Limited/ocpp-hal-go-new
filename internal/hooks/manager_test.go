@@ -1,6 +1,7 @@
 package hooks
 
 import (
+	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -80,6 +81,8 @@ func TestParseMaxKWhResponseRejectsInvalidValues(t *testing.T) {
 
 func TestStartCallbackPreservesLargeTransactionIDAsDecimalString(t *testing.T) {
 	const transactionID = int64(1037615263)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 
 	memoryStore := store.NewMemoryStore()
 	manager := NewManager(
@@ -108,10 +111,10 @@ func TestStartCallbackPreservesLargeTransactionIDAsDecimalString(t *testing.T) {
 		ConnectorID:   1,
 		IDTag:         "USER-1",
 	}
-	if err := manager.EnqueueStartTransaction(t.Context(), tx); err != nil {
+	if err := manager.EnqueueStartTransaction(ctx, tx); err != nil {
 		t.Fatalf("enqueue start callback: %v", err)
 	}
-	tasks, err := memoryStore.ClaimDueCallbacks(t.Context(), 1)
+	tasks, err := memoryStore.ClaimDueCallbacks(ctx, 1)
 	if err != nil {
 		t.Fatalf("claim start callback: %v", err)
 	}

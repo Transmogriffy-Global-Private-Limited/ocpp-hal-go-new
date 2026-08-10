@@ -187,6 +187,9 @@ cross-system audit and lookup.
 HAL uses a durable outbox for fact delivery. It retries the same immutable fact
 until CMS durably acknowledges it, records terminal delivery state when needed,
 and supports reconciliation. Delivery can be duplicate or out of order.
+An unexpired delivery lease is exclusive to its current worker. After a worker
+crash, an expired `DELIVERING` lease becomes reclaimable as the same durable
+fact ID, digest, and payload; HAL never creates a replacement fact for retry.
 
 | Status | Category | Retry rule |
 | --- | --- | --- |

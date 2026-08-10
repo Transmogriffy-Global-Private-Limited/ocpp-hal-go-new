@@ -4,6 +4,7 @@ go 1.23.0
 
 require (
 	github.com/gorilla/websocket v1.5.3
+	github.com/gowebpki/jcs v1.0.1
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/lorenzodonini/ocpp-go v0.19.0
 )

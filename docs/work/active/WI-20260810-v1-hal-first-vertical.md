@@ -73,10 +73,15 @@ durable fact delivery.
   deadline enforcement creates the same workflow. CMS customer/CPO stop joins
   it by exact transaction identity; StopTransaction is authoritative completion.
 - The opt-in fact worker delivers immutable facts to the configured CMS receiver
-  with separate outbound credentials and retained retry/reconciliation state.
-- Remaining work is verification expansion: real full lifecycle, fact receiver,
-  concurrent stop, and restart/crash scenarios. CMS consumer work is not in
-  scope.
+  with separate outbound credentials and retained retry/reconciliation state;
+  an expired `DELIVERING` lease is reclaimed as the same durable fact.
+- This hardening pass corrected contract field drift (`started_at`, nullable
+  completion command correlation, and command error evidence), replaced the
+  local fact canonicalizer with RFC 8785 JCS, and added PostgreSQL lease/
+  contention plus HTTP delivery classification tests.
+- Remaining work is end-to-end verification expansion: real full lifecycle
+  with a fact receiver, manual/energy/time/natural stop, concurrent stop races,
+  and restart/crash scenarios. CMS consumer work is not in scope.
 
 ## Verification
 
@@ -85,6 +90,10 @@ durable fact delivery.
 - After runtime changes: focused Go tests and virtual-charger verification,
   followed by `scripts/build-all.ps1`, `scripts/regression-local.ps1 -SkipBuild`,
   `git diff --check`, and a complete diff review.
+- This pass ran focused store/fact-worker tests, PostgreSQL lease/concurrency
+  tests, the existing real PostgreSQL OCPP-start integration, `go test ./...`,
+  `go vet ./...`, and `scripts/build-all.ps1`; it did not complete the
+  remaining lifecycle matrix.
 
 ## Handoff
 

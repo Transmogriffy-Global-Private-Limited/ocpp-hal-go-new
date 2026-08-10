@@ -7,69 +7,21 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"sort"
-	"strconv"
-	"strings"
 	"time"
+
+	"github.com/gowebpki/jcs"
 )
 
 const v1FactProducer = "ocpp-hal-go-new"
 
-// canonicalV1JSON is deliberately small and only accepts the fact value types
-// produced below. It sorts object keys and emits integer fields without float
-// conversion, so the immutable hash does not depend on map iteration order.
+// canonicalV1JSON first establishes ordinary JSON representation, then applies
+// RFC 8785 JSON Canonicalization Scheme to that JSON-compatible value.
 func canonicalV1JSON(value any) ([]byte, error) {
-	var write func(*strings.Builder, any) error
-	write = func(dst *strings.Builder, item any) error {
-		switch v := item.(type) {
-		case nil:
-			dst.WriteString("null")
-		case string:
-			encoded, _ := json.Marshal(v)
-			dst.Write(encoded)
-		case bool:
-			if v {
-				dst.WriteString("true")
-			} else {
-				dst.WriteString("false")
-			}
-		case int:
-			dst.WriteString(strconv.Itoa(v))
-		case int64:
-			dst.WriteString(strconv.FormatInt(v, 10))
-		case time.Time:
-			encoded, _ := json.Marshal(v.UTC().Format(time.RFC3339Nano))
-			dst.Write(encoded)
-		case map[string]any:
-			keys := make([]string, 0, len(v))
-			for key := range v {
-				keys = append(keys, key)
-			}
-			sort.Strings(keys)
-			dst.WriteByte('{')
-			for i, key := range keys {
-				if i > 0 {
-					dst.WriteByte(',')
-				}
-				encoded, _ := json.Marshal(key)
-				dst.Write(encoded)
-				dst.WriteByte(':')
-				if err := write(dst, v[key]); err != nil {
-					return err
-				}
-			}
-			dst.WriteByte('}')
-		default:
-			return fmt.Errorf("unsupported canonical fact value %T", item)
-		}
-		return nil
-	}
-	var out strings.Builder
-	if err := write(&out, value); err != nil {
+	raw, err := json.Marshal(value)
+	if err != nil {
 		return nil, err
 	}
-	return []byte(out.String()), nil
+	return jcs.Transform(raw)
 }
 
 func (s *PostgresStore) insertV1FactTx(ctx context.Context, tx *sql.Tx, factType, aggregate string, sequence *int64, occurredAt time.Time, payload map[string]any) error {
@@ -92,7 +44,10 @@ func v1CommandFact(command *V1RemoteCommand) map[string]any {
 		"hal_command_id": command.HALCommandID, "cms_command_id": command.CMSCommandID,
 		"kind": command.Kind, "state": command.State, "charger_ocpp_identity": command.ChargerOCPPIdentity,
 		"ocpp_connector_number": command.OCPPConnectorNumber, "delivery_attempts": command.DeliveryAttempts,
-		"ocpp_result": command.LastOCPPResult, "occurred_at": command.UpdatedAt,
+		"ocpp_result":         nullString(command.LastOCPPResult),
+		"last_error_category": nullString(command.LastErrorCategory),
+		"last_error_detail":   nullString(command.LastErrorDetail),
+		"occurred_at":         command.UpdatedAt,
 	}
 	if command.HALTransactionID != "" {
 		payload["hal_transaction_id"] = command.HALTransactionID
@@ -110,7 +65,7 @@ func v1StartedFact(t *V1Transaction, commandID string) map[string]any {
 		"cms_start_intent_id": t.CMSStartIntentID, "cpo_id": t.CPOID,
 		"cms_charger_id": t.CMSChargerID, "cms_connector_id": t.CMSConnectorID,
 		"charger_ocpp_identity": t.ChargerOCPPIdentity, "ocpp_connector_number": t.OCPPConnectorNumber,
-		"id_tag": t.IDTag, "meter_start_wh": t.MeterStartWh, "actual_started_at": t.ActualStartedAt,
+		"id_tag": t.IDTag, "meter_start_wh": t.MeterStartWh, "started_at": t.ActualStartedAt,
 	}
 }
 
@@ -125,14 +80,20 @@ func v1MeterFact(t *V1Transaction) map[string]any {
 	}
 }
 
-func v1CompletedFact(t *V1Transaction) map[string]any {
+func v1CompletedFact(t *V1Transaction, command *V1RemoteCommand) map[string]any {
 	payload := map[string]any{
 		"hal_transaction_id": t.HALTransactionID, "ocpp_transaction_id": t.OCPPTransactionID,
+		"hal_command_id": nil, "cms_command_id": nil,
 		"cms_start_intent_id": t.CMSStartIntentID, "cms_charger_id": t.CMSChargerID,
 		"cms_connector_id": t.CMSConnectorID, "charger_ocpp_identity": t.ChargerOCPPIdentity,
 		"ocpp_connector_number": t.OCPPConnectorNumber, "meter_start_wh": t.MeterStartWh,
 		"meter_stop_wh": *t.MeterStopWh, "stopped_at": *t.CompletedAt,
-		"ocpp_stop_reason": t.OCPPStopReason,
+		"ocpp_stop_reason":         nullString(t.OCPPStopReason),
+		"requested_stop_initiator": nil, "requested_stop_reason": nil,
+	}
+	if command != nil {
+		payload["hal_command_id"] = command.HALCommandID
+		payload["cms_command_id"] = command.CMSCommandID
 	}
 	if t.RequestedStopInitiator != "" {
 		payload["requested_stop_initiator"] = t.RequestedStopInitiator
@@ -451,7 +412,11 @@ func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string,
 	if err != nil {
 		return nil, err
 	}
-	if err := s.insertV1FactTx(ctx, tx, "transaction.completed", halID, nil, completedAt, v1CompletedFact(completed)); err != nil {
+	command, err := s.getV1CompletionCommandTx(ctx, tx, halID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.insertV1FactTx(ctx, tx, "transaction.completed", halID, nil, completedAt, v1CompletedFact(completed, command)); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {
@@ -460,13 +425,25 @@ func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string,
 	return completed, nil
 }
 
+func (s *PostgresStore) getV1CompletionCommandTx(ctx context.Context, tx *sql.Tx, halTransactionID string) (*V1RemoteCommand, error) {
+	var cmsCommandID string
+	err := tx.QueryRowContext(ctx, `SELECT cms_command_id::text FROM v1_remote_commands WHERE kind='STOP' AND stop_workflow_transaction_id=$1 ORDER BY created_at,id LIMIT 1`, halTransactionID).Scan(&cmsCommandID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.getV1CommandWith(ctx, txByQueryer{tx}, cmsCommandID)
+}
+
 func (s *PostgresStore) ClaimV1Facts(ctx context.Context, now time.Time, limit int) ([]V1Fact, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `WITH due AS (SELECT fact_id FROM v1_fact_outbox WHERE status IN ('PENDING','RETRY') AND next_retry_at <= $1 AND (claimed_until IS NULL OR claimed_until < $1) ORDER BY next_retry_at,created_at FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE v1_fact_outbox f SET status='DELIVERING',claimed_until=$1+INTERVAL '30 seconds' FROM due WHERE f.fact_id=due.fact_id RETURNING f.fact_id::text,f.fact_type,f.schema_version,f.occurred_at,f.producer,f.content_digest,f.payload::text,f.status,f.retries,f.next_retry_at,f.claimed_until,f.delivery_status_code,COALESCE(f.last_error,'')`, now, limit)
+	rows, err := tx.QueryContext(ctx, `WITH due AS (SELECT fact_id FROM v1_fact_outbox WHERE ((status IN ('PENDING','RETRY') AND next_retry_at <= $1) OR (status='DELIVERING' AND claimed_until < $1)) AND (claimed_until IS NULL OR claimed_until < $1) ORDER BY next_retry_at,created_at FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE v1_fact_outbox f SET status='DELIVERING',claimed_until=$1+INTERVAL '30 seconds' FROM due WHERE f.fact_id=due.fact_id RETURNING f.fact_id::text,f.fact_type,f.schema_version,f.occurred_at,f.producer,f.content_digest,f.payload::text,f.status,f.retries,f.next_retry_at,f.claimed_until,f.delivery_status_code,COALESCE(f.last_error,'')`, now, limit)
 	if err != nil {
 		return nil, err
 	}

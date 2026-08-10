@@ -47,8 +47,9 @@ eligibility, pricing, wallets, billing, or customer-facing projections.
   written atomically with the corresponding HAL state transition.
 - Optional `HAL_V1_FACT_DELIVERY_ENABLED=true` starts a PostgreSQL-backed HTTP
   fact worker using the separate outbound URL/token configuration. It retries
-  transient receiver failures with the same fact ID and marks non-retryable
-  receiver responses for reconciliation.
+  transient receiver failures with the same fact ID, reclaims only expired
+  delivery leases after a worker crash, and marks non-retryable receiver
+  responses for reconciliation. Fact digests use RFC 8785 JCS canonical JSON.
 - `API_DOCS_ENABLED=true` serves `/openapi.json` and `/docs` from the same
   v1 OpenAPI source and loopback request explorer.
 
@@ -69,8 +70,11 @@ or redirected by this slice.
 
 ## Verification Status
 
-Source-level `go test ./...` passes. The migration chain through `007` was
-applied to the disposable PostgreSQL database, and focused PostgreSQL store
-tests pass there. The virtual-charger start/runtime integration is retained;
-full fact/stop lifecycle coverage remains the final verification work for this
-active slice.
+`go test ./...` and `go vet ./...` pass with the intentional `go 1.23.0`
+module target. The inherited hook test's Go-1.24-only `testing.T.Context()`
+usage was replaced with test-scoped cancellable standard-library context. The
+migration chain through `007` was applied to the disposable PostgreSQL database;
+focused PostgreSQL store/outbox concurrency tests and the real virtual-charger
+HTTP-to-RemoteStart-to-StartTransaction integration pass. Full manual-stop,
+energy-limit, time-limit/restart, and fact-receiver lifecycle coverage remains
+required before this active HAL vertical can be declared complete.

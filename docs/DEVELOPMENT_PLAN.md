@@ -22,12 +22,13 @@ Completed implementation: mapping enrollment, opaque bearer service
 authentication, PostgreSQL commands/credentials/transactions/stop workflows,
 OCPP RemoteStart/Authorize/StartTransaction/MeterValues/StopTransaction
 wiring, runtime and reconciliation sockets, immutable fact outbox/delivery,
-and OpenAPI.
+RFC 8785 canonical fact digests, expired fact-lease recovery, and OpenAPI.
 
 ## Next Approved Work
 
-1. Complete real PostgreSQL/OCPP/fact-receiver lifecycle and crash/recovery
-   torture coverage for the HAL vertical.
+1. Complete real PostgreSQL/OCPP/fact-receiver lifecycle and remaining
+   crash/recovery torture coverage for the HAL vertical, including manual,
+   energy-limit, time-limit/restart, and natural-stop completion scenarios.
 2. Produce the CMS integration handoff with the verified contract behavior and
    receiver expectations.
 3. Implement CMS-owned durable operational/session projections, financial

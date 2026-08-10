@@ -15,11 +15,16 @@ import (
 )
 
 type Worker struct {
-	store  store.V1Store
+	store  factDeliveryStore
 	client *http.Client
 	url    string
 	token  string
 	logger *slog.Logger
+}
+
+type factDeliveryStore interface {
+	ClaimV1Facts(context.Context, time.Time, int) ([]store.V1Fact, error)
+	MarkV1FactDelivery(context.Context, string, int, bool, bool, string, time.Time) error
 }
 
 func New(cfg config.Config, v1Store store.V1Store, logger *slog.Logger) (*Worker, error) {
