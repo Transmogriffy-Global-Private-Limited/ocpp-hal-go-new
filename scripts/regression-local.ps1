@@ -5,7 +5,8 @@ param(
 $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
-Set-Location "C:\Users\AnubhabDey\Programs\My_Programs\OCPPHAL_Go"
+$repoRoot = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $repoRoot
 
 function Start-RepoJob {
     param(

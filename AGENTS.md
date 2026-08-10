@@ -50,7 +50,7 @@ Use the smallest focused check first, then the broadest appropriate check. For r
 .\scripts\regression-local.ps1 -SkipBuild
 ```
 
-The inherited scripts currently contain an absolute legacy-repository path. Do not run them if that would operate on `OCPPHAL_Go`; record the exact limitation and use safe local checks that operate in this checkout. Do not claim database, charger, CMS, or end-to-end verification without executing it against the correct services.
+The build and regression scripts derive their repository root from their own script location and can be run from this checkout. Do not claim database, charger, CMS, or end-to-end verification without executing it against the correct services.
 
 Before completion, inspect the complete diff, run `git diff --check`, confirm `git status --short`, and verify no secrets, generated binaries, or unrelated artifacts were introduced.
 

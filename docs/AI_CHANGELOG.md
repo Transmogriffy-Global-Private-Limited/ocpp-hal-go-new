@@ -1,5 +1,17 @@
 # AI-assisted changelog
 
+## 2026-08-10 - Script checkout-root remediation
+
+- Updated `scripts/build-all.ps1` and `scripts/regression-local.ps1` to derive
+  the repository root from `$PSScriptRoot` rather than an absolute
+  `OCPPHAL_Go` path.
+- Preserved the existing formatter, test, build, mock, PostgreSQL, job, and
+  regression command sequence; no Go runtime behavior changed.
+
+Verification: reviewed both script entry paths and confirmed no absolute
+`OCPPHAL_Go` `Set-Location` remains. Full build/regression execution remains
+subject to the existing Go memory and local PostgreSQL limitations.
+
 ## 2026-08-10 - New-CMS architecture bootstrap and inherited HAL audit
 
 - Reframed this repository as the independently evolving OCPP HAL for `ev-cms-backend-new`, separate from the legacy `OCPPHAL_Go` and old-CMS integration.

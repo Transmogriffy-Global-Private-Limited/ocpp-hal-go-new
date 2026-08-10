@@ -26,7 +26,7 @@ These are implementation facts, not a promise that each behavior is retained or 
 - Start/completion callback payloads and the `max_kwh` response are legacy integration behavior.
 - Single-session flags and alternate callback routing are inherited and process-local.
 - Frontend WebSockets expose legacy status/transaction shapes without new-CMS customer/CPO authorization.
-- The Go module/import path and build/regression scripts still refer to the legacy repository identity; the scripts currently contain a legacy absolute path.
+- The Go module/import path still refers to the legacy repository identity. Build and regression scripts now derive this checkout root from their own script location.
 
 None of these are an approved permanent new-CMS contract.
 
@@ -43,4 +43,4 @@ None of these are an approved permanent new-CMS contract.
 
 ## Verification Status
 
-This architecture-bootstrap slice changes documentation only. It does not claim new runtime, database, charger, CMS, or end-to-end verification. `go test ./...` was terminated after 124 seconds with no diagnostic output, and `go build ./...` failed while linking `cmd/cpconsole` because the Go runtime could not allocate memory. The inherited build/regression scripts must be repaired before they can be treated as safe checks for this checkout because they currently target the legacy repository path.
+The architecture-bootstrap slice did not change runtime behavior, and the subsequent script-root remediation did not change test semantics. Neither slice claims new runtime, database, charger, CMS, or end-to-end verification. `go test ./...` was terminated after 124 seconds with no diagnostic output, and `go build ./...` failed while linking `cmd/cpconsole` because the Go runtime could not allocate memory. The build/regression scripts now target this checkout, but their database-backed execution remains unverified in this environment.

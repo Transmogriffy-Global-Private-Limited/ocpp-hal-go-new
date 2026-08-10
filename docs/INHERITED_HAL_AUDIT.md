@@ -25,7 +25,7 @@ The assessment follows runtime data and recovery behavior rather than package na
 | PostgreSQL schema and migrations | MODIFY | `transactions` and `callback_outbox` hold HAL-local state, dedupe metadata, callback payloads, and a limit-stop claim. Migration `004` requires a transaction ID. | Additive migrations, local HAL ownership, durable audit/recovery data, uniqueness and retry indexes. CMS must not read or write these tables. |
 | Memory store | KEEP | An in-memory implementation supports tests/no-database startup with the same transaction/outbox interfaces but loses state on restart. | Explicitly non-production fallback and fast isolated verification. It must never be confused with durable HAL truth. |
 | Virtual charger and smoke tooling | KEEP | `cpconsole` plus OCPP smoke binaries use `ocpp-go` against public OCPP/HTTP surfaces and exercise remote commands and meter/stop flow. | Hardware-independent, protocol-realistic regression capability. Scenarios and CMS-facing assumptions must evolve with approved contracts. |
-| Regression and build scripts | MODIFY | The scripts exercise legacy CMS callbacks/directory through `mockhooks`, prompt for PostgreSQL, and currently `Set-Location` to the legacy repository path. | One reproducible, loopback-only verification path that tests real charger/OCPP recovery behavior without mutating another repository. |
+| Regression and build scripts | MODIFY | The scripts exercise legacy CMS callbacks/directory through `mockhooks`, prompt for PostgreSQL, and derive this checkout root from their own script location. | One reproducible, loopback-only verification path that tests real charger/OCPP recovery behavior without mutating another repository. |
 
 ## Important Cross-Cutting Observations
 

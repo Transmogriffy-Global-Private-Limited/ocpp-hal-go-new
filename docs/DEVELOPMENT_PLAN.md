@@ -60,7 +60,7 @@ Verification:
 
 - complete documentation diff review;
 - `git diff --check`;
-- safe source checks in this checkout where they do not invoke the legacy-root scripts;
+- the build/regression scripts resolve their own checkout root and preserve their existing command sequence;
 - residue scan for legacy-purpose claims in changed project-memory files.
 
 ### New CMS/HAL Contract Design
@@ -96,6 +96,11 @@ Acceptance criteria before implementation starts:
 
 ## Deferred Remediation
 
-- Replace legacy-root assumptions in local build and regression automation without weakening loopback-only regression coverage.
 - Establish machine-readable contract and interactive documentation only after the first new service/API contract is approved; the inherited routes are not a suitable authoritative new-CMS specification.
 - Plan any Go module/import identity change separately because it has broad repository impact.
+
+## Completed Housekeeping
+
+- 2026-08-10: build and regression scripts now derive the repository root from
+  their script location, removing the legacy absolute-path defect without
+  changing their test sequence.

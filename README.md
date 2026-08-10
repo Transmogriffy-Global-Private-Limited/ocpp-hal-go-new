@@ -50,7 +50,7 @@ Read [docs/README.md](docs/README.md) for the canonical documentation map and [d
 
 ## Local Development
 
-Use `.env.example` only as a reference; do not commit `.env` or real secrets. Keep local listeners on loopback. The inherited source exposes build and regression scripts, but both currently contain a hard-coded legacy repository path and must not be run if that would operate on `OCPPHAL_Go`.
+Use `.env.example` only as a reference; do not commit `.env` or real secrets. Keep local listeners on loopback. The build and regression scripts derive the checkout root from their own script location, so they can be invoked from any current PowerShell directory without operating on `OCPPHAL_Go`.
 
 For safe source-level checks in this checkout:
 
