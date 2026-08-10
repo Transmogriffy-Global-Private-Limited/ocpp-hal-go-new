@@ -94,9 +94,70 @@ func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 	if tx.StopDeadlineAt == nil || !tx.StopDeadlineAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("deadline=%v", tx.StopDeadlineAt)
 	}
+	updated, accepted, err := s.UpdateV1MeterForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, 21345, now.Add(time.Second))
+	if err != nil || !accepted || updated.MeterSequence != 1 || updated.LatestMeterWh == nil || *updated.LatestMeterWh != 21345 {
+		t.Fatalf("accepted meter=%#v accepted=%v err=%v", updated, accepted, err)
+	}
+	regressive, accepted, err := s.UpdateV1MeterForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, 20000, now.Add(2*time.Second))
+	if err != nil || accepted || regressive.MeterSequence != 1 || *regressive.LatestMeterWh != 21345 {
+		t.Fatalf("regressive meter=%#v accepted=%v err=%v", regressive, accepted, err)
+	}
+	workflow, err := s.GetV1StopWorkflow(ctx, tx.HALTransactionID)
+	if err != nil || workflow.RequestedStopInitiator != "ENERGY_LIMIT" || workflow.State != "PERSISTED" {
+		t.Fatalf("energy workflow=%#v err=%v", workflow, err)
+	}
+	workflow, created, err := s.EnsureV1StopWorkflow(ctx, tx.HALTransactionID, "CPO", "cpo_requested")
+	if err != nil || created || workflow.RequestedStopInitiator != "ENERGY_LIMIT" {
+		t.Fatalf("racing workflow=%#v created=%v err=%v", workflow, created, err)
+	}
+	stopInput := V1StopCommandInput{CMSCommandID: NewUUIDString(), RequestDigest: "stop-digest", CPOID: input.CPOID, CMSChargingSessionID: NewUUIDString(), CMSChargerID: input.CMSChargerID, CMSConnectorID: input.Connectors[0].CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: 1, HALTransactionID: tx.HALTransactionID, OCPPTransactionID: ocppTransactionID, RequestedStopInitiator: "CPO", RequestedStopReason: "cpo_requested", CommandExpiresAt: now.Add(time.Minute)}
+	if stop, duplicate, err := s.CreateV1StopCommand(ctx, stopInput); err != nil || duplicate || stop.HALTransactionID != tx.HALTransactionID {
+		t.Fatalf("stop command=%#v duplicate=%v err=%v", stop, duplicate, err)
+	}
+	if stop, duplicate, err := s.CreateV1StopCommand(ctx, stopInput); err != nil || !duplicate || stop.HALTransactionID != tx.HALTransactionID {
+		t.Fatalf("duplicate stop command=%#v duplicate=%v err=%v", stop, duplicate, err)
+	}
+	completed, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 22400, "Remote", now.Add(3*time.Second))
+	if err != nil || completed.CompletedAt == nil || completed.MeterStopWh == nil || *completed.MeterStopWh != 22400 || completed.OCPPStopReason != "Remote" || completed.RequestedStopInitiator != "ENERGY_LIMIT" {
+		t.Fatalf("completion=%#v err=%v", completed, err)
+	}
+	facts, err := s.ClaimV1Facts(ctx, now.Add(time.Minute), 20)
+	if err != nil || len(facts) < 3 {
+		t.Fatalf("facts=%d err=%v", len(facts), err)
+	}
 	command, err = s.GetV1Command(ctx, commandInput.CMSCommandID)
 	if err != nil || command.State != "MATERIALIZED" {
 		t.Fatalf("materialized command=%#v err=%v", command, err)
+	}
+	if _, claimed, err := s.ClaimV1StartDelivery(ctx, commandInput.CMSCommandID); err != nil || claimed {
+		t.Fatalf("materialized command redispatch claim=%v err=%v", claimed, err)
+	}
+	recoveryInput := commandInput
+	recoveryInput.CMSCommandID, recoveryInput.CMSStartIntentID, recoveryInput.IDTag = NewUUIDString(), NewUUIDString(), "appv1_"+NewUUIDString()[:12]
+	recoveryInput.RequestDigest = "recovery-digest"
+	if _, _, err := s.CreateV1StartCommand(ctx, recoveryInput); err != nil {
+		t.Fatal(err)
+	}
+	if _, claimed, err := s.ClaimV1StartDelivery(ctx, recoveryInput.CMSCommandID); err != nil || !claimed {
+		t.Fatalf("recovery pending claim=%v err=%v", claimed, err)
+	}
+	if err := s.RecoverV1CommandDelivery(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := s.GetV1Command(ctx, recoveryInput.CMSCommandID); err != nil || recovered.State != "PERSISTED" {
+		t.Fatalf("pending recovery=%#v err=%v", recovered, err)
+	}
+	if _, claimed, err := s.ClaimV1StartDelivery(ctx, recoveryInput.CMSCommandID); err != nil || !claimed {
+		t.Fatalf("attempt claim=%v err=%v", claimed, err)
+	}
+	if _, err := s.BeginV1CommandDelivery(ctx, recoveryInput.CMSCommandID); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecoverV1CommandDelivery(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if recovered, err := s.GetV1Command(ctx, recoveryInput.CMSCommandID); err != nil || recovered.State != "AMBIGUOUS" {
+		t.Fatalf("attempt recovery=%#v err=%v", recovered, err)
 	}
 	if loaded, err := s.GetV1TransactionByStartIntent(ctx, commandInput.CMSStartIntentID); err != nil || loaded.OCPPTransactionID != ocppTransactionID {
 		t.Fatalf("transaction restart lookup=%#v err=%v", loaded, err)

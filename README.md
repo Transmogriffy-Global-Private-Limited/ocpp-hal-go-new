@@ -44,11 +44,11 @@ These are observations, not approved new-CMS contracts. See [docs/INHERITED_HAL_
 
 ## Development Status
 
-The active phase is the first HAL-side v1 vertical. The implemented portion is
-an authenticated PostgreSQL-backed mapping/start/reconciliation/runtime socket;
-it preserves inherited OCPP dispatch and StartTransaction truth. It does not
-yet deliver HAL facts, project MeterValues, coordinate stop conditions, or
-complete transactions for CMS consumption.
+The active phase is the first HAL-side v1 vertical. The HAL implementation now
+includes authenticated PostgreSQL-backed mapping/start/stop/reconciliation and
+runtime sockets, exact integer-Wh MeterValues, durable fact delivery, one stop
+workflow, and charger-originated completion truth. CMS projections, financial
+behavior, and deployment remain outside this repository.
 
 Read [docs/README.md](docs/README.md) for the canonical documentation map and [docs/DEVELOPMENT_PLAN.md](docs/DEVELOPMENT_PLAN.md) for approved sequencing.
 

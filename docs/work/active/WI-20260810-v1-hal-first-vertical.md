@@ -52,8 +52,9 @@ durable fact delivery.
 
 ## Contract impact
 
-- Implements the approved mapping/start/reconciliation/runtime portion of the
-  contract. Meter/fact/stop completion surfaces remain explicitly deferred.
+- Implements the approved HAL mapping/start/stop/reconciliation/runtime/fact
+  portion of the contract. CMS receiving projections and commercial behavior
+  remain outside this repository.
 
 ## Data and migration impact
 
@@ -63,11 +64,19 @@ durable fact delivery.
 
 ## Current state
 
-- PostgreSQL mapping, command, credential, transaction, and runtime state is
-  implemented and OCPP-wired. A virtual OCPP charger verifies RemoteStart,
-  Authorize, StartTransaction materialization, and runtime state.
-- Meter projection, fact delivery, unified stop coordination, StopTransaction
-  completion, and CMS consumer work are not implemented.
+- PostgreSQL mapping, command, credential, transaction, stop-workflow, runtime,
+  and fact-outbox state is implemented and OCPP-wired. Start commands record
+  durable pre-network delivery attempts; recovery returns only pre-attempt
+  windows to `PERSISTED` and marks attempted windows `AMBIGUOUS`.
+- MeterValues updates exact active v1 transactions in integer Wh, emits a
+  monotonic meter fact, and creates the shared energy-limit workflow. Durable
+  deadline enforcement creates the same workflow. CMS customer/CPO stop joins
+  it by exact transaction identity; StopTransaction is authoritative completion.
+- The opt-in fact worker delivers immutable facts to the configured CMS receiver
+  with separate outbound credentials and retained retry/reconciliation state.
+- Remaining work is verification expansion: real full lifecycle, fact receiver,
+  concurrent stop, and restart/crash scenarios. CMS consumer work is not in
+  scope.
 
 ## Verification
 
@@ -79,10 +88,9 @@ durable fact delivery.
 
 ## Handoff
 
-Continue in the dependency order in `docs/DEVELOPMENT_PLAN.md`: meter
-projection, durable fact delivery, unified stop coordination, completion truth,
-then lifecycle torture tests. Do not treat this partial HAL vertical as the full
-charging lifecycle.
+Complete the remaining verification matrix before archiving this item. Do not
+claim CMS integration or customer-facing completion; this repository only owns
+the HAL side and the receiver contract.
 
 ## Completion
 

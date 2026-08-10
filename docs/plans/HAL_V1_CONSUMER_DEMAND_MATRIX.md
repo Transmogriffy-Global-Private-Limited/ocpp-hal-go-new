@@ -79,8 +79,10 @@ HAL.
 
 ## Current Implementation Boundary
 
-Opaque bearer service authentication, mapping enrollment, durable start
-commands/credentials, StartTransaction materialization, reconciliation reads,
-and charger/connector runtime reads are now implemented. The table's meter,
-fact-delivery, and stop entries remain required but deferred. No inherited API
-key is reused for v1.
+Opaque bearer service authentication, mapping enrollment, durable start/stop
+commands, StartTransaction materialization, exact integer-Wh MeterValues,
+deadline/energy-limit stop coordination, StopTransaction completion,
+reconciliation reads, charger/connector runtime, and durable fact delivery are
+implemented on the HAL side. No inherited API key is reused for v1. CMS
+consumer projections, commercial behavior, and production deployment remain
+separate work.

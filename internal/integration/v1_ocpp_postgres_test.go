@@ -126,10 +126,9 @@ func TestV1PostgresHTTPToOCPPStart(t *testing.T) {
 				t.Fatalf("command=%#v err=%v", command, err)
 			}
 			runtime, err := v1Store.GetV1ChargerRuntime(ctx, clientID)
-			if err != nil || runtime.ConnectionState != "ONLINE" || len(runtime.Connectors) != 1 || runtime.Connectors[0].Status != "Charging" {
-				t.Fatalf("runtime=%#v err=%v", runtime, err)
+			if err == nil && runtime.ConnectionState == "ONLINE" && len(runtime.Connectors) == 1 && runtime.Connectors[0].Status == "Charging" {
+				return
 			}
-			return
 		}
 		time.Sleep(100 * time.Millisecond)
 	}

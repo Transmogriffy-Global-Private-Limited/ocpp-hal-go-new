@@ -19,6 +19,7 @@ import (
 	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/ocpp16hal"
 	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/state"
 	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/store"
+	"github.com/Transmogriffy-Global-Private-Limited/OCPPHAL_Go/internal/v1facts"
 )
 
 func main() {
@@ -54,6 +55,36 @@ func main() {
 	hal := ocpp16hal.New(registry, txStore, hookManager, logger)
 	hal.SetV1Store(v1Store)
 	hookManager.SetLimitStopper(hal)
+	workerCtx, cancelWorkers := context.WithCancel(context.Background())
+	defer cancelWorkers()
+	if v1Store != nil {
+		if err := hal.RecoverV1Lifecycle(workerCtx); err != nil {
+			logger.Error("failed to recover v1 lifecycle", "error", err)
+			os.Exit(1)
+		}
+		go func() {
+			ticker := time.NewTicker(2 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-workerCtx.Done():
+					return
+				case <-ticker.C:
+					if err := hal.EnforceV1Deadlines(workerCtx); err != nil {
+						logger.Warn("v1 deadline pass failed", "error", err)
+					}
+				}
+			}
+		}()
+		factWorker, err := v1facts.New(cfg, v1Store, logger)
+		if err != nil {
+			logger.Error("failed to initialize v1 fact delivery", "error", err)
+			os.Exit(1)
+		}
+		if factWorker != nil {
+			go factWorker.Start(workerCtx)
+		}
+	}
 
 	go func() {
 		hal.Start(cfg.OCPPListenPort, cfg.OCPPListenPath)
@@ -94,6 +125,7 @@ func main() {
 	}
 
 	hal.Stop()
+	cancelWorkers()
 	hookManager.Stop()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

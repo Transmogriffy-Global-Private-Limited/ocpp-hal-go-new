@@ -39,9 +39,12 @@ type Config struct {
 	ChargerDataURL             string
 	ChargerDataCacheTTLSeconds int
 
-	V1Enabled        bool
-	V1CMSBearerToken string
-	APIDocsEnabled   bool
+	V1Enabled             bool
+	V1CMSBearerToken      string
+	V1FactDeliveryEnabled bool
+	V1CMSFactsURL         string
+	V1CMSFactsBearerToken string
+	APIDocsEnabled        bool
 }
 
 func Load() Config {
@@ -77,9 +80,12 @@ func Load() Config {
 		ChargerDataURL:             os.Getenv("APICHARGERDATA"),
 		ChargerDataCacheTTLSeconds: envInt("CHARGER_DATA_CACHE_TTL_SECONDS", 7200),
 
-		V1Enabled:        envBool("HAL_V1_ENABLED", false),
-		V1CMSBearerToken: os.Getenv("HAL_V1_CMS_BEARER_TOKEN"),
-		APIDocsEnabled:   envBool("API_DOCS_ENABLED", false),
+		V1Enabled:             envBool("HAL_V1_ENABLED", false),
+		V1CMSBearerToken:      os.Getenv("HAL_V1_CMS_BEARER_TOKEN"),
+		V1FactDeliveryEnabled: envBool("HAL_V1_FACT_DELIVERY_ENABLED", false),
+		V1CMSFactsURL:         os.Getenv("HAL_V1_CMS_FACTS_URL"),
+		V1CMSFactsBearerToken: os.Getenv("HAL_V1_CMS_FACT_BEARER_TOKEN"),
+		APIDocsEnabled:        envBool("API_DOCS_ENABLED", false),
 	}
 }
 

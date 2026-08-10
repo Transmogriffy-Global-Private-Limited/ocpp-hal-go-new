@@ -28,12 +28,13 @@ The following documents describe copied implementation behavior and tooling. The
 
 The v1 human-readable service contract is
 [CMS/HAL Charging Integration v1](contracts/CMS_HAL_CHARGING_V1.md). It is
-approved architecture with a partially implemented HAL-side start/runtime
-vertical. The machine-readable source is `internal/httpapi/v1_openapi.json`;
+approved architecture with the HAL-side lifecycle implemented. The
+machine-readable source is `internal/httpapi/v1_openapi.json`;
 when `API_DOCS_ENABLED=true`, it is served as `/openapi.json` and a loopback
-interactive explorer is served at `/docs`. Meter/fact/stop paths remain target
-contract work. Do not use inherited REST, callback, or WebSocket documentation
-as a substitute for v1.
+interactive explorer is served at `/docs`. The contract covers mapping, start,
+stop, exact reconciliation, live meter/runtime facts, and fact delivery. Do
+not use inherited REST, callback, or WebSocket documentation as a substitute
+for v1.
 
 The [consumer-demand matrix](plans/HAL_V1_CONSUMER_DEMAND_MATRIX.md) is the
 implementation prioritization source for the active first vertical slice. It

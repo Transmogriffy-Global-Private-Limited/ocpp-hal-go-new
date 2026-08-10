@@ -50,6 +50,7 @@ if ($databaseUrl -notmatch '^postgres(ql)?://') {
 $apiKey          = New-RandomSecret
 $apiAuthKey      = New-RandomSecret
 $v1CmsBearer     = New-RandomSecret 64
+$v1FactsBearer   = New-RandomSecret 64
 
 # Unique simulator identifiers, useful when multiple test environments exist
 $suffix = ([Guid]::NewGuid().ToString('N')).Substring(0, 8).ToUpperInvariant()
@@ -77,6 +78,12 @@ APIAUTHKEY=$apiAuthKey
 
 # New CMS -> HAL v1 service auth
 HAL_V1_CMS_BEARER_TOKEN=$v1CmsBearer
+
+# HAL -> CMS fact delivery remains opt-in. Use a local receiver for testing;
+# never point this generated file at the inherited CMS.
+HAL_V1_FACT_DELIVERY_ENABLED=false
+HAL_V1_CMS_FACTS_URL=
+HAL_V1_CMS_FACT_BEARER_TOKEN=$v1FactsBearer
 
 # Logging
 LOG_LEVEL=debug
@@ -141,6 +148,7 @@ Write-Host "Generated:"
 Write-Host "  API_KEY"
 Write-Host "  APIAUTHKEY"
 Write-Host "  HAL_V1_CMS_BEARER_TOKEN"
+Write-Host "  HAL_V1_CMS_FACT_BEARER_TOKEN"
 Write-Host "  local simulator/test identities"
 Write-Host ""
 Write-Host "DATABASE_URL was written but not printed."

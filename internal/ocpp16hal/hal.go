@@ -682,6 +682,9 @@ func isV1AppIDTag(idTag string) bool {
 
 func (h *HAL) OnMeterValues(chargePointID string, request *core.MeterValuesRequest) (*core.MeterValuesConfirmation, error) {
 	h.registry.Touch(chargePointID)
+	if h.HandleV1MeterValues(chargePointID, request) {
+		return core.NewMeterValuesConfirmation(), nil
+	}
 
 	meterValueWh, ok := extractMeterValueWh(request)
 	if ok {
@@ -719,6 +722,9 @@ func (h *HAL) OnMeterValues(chargePointID string, request *core.MeterValuesReque
 
 func (h *HAL) OnStopTransaction(chargePointID string, request *core.StopTransactionRequest) (*core.StopTransactionConfirmation, error) {
 	h.registry.Touch(chargePointID)
+	if h.HandleV1StopTransaction(chargePointID, request) {
+		return core.NewStopTransactionConfirmation(), nil
+	}
 
 	txID := int64(request.TransactionId)
 

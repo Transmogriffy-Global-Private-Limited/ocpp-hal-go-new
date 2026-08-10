@@ -7,12 +7,13 @@ the authoritative human-readable v1 contract for charging integration between
 `ev-cms-backend-new` (CMS) and `ocpp-hal-go-new` (HAL).
 
 Implemented in this repository: authenticated mapping enrollment, durable
-PostgreSQL start commands and one-use `appv1_` credentials, RemoteStart
+PostgreSQL start/stop commands and one-use `appv1_` credentials, RemoteStart
 delivery, `Authorize` validation, charger-originated StartTransaction
-materialization, command/transaction reconciliation, and mapped charger and
-connector runtime queries. Meter projection, facts/outbox delivery, stop
-coordination, StopTransaction completion, and CMS-side consumption remain
-future slices. This status statement outranks older target-only wording below.
+materialization, exact MeterValues and StopTransaction truth, command/
+transaction reconciliation, mapped charger/connector runtime, and durable fact
+outbox delivery are implemented on the HAL side. CMS-side consumption remains a
+separate repository slice. This status statement outranks older target-only
+wording below.
 
 This contract does not replace a legacy route or callback merely by existing.
 The legacy `OCPPHAL_Go` to old-CMS integration remains outside its scope.
@@ -650,11 +651,13 @@ After StartTransaction establishes `meter_start_wh`, HAL evaluates delivered
 energy from that baseline and executes a controlled idempotent RemoteStop
 workflow at the approved enforcement threshold.
 
-Sampling and stop latency create physical overshoot. HAL must use a conservative
-guard margin or equivalent, record the decision, and retain terminal/recovery
-state. The exact guard formula remains open pending charger power/sampling
-evidence. The inherited retry count is not contractual; controlled,
-idempotent, observable delivery with terminal/reconciliation semantics is.
+Sampling and stop latency create physical overshoot. V1 deliberately uses the
+first accepted cumulative sample at or above the configured integer-Wh limit;
+it does not invent a predictive power guard. HAL records the stop workflow and
+actual final meter without clamping. A later predictive guard needs separate
+charger-capability evidence. The inherited retry count is not contractual;
+controlled, idempotent, observable delivery with terminal/reconciliation
+semantics is.
 
 ### 11.2 Time-limit enforcement
 

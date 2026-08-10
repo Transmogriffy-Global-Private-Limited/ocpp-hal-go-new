@@ -13,6 +13,7 @@ var (
 	ErrV1IdempotencyConflict = errors.New("v1 command idempotency conflict")
 	ErrV1MappingNotFound     = errors.New("v1 mapping not found")
 	ErrV1MappingConflict     = errors.New("v1 mapping conflict")
+	ErrV1DeliveryNotReady    = errors.New("v1 delivery is not ready")
 )
 
 type V1StartCommandInput struct {
@@ -142,6 +143,7 @@ type V1Transaction struct {
 	ActualStartedAt        time.Time
 	MeterStartWh           int64
 	LatestMeterWh          *int64
+	ConsumedWh             *int64
 	MeterObservedAt        *time.Time
 	MeterSequence          int64
 	EnergyLimitWh          *int64
@@ -153,6 +155,36 @@ type V1Transaction struct {
 	OCPPStopReason         string
 	CompletedAt            *time.Time
 	MeterStopWh            *int64
+}
+
+type V1StopWorkflow struct {
+	HALTransactionID       string
+	RequestedStopInitiator string
+	RequestedStopReason    string
+	State                  string
+	DeliveryAttempts       int
+	LastOCPPResult         string
+	LastErrorCategory      string
+	LastErrorDetail        string
+	CreatedAt              time.Time
+	UpdatedAt              time.Time
+	CompletedAt            *time.Time
+}
+
+type V1Fact struct {
+	FactID         string
+	FactType       string
+	SchemaVersion  int
+	OccurredAt     time.Time
+	Producer       string
+	ContentSHA256  string
+	Payload        []byte
+	Status         string
+	Retries        int
+	NextRetryAt    time.Time
+	ClaimedUntil   *time.Time
+	DeliveryStatus *int
+	LastError      string
 }
 
 type V1ChargerRuntime struct {
@@ -202,13 +234,26 @@ type V1Store interface {
 	GetV1Credential(context.Context, string) (*V1Credential, error)
 	MaterializeV1Start(context.Context, V1StartMaterialization) (*V1Transaction, bool, error)
 	UpdateV1Meter(context.Context, string, int64, int64, time.Time) (*V1Transaction, error)
+	UpdateV1MeterForOCPP(context.Context, string, int64, int64, time.Time) (*V1Transaction, bool, error)
 	RequestV1Stop(context.Context, string, string, string) (*V1Transaction, bool, error)
 	CompleteV1Transaction(context.Context, string, int64, string, time.Time) (*V1Transaction, error)
 	GetV1Transaction(context.Context, string) (*V1Transaction, error)
 	GetV1TransactionByStartIntent(context.Context, string) (*V1Transaction, error)
+	GetV1TransactionByOCPP(context.Context, string, int64) (*V1Transaction, error)
 	AuthorizeV1Credential(context.Context, string, string, time.Time) error
 	ClaimV1StartDelivery(context.Context, string) (*V1RemoteCommand, bool, error)
+	BeginV1CommandDelivery(context.Context, string) (*V1RemoteCommand, error)
 	MarkV1CommandDelivery(context.Context, string, string, string, string) (*V1RemoteCommand, error)
+	RecoverV1CommandDelivery(context.Context) error
+	EnsureV1StopWorkflow(context.Context, string, string, string) (*V1StopWorkflow, bool, error)
+	GetV1StopWorkflow(context.Context, string) (*V1StopWorkflow, error)
+	ClaimV1StopDelivery(context.Context, string) (*V1StopWorkflow, bool, error)
+	BeginV1StopDelivery(context.Context, string) (*V1StopWorkflow, error)
+	MarkV1StopDelivery(context.Context, string, string, string, string) (*V1StopWorkflow, error)
+	RecoverV1StopDelivery(context.Context) error
+	ListV1OverdueTransactions(context.Context, time.Time, int) ([]*V1Transaction, error)
+	ClaimV1Facts(context.Context, time.Time, int) ([]V1Fact, error)
+	MarkV1FactDelivery(context.Context, string, int, bool, bool, string, time.Time) error
 	RecordV1ChargerConnection(context.Context, string, int64, bool, time.Time) error
 	RecordV1ConnectorStatus(context.Context, V1ConnectorRuntime) error
 	GetV1ChargerRuntime(context.Context, string) (*V1ChargerRuntime, error)

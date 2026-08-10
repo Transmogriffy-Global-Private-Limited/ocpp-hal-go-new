@@ -6,12 +6,12 @@ This is the canonical architecture record for `ocpp-hal-go-new` and
 `ev-cms-backend-new`. The approved v1 human-readable service contract is
 [CMS/HAL Charging Integration v1](contracts/CMS_HAL_CHARGING_V1.md).
 
-The v1 architecture is approved. The first HAL-side vertical now implements
-additive migrations, opaque bearer service authentication, mapping enrollment,
-durable PostgreSQL start commands/credentials/transactions, reconciliation
-queries, and mapped runtime projections. It does not implement fact delivery,
-meter projection, stop coordination, CMS-side projection, deployment topology,
-or legacy-surface retirement.
+The v1 architecture is approved. The HAL-side first vertical implements
+additive PostgreSQL state, opaque bearer service authentication, mapping
+enrollment, durable start/stop command coordination, charger-originated
+start/completion truth, integer-Wh meter facts, live runtime projections,
+reconciliation queries, and PostgreSQL outbox delivery. CMS-side projection,
+deployment topology, and legacy-surface retirement remain outside this work.
 
 ## Permanent Approved Invariants
 
@@ -128,8 +128,9 @@ implementation:
 
 1. Credential rotation and deployment topology.
 2. Wallet overshoot, debt, or negative-balance policy.
-3. Exact energy stop-guard formula and supporting charger power/sampling
-   evidence.
+3. Any future predictive energy stop-guard formula and supporting charger
+   power/sampling evidence. V1 uses the approved simple accepted-sample
+   threshold and preserves actual overshoot.
 4. RFID lifecycle and offline authorization policy.
 5. Generalized realtime/live-availability projection.
 6. Legacy REST/callback/WebSocket retirement sequencing.

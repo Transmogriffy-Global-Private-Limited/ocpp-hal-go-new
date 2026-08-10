@@ -174,8 +174,56 @@ func (s *PostgresStore) CreateV1StartCommand(ctx context.Context, input V1StartC
 	return command, false, err
 }
 
-func (s *PostgresStore) CreateV1StopCommand(context.Context, V1StopCommandInput) (*V1RemoteCommand, bool, error) {
-	return nil, false, fmt.Errorf("v1 stop commands are not implemented in this slice")
+func (s *PostgresStore) CreateV1StopCommand(ctx context.Context, input V1StopCommandInput) (*V1RemoteCommand, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	transaction, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, input.HALTransactionID)
+	if err != nil {
+		return nil, false, err
+	}
+	if transaction.CompletedAt != nil || transaction.OCPPTransactionID != input.OCPPTransactionID || transaction.CPOID != input.CPOID || transaction.CMSChargerID != input.CMSChargerID || transaction.CMSConnectorID != input.CMSConnectorID || transaction.ChargerOCPPIdentity != input.ChargerOCPPIdentity || transaction.OCPPConnectorNumber != input.OCPPConnectorNumber {
+		return nil, false, ErrV1TransactionNotFound
+	}
+	workflow, _, err := s.ensureV1StopWorkflowTx(ctx, tx, transaction, input.RequestedStopInitiator, input.RequestedStopReason)
+	if err != nil {
+		return nil, false, err
+	}
+	commandID := NewUUIDString()
+	result, err := tx.ExecContext(ctx, `INSERT INTO v1_remote_commands (id,cms_command_id,kind,request_digest,cpo_id,customer_id,correlation_id,cms_charging_session_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,command_expires_at,requested_stop_initiator,requested_stop_reason,hal_transaction_id,ocpp_transaction_id,stop_workflow_transaction_id,state) VALUES ($1,$2,'STOP',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'PERSISTED') ON CONFLICT (cms_command_id) DO NOTHING`, commandID, input.CMSCommandID, input.RequestDigest, input.CPOID, nullString(input.CustomerID), nullString(input.CorrelationID), input.CMSChargingSessionID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.CommandExpiresAt, input.RequestedStopInitiator, input.RequestedStopReason, input.HALTransactionID, input.OCPPTransactionID, workflow.HALTransactionID)
+	if err != nil {
+		return nil, false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	if rows == 0 {
+		command, err := s.getV1CommandWith(ctx, txByQueryer{tx}, input.CMSCommandID)
+		if err != nil {
+			return nil, false, err
+		}
+		if command.RequestDigest != input.RequestDigest {
+			return nil, false, ErrV1IdempotencyConflict
+		}
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		return command, true, nil
+	}
+	command, err := s.getV1CommandWith(ctx, txByQueryer{tx}, input.CMSCommandID)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, time.Now().UTC(), v1CommandFact(command)); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return command, false, nil
 }
 
 func (s *PostgresStore) GetV1Command(ctx context.Context, cmsCommandID string) (*V1RemoteCommand, error) {
@@ -292,7 +340,7 @@ func (s *PostgresStore) MaterializeV1Start(ctx context.Context, input V1StartMat
 	var command V1RemoteCommand
 	var energy, duration sql.NullInt64
 	var customer sql.NullString
-	err = tx.QueryRowContext(ctx, `SELECT cms_command_id::text,command_expires_at,energy_limit_wh,max_duration_seconds,customer_id::text FROM v1_remote_commands WHERE kind='START' AND id_tag=$1 FOR UPDATE`, input.IDTag).Scan(&command.CMSCommandID, &command.CommandExpiresAt, &energy, &duration, &customer)
+	err = tx.QueryRowContext(ctx, `SELECT id::text,cms_command_id::text,command_expires_at,energy_limit_wh,max_duration_seconds,customer_id::text FROM v1_remote_commands WHERE kind='START' AND id_tag=$1 FOR UPDATE`, input.IDTag).Scan(&command.HALCommandID, &command.CMSCommandID, &command.CommandExpiresAt, &energy, &duration, &customer)
 	if err != nil {
 		return nil, false, err
 	}
@@ -328,6 +376,17 @@ func (s *PostgresStore) MaterializeV1Start(ctx context.Context, input V1StartMat
 	if err != nil {
 		return nil, false, err
 	}
+	materialized := &V1Transaction{HALTransactionID: halID, CMSStartIntentID: c.CMSStartIntentID, CMSCommandID: command.CMSCommandID, CPOID: c.CPOID, CustomerID: command.CustomerID, CMSChargerID: c.CMSChargerID, CMSConnectorID: c.CMSConnectorID, ChargerOCPPIdentity: c.ChargerOCPPIdentity, OCPPConnectorNumber: c.OCPPConnectorNumber, IDTag: c.IDTag, OCPPTransactionID: input.OCPPTransactionID, ActualStartedAt: input.ActualStartedAt, MeterStartWh: input.MeterStartWh, EnergyLimitWh: command.EnergyLimitWh, MaxDurationSeconds: command.MaxDurationSeconds}
+	if deadlineTime, ok := deadline.(time.Time); ok {
+		materialized.StopDeadlineAt = &deadlineTime
+	}
+	if err := s.insertV1FactTx(ctx, tx, "transaction.started", halID, nil, input.ActualStartedAt, v1StartedFact(materialized, command.HALCommandID)); err != nil {
+		return nil, false, err
+	}
+	materializedCommand := &V1RemoteCommand{HALCommandID: command.HALCommandID, CMSCommandID: command.CMSCommandID, Kind: "START", ChargerOCPPIdentity: c.ChargerOCPPIdentity, OCPPConnectorNumber: c.OCPPConnectorNumber, HALTransactionID: halID, OCPPTransactionID: &input.OCPPTransactionID, State: "MATERIALIZED", UpdatedAt: input.ActualStartedAt}
+	if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, input.ActualStartedAt, v1CommandFact(materializedCommand)); err != nil {
+		return nil, false, err
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, false, err
 	}
@@ -347,15 +406,6 @@ func nullString(v string) any {
 	return v
 }
 
-func (s *PostgresStore) UpdateV1Meter(context.Context, string, int64, int64, time.Time) (*V1Transaction, error) {
-	return nil, fmt.Errorf("v1 meter is deferred")
-}
-func (s *PostgresStore) RequestV1Stop(context.Context, string, string, string) (*V1Transaction, bool, error) {
-	return nil, false, fmt.Errorf("v1 stop is deferred")
-}
-func (s *PostgresStore) CompleteV1Transaction(context.Context, string, int64, string, time.Time) (*V1Transaction, error) {
-	return nil, fmt.Errorf("v1 stop is deferred")
-}
 func (s *PostgresStore) GetV1Transaction(ctx context.Context, id string) (*V1Transaction, error) {
 	return s.getV1TransactionByID(ctx, s.db, id)
 }
@@ -391,6 +441,10 @@ func (s *PostgresStore) getV1TransactionBy(ctx context.Context, q v1TransactionQ
 	if latestVal.Valid {
 		v := latestVal.Int64
 		t.LatestMeterWh = &v
+		if v >= t.MeterStartWh {
+			consumed := v - t.MeterStartWh
+			t.ConsumedWh = &consumed
+		}
 	}
 	if meterObs.Valid {
 		t.MeterObservedAt = &meterObs.Time
@@ -430,15 +484,32 @@ func (s *PostgresStore) MarkV1CommandDelivery(ctx context.Context, id, status, r
 		state = "OCPP_REJECTED"
 		category = "ocpp"
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE v1_remote_commands SET state=$2,delivery_attempts=delivery_attempts+1,last_ocpp_result=$3,last_error_category=$4,last_error_detail=$5,updated_at=NOW() WHERE cms_command_id=$1 AND state NOT IN ('MATERIALIZED','SUPERSEDED')`, id, state, result, nullString(category), nullString(detail))
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
-	return s.GetV1Command(ctx, id)
+	defer tx.Rollback()
+	resultUpdate, err := tx.ExecContext(ctx, `UPDATE v1_remote_commands SET state=$2,last_ocpp_result=$3,last_error_category=$4,last_error_detail=$5,claimed_until=NULL,updated_at=NOW() WHERE cms_command_id=$1 AND state NOT IN ('MATERIALIZED','SUPERSEDED')`, id, state, nullString(result), nullString(category), nullString(detail))
+	if err != nil {
+		return nil, err
+	}
+	command, err := s.getV1CommandWith(ctx, txByQueryer{tx}, id)
+	if err != nil {
+		return nil, err
+	}
+	if rows, _ := resultUpdate.RowsAffected(); rows == 1 {
+		if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, command.UpdatedAt, v1CommandFact(command)); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return command, nil
 }
 
 func (s *PostgresStore) ClaimV1StartDelivery(ctx context.Context, cmsCommandID string) (*V1RemoteCommand, bool, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE v1_remote_commands SET state='PENDING_DELIVERY', updated_at=NOW() WHERE cms_command_id=$1 AND kind='START' AND state='PERSISTED'`, cmsCommandID)
+	result, err := s.db.ExecContext(ctx, `UPDATE v1_remote_commands SET state='PENDING_DELIVERY',claimed_until=NOW()+INTERVAL '30 seconds',updated_at=NOW() WHERE cms_command_id=$1 AND kind='START' AND state='PERSISTED'`, cmsCommandID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -450,17 +521,80 @@ func (s *PostgresStore) ClaimV1StartDelivery(ctx context.Context, cmsCommandID s
 	return command, rows == 1, err
 }
 
+func (s *PostgresStore) BeginV1CommandDelivery(ctx context.Context, cmsCommandID string) (*V1RemoteCommand, error) {
+	_, err := s.db.ExecContext(ctx, `UPDATE v1_remote_commands SET state='DELIVERY_ATTEMPTED',delivery_attempts=delivery_attempts+1,claimed_until=NOW()+INTERVAL '2 minutes',updated_at=NOW() WHERE cms_command_id=$1 AND kind='START' AND state='PENDING_DELIVERY'`, cmsCommandID)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetV1Command(ctx, cmsCommandID)
+}
+
 func (s *PostgresStore) RecordV1ChargerConnection(ctx context.Context, identity string, generation int64, online bool, at time.Time) error {
 	state := "OFFLINE"
 	if online {
 		state = "ONLINE"
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO v1_charger_runtime (charger_ocpp_identity,connection_state,connection_generation,connection_sequence,connected_at,last_observed_at,updated_at) VALUES ($1,$2,$3,1,CASE WHEN $2='ONLINE' THEN $4::timestamptz ELSE NULL END,$4::timestamptz,$4::timestamptz) ON CONFLICT (charger_ocpp_identity) DO UPDATE SET connection_state=EXCLUDED.connection_state,connection_generation=EXCLUDED.connection_generation,connection_sequence=v1_charger_runtime.connection_sequence+1,connected_at=CASE WHEN EXCLUDED.connection_state='ONLINE' THEN EXCLUDED.last_observed_at ELSE v1_charger_runtime.connected_at END,last_observed_at=EXCLUDED.last_observed_at,updated_at=EXCLUDED.updated_at WHERE EXCLUDED.connection_generation>=v1_charger_runtime.connection_generation`, identity, state, generation, at)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `INSERT INTO v1_charger_runtime (charger_ocpp_identity,connection_state,connection_generation,connection_sequence,connected_at,last_observed_at,updated_at) VALUES ($1,$2,$3,1,CASE WHEN $2='ONLINE' THEN $4::timestamptz ELSE NULL END,$4::timestamptz,$4::timestamptz) ON CONFLICT (charger_ocpp_identity) DO UPDATE SET connection_state=EXCLUDED.connection_state,connection_generation=EXCLUDED.connection_generation,connection_sequence=v1_charger_runtime.connection_sequence+1,connected_at=CASE WHEN EXCLUDED.connection_state='ONLINE' THEN EXCLUDED.last_observed_at ELSE v1_charger_runtime.connected_at END,last_observed_at=EXCLUDED.last_observed_at,updated_at=EXCLUDED.updated_at WHERE EXCLUDED.connection_generation>=v1_charger_runtime.connection_generation`, identity, state, generation, at)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return tx.Commit()
+	}
+	var cpoID, chargerID string
+	err = tx.QueryRowContext(ctx, `SELECT cpo_id::text,cms_charger_id::text FROM v1_charger_mappings WHERE charger_ocpp_identity=$1`, identity).Scan(&cpoID, &chargerID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tx.Commit()
+	}
+	if err != nil {
+		return err
+	}
+	var sequence int64
+	if err := tx.QueryRowContext(ctx, `SELECT connection_sequence FROM v1_charger_runtime WHERE charger_ocpp_identity=$1`, identity).Scan(&sequence); err != nil {
+		return err
+	}
+	if err := s.insertV1FactTx(ctx, tx, "charger.connection.updated", identity, &sequence, at, v1ConnectionFact(cpoID, chargerID, identity, state, generation, sequence, at)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *PostgresStore) RecordV1ConnectorStatus(ctx context.Context, r V1ConnectorRuntime) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO v1_connector_runtime (charger_ocpp_identity,ocpp_connector_number,status,error_code,info,vendor_id,vendor_error_code,observed_at,status_sequence,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,NOW()) ON CONFLICT (charger_ocpp_identity,ocpp_connector_number) DO UPDATE SET status=EXCLUDED.status,error_code=EXCLUDED.error_code,info=EXCLUDED.info,vendor_id=EXCLUDED.vendor_id,vendor_error_code=EXCLUDED.vendor_error_code,observed_at=EXCLUDED.observed_at,status_sequence=v1_connector_runtime.status_sequence+1,updated_at=NOW()`, r.ChargerOCPPIdentity, r.OCPPConnectorNumber, r.Status, nullString(r.ErrorCode), nullString(r.Info), nullString(r.VendorID), nullString(r.VendorErrorCode), r.ObservedAt)
-	return err
+	if r.ObservedAt == nil {
+		now := time.Now().UTC()
+		r.ObservedAt = &now
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `INSERT INTO v1_connector_runtime (charger_ocpp_identity,ocpp_connector_number,status,error_code,info,vendor_id,vendor_error_code,observed_at,status_sequence,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,NOW()) ON CONFLICT (charger_ocpp_identity,ocpp_connector_number) DO UPDATE SET status=EXCLUDED.status,error_code=EXCLUDED.error_code,info=EXCLUDED.info,vendor_id=EXCLUDED.vendor_id,vendor_error_code=EXCLUDED.vendor_error_code,observed_at=EXCLUDED.observed_at,status_sequence=v1_connector_runtime.status_sequence+1,updated_at=NOW()`, r.ChargerOCPPIdentity, r.OCPPConnectorNumber, r.Status, nullString(r.ErrorCode), nullString(r.Info), nullString(r.VendorID), nullString(r.VendorErrorCode), r.ObservedAt)
+	if err != nil {
+		return err
+	}
+	err = tx.QueryRowContext(ctx, `SELECT cpo_id::text,cms_charger_id::text,cms_connector_id::text FROM v1_connector_mappings WHERE charger_ocpp_identity=$1 AND ocpp_connector_number=$2`, r.ChargerOCPPIdentity, r.OCPPConnectorNumber).Scan(&r.CPOID, &r.CMSChargerID, &r.CMSConnectorID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tx.Commit()
+	}
+	if err != nil {
+		return err
+	}
+	if err = tx.QueryRowContext(ctx, `SELECT status_sequence FROM v1_connector_runtime WHERE charger_ocpp_identity=$1 AND ocpp_connector_number=$2`, r.ChargerOCPPIdentity, r.OCPPConnectorNumber).Scan(&r.StatusSequence); err != nil {
+		return err
+	}
+	if err = s.insertV1FactTx(ctx, tx, "connector.status.updated", r.CMSConnectorID, &r.StatusSequence, *r.ObservedAt, v1StatusFact(&r)); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 func (s *PostgresStore) GetV1ChargerRuntime(ctx context.Context, identity string) (*V1ChargerRuntime, error) {
 	r := &V1ChargerRuntime{}
@@ -512,6 +646,38 @@ func (s *PostgresStore) GetV1ConnectorRuntime(ctx context.Context, id string) (*
 	return r, nil
 }
 func (s *PostgresStore) ResetV1ConnectionRuntime(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE v1_charger_runtime SET connection_state='UNKNOWN',updated_at=NOW()`)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `UPDATE v1_charger_runtime r SET connection_state='UNKNOWN',connection_sequence=connection_sequence+1,updated_at=NOW() FROM v1_charger_mappings m WHERE r.charger_ocpp_identity=m.charger_ocpp_identity AND r.connection_state <> 'UNKNOWN' RETURNING m.cpo_id::text,m.cms_charger_id::text,r.charger_ocpp_identity,r.connection_generation,r.connection_sequence,r.updated_at`)
+	if err != nil {
+		return err
+	}
+	type resetRuntime struct {
+		cpoID, chargerID, identity string
+		generation, sequence       int64
+		at                         time.Time
+	}
+	var changed []resetRuntime
+	for rows.Next() {
+		var item resetRuntime
+		if err := rows.Scan(&item.cpoID, &item.chargerID, &item.identity, &item.generation, &item.sequence, &item.at); err != nil {
+			rows.Close()
+			return err
+		}
+		changed = append(changed, item)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	for _, item := range changed {
+		if err := s.insertV1FactTx(ctx, tx, "charger.connection.updated", item.identity, &item.sequence, item.at, v1ConnectionFact(item.cpoID, item.chargerID, item.identity, "UNKNOWN", item.generation, item.sequence, item.at)); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }

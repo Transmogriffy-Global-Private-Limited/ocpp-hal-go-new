@@ -42,10 +42,27 @@ type v1StartRequest struct {
 	MaxDurationSeconds  int64     `json:"max_duration_seconds"`
 }
 
+type v1StopRequest struct {
+	CMSCommandID           string    `json:"cms_command_id"`
+	CMSChargingSessionID   string    `json:"cms_charging_session_id"`
+	CPOID                  string    `json:"cpo_id"`
+	CustomerID             string    `json:"customer_id"`
+	CMSChargerID           string    `json:"cms_charger_id"`
+	CMSConnectorID         string    `json:"cms_connector_id"`
+	ChargerOCPPIdentity    string    `json:"charger_ocpp_identity"`
+	OCPPConnectorNumber    int       `json:"ocpp_connector_number"`
+	HALTransactionID       string    `json:"hal_transaction_id"`
+	OCPPTransactionID      int64     `json:"ocpp_transaction_id"`
+	RequestedStopInitiator string    `json:"requested_stop_initiator"`
+	RequestedStopReason    string    `json:"requested_stop_reason"`
+	CommandExpiresAt       time.Time `json:"command_expires_at"`
+}
+
 func (s *Server) registerV1Routes(mux *http.ServeMux) {
 	guard := s.requireV1Service
 	mux.Handle("/v1/mappings/chargers/", guard(http.HandlerFunc(s.v1Mapping)))
 	mux.Handle("/v1/remote-commands/start", guard(http.HandlerFunc(s.v1Start)))
+	mux.Handle("/v1/remote-commands/stop", guard(http.HandlerFunc(s.v1Stop)))
 	mux.Handle("/v1/remote-commands", guard(http.HandlerFunc(s.v1Command)))
 	mux.Handle("/v1/transactions", guard(http.HandlerFunc(s.v1Transactions)))
 	mux.Handle("/v1/transactions/", guard(http.HandlerFunc(s.v1Transaction)))
@@ -144,6 +161,11 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if claimed {
+		command, err = s.v1Store.BeginV1CommandDelivery(r.Context(), req.CMSCommandID)
+		if err != nil {
+			s.writeV1StoreError(w, err)
+			return
+		}
 		status, callErr := s.hal.RemoteStartTransaction(r.Context(), req.ChargerOCPPIdentity, req.IDTag, req.OCPPConnectorNumber)
 		if callErr != nil {
 			command, err = s.v1Store.MarkV1CommandDelivery(r.Context(), req.CMSCommandID, "AMBIGUOUS", "", "remote start result unavailable")
@@ -160,6 +182,44 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"command": command, "correlation_id": correlation, "duplicate": existed})
+}
+
+func (s *Server) v1Stop(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	correlation, idempotency, ok := v1MutationHeaders(w, r)
+	if !ok {
+		return
+	}
+	var req v1StopRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSChargingSessionID) || !validUUID(req.CPOID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || !validUUID(req.HALTransactionID) || req.OCPPTransactionID <= 0 || req.OCPPConnectorNumber < 0 || !req.CommandExpiresAt.After(time.Now().UTC()) || !validV1StopInitiator(req.RequestedStopInitiator) || strings.TrimSpace(req.RequestedStopReason) == "" {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid stop command"})
+		return
+	}
+	command, duplicate, err := s.v1Store.CreateV1StopCommand(r.Context(), store.V1StopCommandInput{CMSCommandID: req.CMSCommandID, RequestDigest: digestJSON(req, idempotency), CPOID: req.CPOID, CustomerID: req.CustomerID, CorrelationID: correlation, CMSChargingSessionID: req.CMSChargingSessionID, CMSChargerID: req.CMSChargerID, CMSConnectorID: req.CMSConnectorID, ChargerOCPPIdentity: req.ChargerOCPPIdentity, OCPPConnectorNumber: req.OCPPConnectorNumber, HALTransactionID: req.HALTransactionID, OCPPTransactionID: req.OCPPTransactionID, RequestedStopInitiator: req.RequestedStopInitiator, RequestedStopReason: req.RequestedStopReason, CommandExpiresAt: req.CommandExpiresAt})
+	if err != nil {
+		s.writeV1StoreError(w, err)
+		return
+	}
+	workflow, dispatchErr := s.hal.DispatchV1Stop(r.Context(), req.HALTransactionID)
+	if dispatchErr != nil {
+		s.logger.Warn("v1 stop dispatch did not produce a final command result", "hal_transaction_id", req.HALTransactionID, "error", dispatchErr)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]any{"command": command, "stop_workflow": workflow, "correlation_id": correlation, "duplicate": duplicate})
+}
+
+func validV1StopInitiator(value string) bool {
+	switch value {
+	case "CUSTOMER", "CPO":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Server) v1Command(w http.ResponseWriter, r *http.Request) {
@@ -194,7 +254,11 @@ func (s *Server) v1Transactions(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"transaction": t})
+	response := map[string]any{"transaction": t}
+	if workflow, err := s.v1Store.GetV1StopWorkflow(r.Context(), t.HALTransactionID); err == nil {
+		response["stop_workflow"] = workflow
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 func (s *Server) v1Transaction(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -211,7 +275,11 @@ func (s *Server) v1Transaction(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"transaction": t})
+	response := map[string]any{"transaction": t}
+	if workflow, err := s.v1Store.GetV1StopWorkflow(r.Context(), t.HALTransactionID); err == nil {
+		response["stop_workflow"] = workflow
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 func (s *Server) v1ChargerRuntime(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {

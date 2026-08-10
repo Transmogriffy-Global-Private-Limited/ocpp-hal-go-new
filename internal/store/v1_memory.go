@@ -120,6 +120,8 @@ func (s *V1MemoryStore) UpdateV1Meter(_ context.Context, halTransactionID string
 		return nil, ErrV1TransactionNotFound
 	}
 	tx.LatestMeterWh = &meterWh
+	consumed := meterWh - tx.MeterStartWh
+	tx.ConsumedWh = &consumed
 	tx.MeterObservedAt = &observedAt
 	tx.MeterSequence++
 	return cloneV1Transaction(tx), nil
@@ -151,6 +153,12 @@ func (s *V1MemoryStore) CompleteV1Transaction(_ context.Context, halTransactionI
 	}
 	tx.MeterStopWh = &meterStopWh
 	tx.LatestMeterWh = &meterStopWh
+	if meterStopWh >= tx.MeterStartWh {
+		consumed := meterStopWh - tx.MeterStartWh
+		tx.ConsumedWh = &consumed
+	} else {
+		tx.ConsumedWh = nil
+	}
 	tx.MeterObservedAt = &completedAt
 	tx.OCPPStopReason = ocppReason
 	tx.StopState = "COMPLETED"
@@ -207,6 +215,7 @@ func cloneV1Transaction(transaction *V1Transaction) *V1Transaction {
 	}
 	copy := *transaction
 	copy.LatestMeterWh = cloneInt64(transaction.LatestMeterWh)
+	copy.ConsumedWh = cloneInt64(transaction.ConsumedWh)
 	copy.MeterStopWh = cloneInt64(transaction.MeterStopWh)
 	copy.EnergyLimitWh = cloneInt64(transaction.EnergyLimitWh)
 	copy.MaxDurationSeconds = cloneInt64(transaction.MaxDurationSeconds)

@@ -1,0 +1,510 @@
+package store
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
+	"strconv"
+	"strings"
+	"time"
+)
+
+const v1FactProducer = "ocpp-hal-go-new"
+
+// canonicalV1JSON is deliberately small and only accepts the fact value types
+// produced below. It sorts object keys and emits integer fields without float
+// conversion, so the immutable hash does not depend on map iteration order.
+func canonicalV1JSON(value any) ([]byte, error) {
+	var write func(*strings.Builder, any) error
+	write = func(dst *strings.Builder, item any) error {
+		switch v := item.(type) {
+		case nil:
+			dst.WriteString("null")
+		case string:
+			encoded, _ := json.Marshal(v)
+			dst.Write(encoded)
+		case bool:
+			if v {
+				dst.WriteString("true")
+			} else {
+				dst.WriteString("false")
+			}
+		case int:
+			dst.WriteString(strconv.Itoa(v))
+		case int64:
+			dst.WriteString(strconv.FormatInt(v, 10))
+		case time.Time:
+			encoded, _ := json.Marshal(v.UTC().Format(time.RFC3339Nano))
+			dst.Write(encoded)
+		case map[string]any:
+			keys := make([]string, 0, len(v))
+			for key := range v {
+				keys = append(keys, key)
+			}
+			sort.Strings(keys)
+			dst.WriteByte('{')
+			for i, key := range keys {
+				if i > 0 {
+					dst.WriteByte(',')
+				}
+				encoded, _ := json.Marshal(key)
+				dst.Write(encoded)
+				dst.WriteByte(':')
+				if err := write(dst, v[key]); err != nil {
+					return err
+				}
+			}
+			dst.WriteByte('}')
+		default:
+			return fmt.Errorf("unsupported canonical fact value %T", item)
+		}
+		return nil
+	}
+	var out strings.Builder
+	if err := write(&out, value); err != nil {
+		return nil, err
+	}
+	return []byte(out.String()), nil
+}
+
+func (s *PostgresStore) insertV1FactTx(ctx context.Context, tx *sql.Tx, factType, aggregate string, sequence *int64, occurredAt time.Time, payload map[string]any) error {
+	body, err := canonicalV1JSON(payload)
+	if err != nil {
+		return err
+	}
+	factID := NewUUIDString()
+	envelope, err := canonicalV1JSON(map[string]any{"fact_id": factID, "fact_type": factType, "schema_version": 1, "occurred_at": occurredAt, "producer": v1FactProducer, "payload": payload})
+	if err != nil {
+		return err
+	}
+	digest := sha256.Sum256(envelope)
+	_, err = tx.ExecContext(ctx, `INSERT INTO v1_fact_outbox (fact_id,fact_type,aggregate_key,sequence,payload,content_digest,schema_version,occurred_at,producer,status,next_retry_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,1,$7,$8,'PENDING',$7) ON CONFLICT (fact_type,aggregate_key,sequence) DO NOTHING`, factID, factType, aggregate, sequence, string(body), hex.EncodeToString(digest[:]), occurredAt, v1FactProducer)
+	return err
+}
+
+func v1CommandFact(command *V1RemoteCommand) map[string]any {
+	payload := map[string]any{
+		"hal_command_id": command.HALCommandID, "cms_command_id": command.CMSCommandID,
+		"kind": command.Kind, "state": command.State, "charger_ocpp_identity": command.ChargerOCPPIdentity,
+		"ocpp_connector_number": command.OCPPConnectorNumber, "delivery_attempts": command.DeliveryAttempts,
+		"ocpp_result": command.LastOCPPResult, "occurred_at": command.UpdatedAt,
+	}
+	if command.HALTransactionID != "" {
+		payload["hal_transaction_id"] = command.HALTransactionID
+	}
+	if command.OCPPTransactionID != nil {
+		payload["ocpp_transaction_id"] = *command.OCPPTransactionID
+	}
+	return payload
+}
+
+func v1StartedFact(t *V1Transaction, commandID string) map[string]any {
+	return map[string]any{
+		"hal_transaction_id": t.HALTransactionID, "ocpp_transaction_id": t.OCPPTransactionID,
+		"hal_command_id": commandID, "cms_command_id": t.CMSCommandID,
+		"cms_start_intent_id": t.CMSStartIntentID, "cpo_id": t.CPOID,
+		"cms_charger_id": t.CMSChargerID, "cms_connector_id": t.CMSConnectorID,
+		"charger_ocpp_identity": t.ChargerOCPPIdentity, "ocpp_connector_number": t.OCPPConnectorNumber,
+		"id_tag": t.IDTag, "meter_start_wh": t.MeterStartWh, "actual_started_at": t.ActualStartedAt,
+	}
+}
+
+func v1MeterFact(t *V1Transaction) map[string]any {
+	return map[string]any{
+		"hal_transaction_id": t.HALTransactionID, "ocpp_transaction_id": t.OCPPTransactionID,
+		"cms_start_intent_id": t.CMSStartIntentID, "cms_charger_id": t.CMSChargerID,
+		"cms_connector_id": t.CMSConnectorID, "charger_ocpp_identity": t.ChargerOCPPIdentity,
+		"ocpp_connector_number": t.OCPPConnectorNumber, "meter_sequence": t.MeterSequence,
+		"meter_value_wh": *t.LatestMeterWh, "consumed_wh": *t.LatestMeterWh - t.MeterStartWh,
+		"meter_observed_at": *t.MeterObservedAt,
+	}
+}
+
+func v1CompletedFact(t *V1Transaction) map[string]any {
+	payload := map[string]any{
+		"hal_transaction_id": t.HALTransactionID, "ocpp_transaction_id": t.OCPPTransactionID,
+		"cms_start_intent_id": t.CMSStartIntentID, "cms_charger_id": t.CMSChargerID,
+		"cms_connector_id": t.CMSConnectorID, "charger_ocpp_identity": t.ChargerOCPPIdentity,
+		"ocpp_connector_number": t.OCPPConnectorNumber, "meter_start_wh": t.MeterStartWh,
+		"meter_stop_wh": *t.MeterStopWh, "stopped_at": *t.CompletedAt,
+		"ocpp_stop_reason": t.OCPPStopReason,
+	}
+	if t.RequestedStopInitiator != "" {
+		payload["requested_stop_initiator"] = t.RequestedStopInitiator
+	}
+	if t.RequestedStopReason != "" {
+		payload["requested_stop_reason"] = t.RequestedStopReason
+	}
+	return payload
+}
+
+func v1ConnectionFact(cpoID, cmsChargerID, identity, state string, generation, sequence int64, observedAt time.Time) map[string]any {
+	return map[string]any{"cpo_id": cpoID, "cms_charger_id": cmsChargerID, "charger_ocpp_identity": identity, "connection_state": state, "connection_generation": generation, "connection_sequence": sequence, "observed_at": observedAt}
+}
+
+func v1StatusFact(runtime *V1ConnectorRuntime) map[string]any {
+	payload := map[string]any{"cpo_id": runtime.CPOID, "cms_charger_id": runtime.CMSChargerID, "cms_connector_id": runtime.CMSConnectorID, "charger_ocpp_identity": runtime.ChargerOCPPIdentity, "ocpp_connector_number": runtime.OCPPConnectorNumber, "ocpp_connector_status": runtime.Status, "connector_status_sequence": runtime.StatusSequence, "observed_at": *runtime.ObservedAt}
+	if runtime.ErrorCode != "" {
+		payload["error_code"] = runtime.ErrorCode
+	}
+	if runtime.Info != "" {
+		payload["info"] = runtime.Info
+	}
+	if runtime.VendorID != "" {
+		payload["vendor_id"] = runtime.VendorID
+	}
+	if runtime.VendorErrorCode != "" {
+		payload["vendor_error_code"] = runtime.VendorErrorCode
+	}
+	return payload
+}
+
+func (s *PostgresStore) GetV1TransactionByOCPP(ctx context.Context, identity string, ocppID int64) (*V1Transaction, error) {
+	var halID string
+	err := s.db.QueryRowContext(ctx, `SELECT hal_transaction_id::text FROM v1_transactions WHERE charger_ocpp_identity=$1 AND ocpp_transaction_id=$2`, identity, ocppID).Scan(&halID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrV1TransactionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return s.GetV1Transaction(ctx, halID)
+}
+
+func (s *PostgresStore) UpdateV1MeterForOCPP(ctx context.Context, identity string, ocppID, meterWh int64, observedAt time.Time) (*V1Transaction, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	var halID string
+	var meterStart int64
+	var latest sql.NullInt64
+	var completed sql.NullTime
+	err = tx.QueryRowContext(ctx, `SELECT hal_transaction_id::text,meter_start_wh,latest_meter_wh,completed_at FROM v1_transactions WHERE charger_ocpp_identity=$1 AND ocpp_transaction_id=$2 FOR UPDATE`, identity, ocppID).Scan(&halID, &meterStart, &latest, &completed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, ErrV1TransactionNotFound
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	if completed.Valid || meterWh < meterStart || (latest.Valid && meterWh < latest.Int64) {
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		current, getErr := s.GetV1Transaction(ctx, halID)
+		return current, false, getErr
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET latest_meter_wh=$2,meter_observed_at=$3,meter_sequence=meter_sequence+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID, meterWh, observedAt)
+	if err != nil {
+		return nil, false, err
+	}
+	current, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
+	if err != nil {
+		return nil, false, err
+	}
+	seq := current.MeterSequence
+	if err := s.insertV1FactTx(ctx, tx, "transaction.meter", halID, &seq, observedAt, v1MeterFact(current)); err != nil {
+		return nil, false, err
+	}
+	if current.EnergyLimitWh != nil && meterWh-current.MeterStartWh >= *current.EnergyLimitWh {
+		if _, _, err := s.ensureV1StopWorkflowTx(ctx, tx, current, "ENERGY_LIMIT", "energy_limit_reached"); err != nil {
+			return nil, false, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return current, true, nil
+}
+
+func (s *PostgresStore) UpdateV1Meter(ctx context.Context, halID string, ocppID, meterWh int64, observedAt time.Time) (*V1Transaction, error) {
+	t, err := s.GetV1Transaction(ctx, halID)
+	if err != nil {
+		return nil, err
+	}
+	if t.OCPPTransactionID != ocppID {
+		return nil, ErrV1TransactionNotFound
+	}
+	updated, _, err := s.UpdateV1MeterForOCPP(ctx, t.ChargerOCPPIdentity, ocppID, meterWh, observedAt)
+	return updated, err
+}
+
+func (s *PostgresStore) ensureV1StopWorkflowTx(ctx context.Context, tx *sql.Tx, t *V1Transaction, initiator, reason string) (*V1StopWorkflow, bool, error) {
+	workflow := &V1StopWorkflow{}
+	err := tx.QueryRowContext(ctx, `SELECT hal_transaction_id::text,requested_stop_initiator,requested_stop_reason,state,delivery_attempts,COALESCE(last_ocpp_result,''),COALESCE(last_error_category,''),COALESCE(last_error_detail,''),created_at,updated_at,completed_at FROM v1_stop_workflows WHERE hal_transaction_id=$1 FOR UPDATE`, t.HALTransactionID).Scan(&workflow.HALTransactionID, &workflow.RequestedStopInitiator, &workflow.RequestedStopReason, &workflow.State, &workflow.DeliveryAttempts, &workflow.LastOCPPResult, &workflow.LastErrorCategory, &workflow.LastErrorDetail, &workflow.CreatedAt, &workflow.UpdatedAt, &workflow.CompletedAt)
+	if err == nil {
+		return workflow, false, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return nil, false, err
+	}
+	if t.CompletedAt != nil {
+		return nil, false, ErrV1TransactionNotFound
+	}
+	_, err = tx.ExecContext(ctx, `INSERT INTO v1_stop_workflows (hal_transaction_id,requested_stop_initiator,requested_stop_reason,state) VALUES ($1,$2,$3,'PERSISTED')`, t.HALTransactionID, initiator, reason)
+	if err != nil {
+		return nil, false, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET stop_state='PERSISTED',requested_stop_initiator=$2,requested_stop_reason=$3,updated_at=NOW() WHERE hal_transaction_id=$1`, t.HALTransactionID, initiator, reason)
+	if err != nil {
+		return nil, false, err
+	}
+	return &V1StopWorkflow{HALTransactionID: t.HALTransactionID, RequestedStopInitiator: initiator, RequestedStopReason: reason, State: "PERSISTED"}, true, nil
+}
+
+func (s *PostgresStore) EnsureV1StopWorkflow(ctx context.Context, halID, initiator, reason string) (*V1StopWorkflow, bool, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, false, err
+	}
+	defer tx.Rollback()
+	t, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
+	if err != nil {
+		return nil, false, err
+	}
+	w, created, err := s.ensureV1StopWorkflowTx(ctx, tx, t, initiator, reason)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, false, err
+	}
+	return w, created, nil
+}
+
+func (s *PostgresStore) RequestV1Stop(ctx context.Context, halID, initiator, reason string) (*V1Transaction, bool, error) {
+	_, created, err := s.EnsureV1StopWorkflow(ctx, halID, initiator, reason)
+	if err != nil {
+		return nil, false, err
+	}
+	t, err := s.GetV1Transaction(ctx, halID)
+	return t, created, err
+}
+
+func (s *PostgresStore) GetV1StopWorkflow(ctx context.Context, halID string) (*V1StopWorkflow, error) {
+	w := &V1StopWorkflow{}
+	var completed sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT hal_transaction_id::text,requested_stop_initiator,requested_stop_reason,state,delivery_attempts,COALESCE(last_ocpp_result,''),COALESCE(last_error_category,''),COALESCE(last_error_detail,''),created_at,updated_at,completed_at FROM v1_stop_workflows WHERE hal_transaction_id=$1`, halID).Scan(&w.HALTransactionID, &w.RequestedStopInitiator, &w.RequestedStopReason, &w.State, &w.DeliveryAttempts, &w.LastOCPPResult, &w.LastErrorCategory, &w.LastErrorDetail, &w.CreatedAt, &w.UpdatedAt, &completed)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, ErrV1TransactionNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	if completed.Valid {
+		w.CompletedAt = &completed.Time
+	}
+	return w, nil
+}
+
+func (s *PostgresStore) ClaimV1StopDelivery(ctx context.Context, halID string) (*V1StopWorkflow, bool, error) {
+	result, err := s.db.ExecContext(ctx, `UPDATE v1_stop_workflows w SET state='PENDING_DELIVERY',claimed_until=NOW()+INTERVAL '30 seconds',updated_at=NOW() WHERE w.hal_transaction_id=$1 AND w.state='PERSISTED' AND EXISTS (SELECT 1 FROM v1_transactions t WHERE t.hal_transaction_id=w.hal_transaction_id AND t.completed_at IS NULL)`, halID)
+	if err != nil {
+		return nil, false, err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return nil, false, err
+	}
+	w, err := s.GetV1StopWorkflow(ctx, halID)
+	return w, rows == 1, err
+}
+
+func (s *PostgresStore) BeginV1StopDelivery(ctx context.Context, halID string) (*V1StopWorkflow, error) {
+	_, err := s.db.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='DELIVERY_ATTEMPTED',delivery_attempts=delivery_attempts+1,claimed_until=NOW()+INTERVAL '2 minutes',updated_at=NOW() WHERE hal_transaction_id=$1 AND state='PENDING_DELIVERY'`, halID)
+	if err != nil {
+		return nil, err
+	}
+	return s.GetV1StopWorkflow(ctx, halID)
+}
+
+func (s *PostgresStore) MarkV1StopDelivery(ctx context.Context, halID, status, result, detail string) (*V1StopWorkflow, error) {
+	state, category := "DELIVERY_ATTEMPTED", ""
+	switch status {
+	case "Accepted":
+		state = "OCPP_ACCEPTED"
+	case "Rejected":
+		state = "OCPP_REJECTED"
+		category = "ocpp"
+	case "AMBIGUOUS":
+		state = "AMBIGUOUS"
+		category = "delivery"
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	_, err = tx.ExecContext(ctx, `UPDATE v1_stop_workflows SET state=$2,last_ocpp_result=$3,last_error_category=$4,last_error_detail=$5,claimed_until=NULL,updated_at=NOW() WHERE hal_transaction_id=$1 AND state NOT IN ('COMPLETED','SUPERSEDED')`, halID, state, nullString(result), nullString(category), nullString(detail))
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET stop_state=$2,updated_at=NOW() WHERE hal_transaction_id=$1 AND completed_at IS NULL`, halID, state)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := tx.QueryContext(ctx, `UPDATE v1_remote_commands SET state=$2,last_ocpp_result=$3,last_error_category=$4,last_error_detail=$5,claimed_until=NULL,updated_at=NOW() WHERE stop_workflow_transaction_id=$1 AND kind='STOP' AND state NOT IN ('SUPERSEDED','MATERIALIZED') RETURNING cms_command_id::text`, halID, state, nullString(result), nullString(category), nullString(detail))
+	if err != nil {
+		return nil, err
+	}
+	var commandIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		commandIDs = append(commandIDs, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	rows.Close()
+	for _, commandID := range commandIDs {
+		command, err := s.getV1CommandWith(ctx, txByQueryer{tx}, commandID)
+		if err != nil {
+			return nil, err
+		}
+		if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, command.UpdatedAt, v1CommandFact(command)); err != nil {
+			return nil, err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return s.GetV1StopWorkflow(ctx, halID)
+}
+
+func (s *PostgresStore) RecoverV1CommandDelivery(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE v1_remote_commands SET state='PERSISTED',claimed_until=NULL,updated_at=NOW() WHERE kind='START' AND state='PENDING_DELIVERY'`); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE v1_remote_commands SET state='AMBIGUOUS',last_error_category='recovery',last_error_detail='process interruption after durable delivery attempt',claimed_until=NULL,updated_at=NOW() WHERE kind='START' AND state='DELIVERY_ATTEMPTED'`)
+	return err
+}
+
+func (s *PostgresStore) RecoverV1StopDelivery(ctx context.Context) error {
+	if _, err := s.db.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='PERSISTED',claimed_until=NULL,updated_at=NOW() WHERE state='PENDING_DELIVERY'`); err != nil {
+		return err
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='AMBIGUOUS',last_error_category='recovery',last_error_detail='process interruption after durable delivery attempt',claimed_until=NULL,updated_at=NOW() WHERE state='DELIVERY_ATTEMPTED'`)
+	return err
+}
+
+func (s *PostgresStore) ListV1OverdueTransactions(ctx context.Context, now time.Time, limit int) ([]*V1Transaction, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT hal_transaction_id::text FROM v1_transactions WHERE completed_at IS NULL AND stop_deadline_at IS NOT NULL AND stop_deadline_at <= $1 ORDER BY stop_deadline_at LIMIT $2`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []*V1Transaction
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		t, err := s.GetV1Transaction(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string, meterStopWh int64, ocppReason string, completedAt time.Time) (*V1Transaction, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	t, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
+	if err != nil {
+		return nil, err
+	}
+	if t.CompletedAt != nil {
+		if err := tx.Commit(); err != nil {
+			return nil, err
+		}
+		return t, nil
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_stop_wh=$2,latest_meter_wh=$2,meter_observed_at=$3,ocpp_stop_reason=$4,completed_at=$3,stop_state='COMPLETED',updated_at=NOW() WHERE hal_transaction_id=$1`, halID, meterStopWh, completedAt, nullString(ocppReason))
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='COMPLETED',completed_at=$2,claimed_until=NULL,updated_at=NOW() WHERE hal_transaction_id=$1 AND state <> 'COMPLETED'`, halID, completedAt)
+	if err != nil {
+		return nil, err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE v1_remote_commands SET state='SUPERSEDED',updated_at=NOW() WHERE stop_workflow_transaction_id=$1 AND state NOT IN ('SUPERSEDED','MATERIALIZED')`, halID)
+	if err != nil {
+		return nil, err
+	}
+	completed, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.insertV1FactTx(ctx, tx, "transaction.completed", halID, nil, completedAt, v1CompletedFact(completed)); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return completed, nil
+}
+
+func (s *PostgresStore) ClaimV1Facts(ctx context.Context, now time.Time, limit int) ([]V1Fact, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `WITH due AS (SELECT fact_id FROM v1_fact_outbox WHERE status IN ('PENDING','RETRY') AND next_retry_at <= $1 AND (claimed_until IS NULL OR claimed_until < $1) ORDER BY next_retry_at,created_at FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE v1_fact_outbox f SET status='DELIVERING',claimed_until=$1+INTERVAL '30 seconds' FROM due WHERE f.fact_id=due.fact_id RETURNING f.fact_id::text,f.fact_type,f.schema_version,f.occurred_at,f.producer,f.content_digest,f.payload::text,f.status,f.retries,f.next_retry_at,f.claimed_until,f.delivery_status_code,COALESCE(f.last_error,'')`, now, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []V1Fact
+	for rows.Next() {
+		var f V1Fact
+		var claim sql.NullTime
+		var status sql.NullInt64
+		if err := rows.Scan(&f.FactID, &f.FactType, &f.SchemaVersion, &f.OccurredAt, &f.Producer, &f.ContentSHA256, &f.Payload, &f.Status, &f.Retries, &f.NextRetryAt, &claim, &status, &f.LastError); err != nil {
+			return nil, err
+		}
+		if claim.Valid {
+			f.ClaimedUntil = &claim.Time
+		}
+		if status.Valid {
+			v := int(status.Int64)
+			f.DeliveryStatus = &v
+		}
+		out = append(out, f)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (s *PostgresStore) MarkV1FactDelivery(ctx context.Context, factID string, statusCode int, success, terminal bool, detail string, next time.Time) error {
+	state := "RETRY"
+	if success {
+		state = "DELIVERED"
+	}
+	if terminal {
+		state = "RECONCILIATION_REQUIRED"
+	}
+	_, err := s.db.ExecContext(ctx, `UPDATE v1_fact_outbox SET status=$2,retries=CASE WHEN $2='DELIVERED' THEN retries ELSE retries+1 END,next_retry_at=$3,claimed_until=NULL,delivery_status_code=$4,last_error=$5,sent_at=CASE WHEN $2='DELIVERED' THEN NOW() ELSE sent_at END WHERE fact_id=$1`, factID, state, next, statusCode, nullString(detail))
+	return err
+}

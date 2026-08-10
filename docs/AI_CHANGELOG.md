@@ -1,5 +1,32 @@
 # AI-assisted changelog
 
+## 2026-08-10 - v1 HAL meter, stop, completion, and fact vertical
+
+- Added additive migration `007_add_v1_lifecycle_and_facts.sql` and HAL-owned
+  durable stop workflows, command delivery-attempt state, fact delivery leases,
+  recovery state, and immutable fact metadata.
+- Wired exact v1 OCPP MeterValues into persistent integer-Wh current meter
+  state and monotonic sequence facts; regressive/non-integral samples do not
+  become accepted truth. Energy-limit and actual-start-time deadline triggers
+  converge with customer/CPO requests on one RemoteStop workflow.
+- Added authenticated idempotent `POST /v1/remote-commands/stop`, exact
+  transaction/mapping validation, pre-network delivery-attempt recording,
+  ambiguity recovery, and charger-originated StopTransaction completion with
+  final meter/OCPP reason preserved separately from requested stop provenance.
+- Added atomic immutable fact creation for command, transaction, meter,
+  connection, and connector transitions plus the opt-in PostgreSQL outbox HTTP
+  worker using independent outbound fact credentials.
+- Updated the v1 OpenAPI source, local environment reference/generator,
+  contract, plan, state, architecture, and work record.
+
+Compatibility: inherited legacy routes, callbacks, WebSockets, and transaction
+paths remain untouched. No CMS or legacy repository was modified.
+
+Verification: source-level `go test ./...` passed; migration `001` through
+`007` applied to the disposable PostgreSQL database; focused PostgreSQL store
+test passed. Full virtual charger + fact receiver completion coverage remains
+in progress and is not claimed by this entry.
+
 ## 2026-08-10 - v1 HAL mapping/start/runtime vertical
 
 - Added additive migration `006_add_v1_mapping_and_runtime.sql`, PostgreSQL
