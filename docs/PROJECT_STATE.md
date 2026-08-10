@@ -41,6 +41,11 @@ None of these are an approved permanent new-CMS contract.
 - new-CMS machine-readable API/event contracts, interactive documentation, and contract-drift checks;
 - migration/rollout plan for replacing legacy callbacks, routes, and frontend surfaces.
 
+The decision-ready but unapproved analysis for these gaps is in
+`docs/plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md`. It records evidence and
+recommendations only; it does not change current runtime behavior or approve a
+CMS/HAL transport contract.
+
 ## Verification Status
 
 The architecture-bootstrap slice did not change runtime behavior, and the subsequent script-root remediation did not change test semantics. Neither slice claims new runtime, database, charger, CMS, or end-to-end verification. `go test ./...` was terminated after 124 seconds with no diagnostic output, and `go build ./...` failed while linking `cmd/cpconsole` because the Go runtime could not allocate memory. The build/regression scripts now target this checkout, but their database-backed execution remains unverified in this environment.

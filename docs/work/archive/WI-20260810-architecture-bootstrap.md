@@ -76,3 +76,12 @@ Start with `docs/ARCHITECTURE_BOUNDARY.md` and
 
 Documentation-only bootstrap complete. No commit, push, deployment, or remote
 change was made.
+
+## Historical Follow-up
+
+On 2026-08-10, a later documentation/script slice replaced the inherited
+absolute script root with `$PSScriptRoot`-derived checkout discovery in commit
+`720e124`; it preserved test semantics. The bootstrap documentation commit
+`4275c21` was subsequently committed and pushed to `origin/main` by explicit
+human instruction. These later actions do not change the historical evidence or
+verification status recorded above.

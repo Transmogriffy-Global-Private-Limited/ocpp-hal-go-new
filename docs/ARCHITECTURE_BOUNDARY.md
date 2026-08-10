@@ -30,7 +30,7 @@ These are code observations as of the architecture-bootstrap audit, not future c
 - The inherited callback worker posts legacy-shaped start/completion payloads to configured URLs, derives `max_kwh` from the start callback response, and retries from an outbox. Those URLs and payloads are legacy integration facts.
 - Boot recovery loads local open rows, force-closes a narrow "Available" ghost case, and otherwise hydrates in-memory state before retrying RemoteStop and Unlock. It does not make a remote-stop acknowledgement a local completion.
 - Existing `/api/*` and `/frontend/ws/*` surfaces use one shared API key or no frontend authentication. Their schemas and authorization are not an approved new-CMS interface.
-- The copied module/import identity and build/regression scripts still name the legacy repository. The scripts' absolute path is a bootstrap defect; runtime behavior is intentionally unchanged in this slice.
+- The copied module/import identity still names the legacy repository. Build and regression scripts now derive this checkout root from their script location; that remediation did not change test semantics or runtime behavior.
 
 ## Unresolved Design Decisions
 

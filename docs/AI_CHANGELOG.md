@@ -1,5 +1,26 @@
 # AI-assisted changelog
 
+## 2026-08-10 - CMS/HAL charging-integration analysis
+
+- Added a decision-ready, evidence-based analysis of the first
+  `ev-cms-backend-new` to `ocpp-hal-go-new` charging lifecycle.
+- Recorded authority and identifier separation; start/stop truth; credential,
+  wallet/hold, energy-limit, transport, recovery, duplicate, CPO suspension,
+  realtime, and first-vertical-slice decisions requiring human approval.
+- Refined the inherited audit to retain controlled/reconcilable limit-stop
+  behavior without freezing its current retry count, separate removal of the
+  single-session callback-routing mechanism from any future business policy,
+  and distinguish test/dev memory storage from the production durability
+  question.
+
+Compatibility: no Go runtime behavior, API, callback, database schema,
+authentication mechanism, or cross-repository integration changed. All CMS
+inspection was read-only; no CMS or legacy-repository file was modified.
+
+Verification: reviewed the complete documentation-only diff and ran the
+repository documentation checks recorded below. No full regression was needed
+or run because this slice changes no runtime behavior.
+
 ## 2026-08-10 - Script checkout-root remediation
 
 - Updated `scripts/build-all.ps1` and `scripts/regression-local.ps1` to derive

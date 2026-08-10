@@ -5,6 +5,7 @@
 - [Repository overview](../README.md)
 - [HAL and CMS architecture boundary](ARCHITECTURE_BOUNDARY.md)
 - [Inherited HAL audit](INHERITED_HAL_AUDIT.md)
+- [CMS/HAL charging integration analysis (decision-ready, not approved)](plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md)
 - [Current project state](PROJECT_STATE.md)
 - [Living development plan](DEVELOPMENT_PLAN.md)
 - [Agent-assisted changelog](AI_CHANGELOG.md)

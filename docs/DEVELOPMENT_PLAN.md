@@ -15,13 +15,13 @@ Evolve this repository into the independently owned OCPP HAL for `ev-cms-backend
 
 Current phase: architecture bootstrap + inherited-system audit.
 
-Active feature: repository-purpose and inherited-HAL bootstrap.
+Active feature: CMS/HAL charging integration analysis.
 
-Current implementation slice: documentation-only architecture boundary and inherited behavior inventory. No Go runtime behavior is changed.
+Current implementation slice: decision-ready CMS/HAL charging-integration analysis. No Go runtime behavior is changed.
 
-Last completed slice: inherited project-memory correction.
+Last completed slice: repository-purpose bootstrap, inherited-HAL inventory, and script checkout-root remediation.
 
-Next expected slice: detailed inherited-HAL audit together with the relevant `ev-cms-backend-new` wallet, tariff, and charging-session requirements before implementation.
+Next expected slice: human review and approval of the recommended boundary decisions before any contract or runtime implementation.
 
 Blocked by: no new CMS/HAL runtime contract has been approved.
 
@@ -29,7 +29,7 @@ Blocked by: no new CMS/HAL runtime contract has been approved.
 
 ### Architecture Bootstrap and Inherited-System Audit
 
-Status: In Progress
+Status: Implemented (documentation analysis only; no runtime contract approved)
 
 Phase: architecture bootstrap + inherited-system audit
 
@@ -62,10 +62,12 @@ Verification:
 - `git diff --check`;
 - the build/regression scripts resolve their own checkout root and preserve their existing command sequence;
 - residue scan for legacy-purpose claims in changed project-memory files.
+- decision-ready CMS/HAL analysis paired with read-only CMS wallet, tariff,
+  session, identity, CPO-lifecycle, and User App evidence.
 
 ### New CMS/HAL Contract Design
 
-Status: Approved for analysis, not approved for implementation
+Status: Analysis complete; human approval required before implementation
 
 Phase: contract and integration design
 
@@ -90,8 +92,10 @@ Acceptance criteria before implementation starts:
 
 ## Next Approved Work
 
-1. Complete the detailed inherited-HAL audit with the relevant `ev-cms-backend-new` wallet, tariff, and charging-session requirements.
-2. Produce an explicit, reviewable CMS/HAL service-boundary design from that evidence.
+1. Obtain human approval for the recommended identity, hold/pricing, transport,
+   mapping, recovery, and first-vertical-slice decisions in
+   `docs/plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md`.
+2. Write the selected authoritative contract and rollout/reconciliation design.
 3. Implement only the first approved vertical slice, including contract, authorization, durable state, recovery, verification, and documentation.
 
 ## Deferred Remediation
