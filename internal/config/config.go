@@ -9,6 +9,8 @@ import (
 )
 
 type Config struct {
+	Environment string
+
 	RESTHost string
 	RESTPort string
 
@@ -39,6 +41,8 @@ type Config struct {
 
 func Load() Config {
 	return Config{
+		Environment: env("HAL_ENVIRONMENT", "development"),
+
 		RESTHost: env("F_SERVER_HOST", "127.0.0.1"),
 		RESTPort: env("F_SERVER_PORT", "18080"),
 
@@ -66,6 +70,10 @@ func Load() Config {
 		ChargerDataURL:             os.Getenv("APICHARGERDATA"),
 		ChargerDataCacheTTLSeconds: envInt("CHARGER_DATA_CACHE_TTL_SECONDS", 7200),
 	}
+}
+
+func (c Config) RequiresDatabase() bool {
+	return strings.EqualFold(strings.TrimSpace(c.Environment), "production")
 }
 
 func (c Config) RESTListenAddr() string {

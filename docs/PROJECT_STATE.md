@@ -30,22 +30,45 @@ These are implementation facts, not a promise that each behavior is retained or 
 
 None of these are an approved permanent new-CMS contract.
 
+## Approved v1 Architecture and Foundation
+
+`docs/contracts/CMS_HAL_CHARGING_V1.md` is the human-approved v1 CMS/HAL
+architecture and service contract. It defines the service-only HTTP command and
+fact paths, identity chain, durable command/fact model, tariff/hold/settlement
+invariants, production durability, live charger/connector/meter projection,
+and recovery semantics. An additive migration and focused in-memory v1 state
+foundation now exist, along with a production PostgreSQL configuration guard.
+No v1 route, PostgreSQL v1-store operation, service-authentication mechanism,
+or User App charging operation exists in runtime.
+
 ## Not Yet Implemented for `ev-cms-backend-new`
 
 - an explicit authenticated HAL-to-CMS and CMS-to-HAL service boundary;
 - CPO/customer/service identity, authorization, and audit context propagation;
-- approved command, result, OCPP-start, meter, OCPP-stop, recovery, or billing contracts;
-- approved correlation between OCPP transaction truth and CMS charging-session projections;
-- CMS-owned wallet/tariff/eligibility decision integration;
+- the approved v1 command, result, OCPP-start, meter, OCPP-stop, recovery, or
+  billing contract in runtime;
+- approved identifier correlation in durable CMS/HAL records and CMS
+  charging-session projections;
+- CMS-owned wallet/tariff/eligibility decision integration in the v1 flow;
+- HAL connection, connector StatusNotification, and MeterValues fact delivery
+  plus CMS durable operational/session polling projections;
 - approved source of truth and access policy for charger directory/status and customer realtime projections;
 - new-CMS machine-readable API/event contracts, interactive documentation, and contract-drift checks;
 - migration/rollout plan for replacing legacy callbacks, routes, and frontend surfaces.
 
-The decision-ready but unapproved analysis for these gaps is in
-`docs/plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md`. It records evidence and
-recommendations only; it does not change current runtime behavior or approve a
-CMS/HAL transport contract.
+The earlier analysis remains historical evidence in
+`docs/plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md`. The v1 contract is now
+approved. The v1 foundation changes only production store selection behavior:
+`HAL_ENVIRONMENT=production` now requires PostgreSQL configuration.
 
 ## Verification Status
 
-The architecture-bootstrap slice did not change runtime behavior, and the subsequent script-root remediation did not change test semantics. Neither slice claims new runtime, database, charger, CMS, or end-to-end verification. `go test ./...` was terminated after 124 seconds with no diagnostic output, and `go build ./...` failed while linking `cmd/cpconsole` because the Go runtime could not allocate memory. The build/regression scripts now target this checkout, but their database-backed execution remains unverified in this environment.
+The architecture-bootstrap, analysis, contract-freeze, and script-root
+remediation slices did not change runtime behavior. The v1 foundation adds a
+production durability guard and unintegrated additive state/schema code;
+`go test ./internal/store` passed. It does not claim v1 route, database,
+charger, CMS, or end-to-end verification. `go test ./...` was previously
+terminated after 124 seconds with no diagnostic output, and `go build ./...`
+previously failed while linking `cmd/cpconsole` because the Go runtime could not
+allocate memory. The build/regression scripts now target this checkout, but
+their database-backed execution remains unverified in this environment.

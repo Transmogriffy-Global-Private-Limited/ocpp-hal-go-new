@@ -110,6 +110,10 @@ func chooseTransactionStore(cfg config.Config, logger *slog.Logger) (store.Trans
 		return nil, fmt.Errorf("connect PostgreSQL: %w", err)
 	}
 
-	logger.Warn("DB env not configured; using in-memory store")
+	if cfg.RequiresDatabase() {
+		return nil, errors.New("PostgreSQL configuration is required when HAL_ENVIRONMENT=production")
+	}
+
+	logger.Warn("DB env not configured; using in-memory store for non-production development only")
 	return store.NewMemoryStore(), nil
 }

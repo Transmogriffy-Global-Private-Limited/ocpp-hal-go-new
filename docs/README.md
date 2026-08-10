@@ -5,7 +5,9 @@
 - [Repository overview](../README.md)
 - [HAL and CMS architecture boundary](ARCHITECTURE_BOUNDARY.md)
 - [Inherited HAL audit](INHERITED_HAL_AUDIT.md)
-- [CMS/HAL charging integration analysis (decision-ready, not approved)](plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md)
+- [CMS/HAL charging integration v1 contract (approved, not implemented)](contracts/CMS_HAL_CHARGING_V1.md)
+- [v1 consumer-demand to HAL-capability matrix](plans/HAL_V1_CONSUMER_DEMAND_MATRIX.md)
+- [CMS/HAL charging integration analysis (historical decision evidence)](plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md)
 - [Current project state](PROJECT_STATE.md)
 - [Living development plan](DEVELOPMENT_PLAN.md)
 - [Agent-assisted changelog](AI_CHANGELOG.md)
@@ -23,4 +25,16 @@ The following documents describe copied implementation behavior and tooling. The
 
 ## Contract Documentation
 
-No new `ev-cms-backend-new` service/API/event contract is approved yet. When a contract is approved, add its authoritative machine-readable schema and its human-readable integration guide here. Do not use inherited REST, callback, or WebSocket documentation as a substitute for that decision.
+The v1 human-readable service contract is
+[CMS/HAL Charging Integration v1](contracts/CMS_HAL_CHARGING_V1.md). It is
+approved architecture but not implemented. Its HTTP paths and JSON shapes are
+the canonical target until implementation produces the required machine-readable
+contract and interactive documentation. It includes HAL connection, connector
+OCPP status, and near-live MeterValues facts projected through CMS polling, not
+through inherited HAL frontend WebSockets. Do not use inherited REST, callback,
+or WebSocket documentation as a substitute for v1.
+
+The [consumer-demand matrix](plans/HAL_V1_CONSUMER_DEMAND_MATRIX.md) is the
+implementation prioritization source for the active first vertical slice. It
+separates User App and CPO needs from HAL-owned sockets and plugs, and labels
+must-ship, deferred, and inherited-legacy capabilities.

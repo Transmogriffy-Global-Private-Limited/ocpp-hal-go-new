@@ -13,23 +13,34 @@ Evolve this repository into the independently owned OCPP HAL for `ev-cms-backend
 
 ## Current Execution
 
-Current phase: architecture bootstrap + inherited-system audit.
+Current phase: v1 first-vertical-slice implementation.
 
-Active feature: CMS/HAL charging integration analysis.
+Required implementation-complete target: 2026-08-14. The first vertical slice
+must favor direct, boring, recoverable mechanisms and avoid infrastructure that
+does not serve its complete operational path.
 
-Current implementation slice: decision-ready CMS/HAL charging-integration analysis. No Go runtime behavior is changed.
+Active feature: approved v1 CMS/HAL charging contract.
 
-Last completed slice: repository-purpose bootstrap, inherited-HAL inventory, and script checkout-root remediation.
+Current implementation slice: consumer-demand matrix, production durability
+guard, additive v1 schema foundation, and focused in-memory command/credential/
+transaction state verification.
 
-Next expected slice: human review and approval of the recommended boundary decisions before any contract or runtime implementation.
+Last completed slice: decision-ready joint CMS/HAL analysis.
 
-Blocked by: no new CMS/HAL runtime contract has been approved.
+Next expected slice: implement PostgreSQL v1-store operations and wire durable
+commands, credentials, live state, meter/stop coordination, fact delivery, and
+authenticated service routes into the existing OCPP handler path.
+
+Blocked by: exact service-auth mechanism remains deliberately unresolved;
+PostgreSQL v1-store operations, OCPP wiring, and service-route implementation
+are not yet complete. Overshoot/debt policy and energy guard formula remain CMS
+or capability-evidence decisions.
 
 ## Feature Registry
 
 ### Architecture Bootstrap and Inherited-System Audit
 
-Status: Implemented (documentation analysis only; no runtime contract approved)
+Status: Verified documentation foundation; v1 contract approved later
 
 Phase: architecture bootstrap + inherited-system audit
 
@@ -67,7 +78,7 @@ Verification:
 
 ### New CMS/HAL Contract Design
 
-Status: Analysis complete; human approval required before implementation
+Status: In Progress; v1 foundation added, service path not implemented
 
 Phase: contract and integration design
 
@@ -82,25 +93,35 @@ Non-goals:
 
 - copying the legacy REST/callback/foreground WebSocket contracts by default;
 - shared-database integration;
-- prematurely selecting endpoint, event, or table schemas.
+- changing the legacy compatibility surface during v1 implementation.
 
 Acceptance criteria before implementation starts:
 
-- ownership, identities, authorization, idempotency, duplicate/out-of-order handling, and recovery semantics are approved;
-- authoritative contracts and migration/rollout approach are identified;
-- all affected HAL and CMS consumers/producers are mapped.
+- approved ownership, identities, command/fact idempotency, duplicate/out-of-order,
+  recovery, tariff/hold, settlement, energy-limit, CPO lifecycle, live
+  connection/connector/meter projection, and customer state semantics are
+  recorded in `docs/contracts/CMS_HAL_CHARGING_V1.md`;
+- v1 HTTP paths, payload vocabulary, fact identity, reconciliation reads, and
+  first-vertical-slice acceptance criteria are authoritative;
+- additive v1 data/configuration foundations preserve legacy runtime behavior;
+- v1 service routes, OCPP integration, fact delivery, and deployment remain to
+  be implemented and verified.
 
 ## Next Approved Work
 
-1. Obtain human approval for the recommended identity, hold/pricing, transport,
-   mapping, recovery, and first-vertical-slice decisions in
-   `docs/plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md`.
-2. Write the selected authoritative contract and rollout/reconciliation design.
-3. Implement only the first approved vertical slice, including contract, authorization, durable state, recovery, verification, and documentation.
+1. Design and implement the approved first vertical slice from
+   `docs/contracts/CMS_HAL_CHARGING_V1.md`, beginning with durable HAL command
+   and fact/outbox state plus the mutually authenticated service boundary.
+2. Add the matching CMS durable intent/hold/credential/session/fact-receipt
+   implementation in its owning repository without sharing databases.
+3. Verify the complete failure/recovery and live operational projection matrix
+   before exposing User App charging operations.
 
 ## Deferred Remediation
 
-- Establish machine-readable contract and interactive documentation only after the first new service/API contract is approved; the inherited routes are not a suitable authoritative new-CMS specification.
+- Add an implementation-aligned machine-readable contract and interactive
+  documentation with the first routed v1 service implementation; inherited
+  routes are not a suitable authoritative specification.
 - Plan any Go module/import identity change separately because it has broad repository impact.
 
 ## Completed Housekeeping

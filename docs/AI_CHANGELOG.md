@@ -1,5 +1,58 @@
 # AI-assisted changelog
 
+## 2026-08-10 - v1 HAL foundation and production durability guard
+
+- Added the v1 consumer-demand matrix that derives generic HAL sockets/plugs
+  from read-only User App and CPO evidence. It separates must-ship live
+  operational capabilities from deferred CPO controls and inherited-only
+  compatibility routes.
+- Added an additive PostgreSQL foundation migration for v1 remote commands,
+  app start credentials, authoritative transactions, charger/connector runtime
+  projections, and durable fact outbox records. The migration is not applied by
+  this repository automatically.
+- Added typed v1 in-memory state and focused tests for command idempotency,
+  credential charger/connector binding, replay-safe StartTransaction
+  materialization, integer-Wh meter updates, actual-start-based time deadlines,
+  and convergent stop ownership.
+- Added `HAL_ENVIRONMENT`. With `HAL_ENVIRONMENT=production`, startup now fails
+  when PostgreSQL is not configured instead of silently selecting in-memory
+  transaction state. Non-production development retains the explicit memory
+  fallback.
+
+Compatibility: legacy REST, callback, transaction, OCPP, WebSocket, and smoke
+behavior is not changed. The v1 foundation is not yet wired to OCPP handlers,
+service routes, PostgreSQL store operations, fact delivery, or CMS integration.
+
+Verification: `go test ./internal/store` passed. PostgreSQL migration execution,
+full build, regression, and v1 OCPP integration remain unverified.
+
+## 2026-08-10 - Approved CMS/HAL charging integration v1 contract
+
+- Recorded the human-approved v1 architecture and authoritative service
+  contract for CMS start intents, sessions, short-lived app credentials,
+  durable HAL commands, immutable HAL facts, idempotency, reconciliation,
+  tariff/tax snapshots, wallet holds, settlement, integer-Wh energy limits,
+  production PostgreSQL durability, CPO suspension, and customer-state
+  ownership.
+- Chose v1 service-only HTTP paths for CMS commands/reconciliation and HAL fact
+  ingestion, plus concrete command/fact JSON vocabulary and immutable fact
+  identity/digest rules.
+- Added the approved first-v1 live operational requirement: immutable HAL facts
+  for generation-safe charger connection state, exact connector OCPP status,
+  and selected near-live integer-Wh MeterValues; CMS polling remains the
+  customer authority and no customer realtime transport is added.
+- Preserved explicit open decisions for service-auth implementation, overshoot
+  debt policy, energy guard formula, RFID, generalized realtime, legacy-surface
+  retirement, migrations, and deployment topology.
+
+Compatibility: the approved contract is documentation only. No Go runtime,
+route, callback, database schema, migration, service credential, deployment,
+CMS repository, or legacy repository behavior changed.
+
+Verification: documentation-only diff, whitespace, scope, and artifact checks
+are required for this slice. Full runtime regression is not required because no
+runtime behavior changed.
+
 ## 2026-08-10 - CMS/HAL charging-integration analysis
 
 - Added a decision-ready, evidence-based analysis of the first

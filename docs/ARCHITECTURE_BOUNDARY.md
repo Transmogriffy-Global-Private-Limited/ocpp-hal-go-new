@@ -2,51 +2,141 @@
 
 ## Status and Scope
 
-This document is the canonical boundary record for `ocpp-hal-go-new` and `ev-cms-backend-new`. It separates already-decided invariants from facts found in the copied implementation and from work that still needs a deliberate contract decision.
+This is the canonical architecture record for `ocpp-hal-go-new` and
+`ev-cms-backend-new`. The approved v1 human-readable service contract is
+[CMS/HAL Charging Integration v1](contracts/CMS_HAL_CHARGING_V1.md).
 
-It does not approve inherited legacy REST routes, callbacks, WebSockets, database fields, or environment variables as the new CMS/HAL contract.
+The v1 architecture is approved. It is not runtime implementation: no v1 route,
+migration, service authentication mechanism, deployment topology, or legacy
+surface retirement has been implemented merely by this documentation.
 
-## Permanent Invariants
+## Permanent Approved Invariants
 
-- The HAL uses `github.com/lorenzodonini/ocpp-go` for OCPP protocol handling; it must not manually reimplement OCPP framing.
-- The HAL owns OCPP transport/protocol behavior, charger connections and reconnections, exact charger-originated transaction truth, charger-originated protocol state, raw/live meter handling, and charger command delivery.
-- `ev-cms-backend-new` owns customer/CPO identity, business eligibility and authorization, tariffs/pricing, wallet/payment/billing, and customer-facing charging-session and business projections.
-- A `RemoteStartTransaction` acknowledgement confirms only charger-command acceptance. A charger-originated `StartTransaction` establishes actual OCPP start truth.
-- A `RemoteStopTransaction` acknowledgement confirms only charger-command acceptance. A charger-originated `StopTransaction` establishes actual OCPP completion truth.
-- HAL and CMS do not share a database. Every integration crosses an explicit authenticated service boundary.
-- The legacy `OCPPHAL_Go` to old-CMS integration remains untouched and outside this repository's work.
-- Inherited implementation is prior art, not automatically a permanent new-CMS contract. A replacement must retain the correctness, recovery, identity, and audit properties it needs.
-- Boundary handling is fail-safe: malformed, inconsistent, unauthorized, duplicate, stale, out-of-order, or ambiguous input does not authorize a business outcome by guesswork.
-- Durable identity and auditability are preserved.
+- HAL uses `github.com/lorenzodonini/ocpp-go` for OCPP protocol handling; it
+  must not manually reimplement OCPP framing.
+- HAL owns OCPP transport/protocol behavior, charger connections and
+  reconnections, command delivery, exact charger-originated transaction truth,
+  raw/live meter facts, and protocol recovery.
+- CMS owns CPO/customer/group identity, eligibility, tariff/tax, wallet,
+  charging-session business projections, settlement/billing, and
+  customer-facing state.
+- CMS and HAL never share a database. They communicate across an authenticated
+  service boundary.
+- A RemoteStart acknowledgement is not charging truth; charger-originated
+  StartTransaction establishes actual OCPP start. A RemoteStop acknowledgement
+  is not completion truth; charger-originated StopTransaction establishes it.
+- HAL/Central System allocates the exact OCPP transaction ID only when accepting
+  charger-originated StartTransaction. CMS never generates, substitutes, or
+  guesses that ID.
+- CMS charger UUID, public charger ID, OCPP identity, CMS connector UUID, OCPP
+  connector number, CPO/customer/group IDs, CMS start intent/session/command,
+  app credential/idTag, HAL command/transaction IDs, and OCPP transaction ID
+  remain distinct identities.
+- The first QR/app flow uses a short-lived, one-use, CPO-scoped,
+  customer/start-intent/charger/connector-bound, expiring, auditable, replay-
+  resistant, durably recoverable credential as OCPP idTag. It is not a customer
+  UUID. RFID is a separate later credential type.
+- A user start creates a durable CMS start intent, not an active session. CMS
+  materializes an active charging session only after an authoritative HAL
+  StartTransaction fact.
+- Before submitting start, CMS atomically derives trusted scope, resolves and
+  freezes tariff/tax, assesses affordability with one canonical pricing engine,
+  creates a wallet hold, creates the start intent, and creates/associates the
+  one-use credential. Money remains exact and cross-service billable-energy
+  policy uses integer Wh.
+- HAL persists a durable remote command before transmitting RemoteStart or
+  RemoteStop. Duplicate CMS command identity resolves to that same command, not
+  a new OCPP dispatch. Timeout after delivery is ambiguous and requires
+  reconciliation.
+- CMS to HAL is synchronous authenticated HTTP command/query. HAL to CMS is
+  durable-outbox-backed authenticated HTTP delivery of versioned HAL facts with
+  fact identity, dedupe, retry, and reconciliation. No v1 broker is introduced.
+- HAL facts are protocol evidence, never tariff, wallet, GST, or final-billing
+  conclusions. CMS performs final completion and settlement transactionally and
+  idempotently from durable completion evidence and frozen commercial terms.
+- CMS owns commercial energy policy. HAL enforces the approved integer-Wh limit
+  after persisting it before RemoteStart, with controlled, idempotent,
+  observable stop delivery and explicit terminal/reconciliation semantics.
+- Production HAL requires PostgreSQL and must fail safely when it is absent or
+  unavailable. Memory storage is only for explicit tests and intentional local
+  development.
+- CPO suspension blocks new starts, but never blocks active-session stop,
+  fact ingestion, recovery, reconciliation, final meter capture, settlement, or
+  completed history. It does not imply a mass stop without separate approval.
+- CMS REST state is authoritative for User App charging sessions. HAL frontend
+  WebSockets are not a User App contract; future realtime is
+  notification/invalidation with CMS REST recovery.
+- HAL is authoritative for current charger connection state, charger-originated
+  per-connector OCPP StatusNotification state, and accepted live meter facts.
+  CMS keeps those as a durable operational/session projection with observation
+  time and explicit freshness. Offline or unknown connection makes historical
+  connector status stale, never fresh live truth.
+- Boundary handling is fail-safe: malformed, unauthorized, stale, duplicate,
+  out-of-order, inconsistent, or ambiguous input never authorizes a business
+  outcome by guesswork. Durable identity and auditability are required.
+- The legacy `OCPPHAL_Go` to old-CMS integration remains untouched and outside
+  this work.
+
+## Approved v1 Contract Surface
+
+The contract fixes these logical, service-only paths and payload semantics:
+
+- CMS to HAL: `POST /v1/remote-commands/start`,
+  `POST /v1/remote-commands/stop`, command lookup, and exact transaction
+  reconciliation lookups.
+- HAL to CMS: `POST /v1/hal-facts` for immutable, versioned
+  `charger.connection.updated`, `connector.status.updated`,
+  `transaction.started`, `transaction.meter`, `transaction.completed`, and
+  required `command.updated` facts.
+- Fact identity is a durable HAL `fact_id` plus a canonical immutable-content
+  SHA-256. CMS treats repeated identical facts as success and same-ID/different-
+  content as a durable integrity violation.
+- `transaction.meter`, connection, and connector status are first-vertical-
+  slice facts. CMS User App polling is the resulting read model; no customer
+  WebSocket/SSE is introduced for v1.
+
+Full request/response shapes, state tables, idempotency layers, failure rules,
+and first-slice criteria are authoritative only in
+[CMS/HAL Charging Integration v1](contracts/CMS_HAL_CHARGING_V1.md).
 
 ## Current Inherited Facts
 
-These are code observations as of the architecture-bootstrap audit, not future contract promises.
+These are copied-runtime observations, not proof of v1 implementation.
 
-- The service is an OCPP 1.6 central system backed by `ocpp-go`; its current central handlers create and close local transaction rows only from charger-originated StartTransaction and StopTransaction messages.
-- A connection-generation tracker prevents a stale disconnect from marking a newer connection for the same charger offline.
-- PostgreSQL can persist a local transaction row and callback-outbox task; without database configuration the process falls back to an in-memory store.
-- MeterValues currently selects one energy-register-like sample, updates a local live meter value, and can initiate a local max-kWh stop workflow.
-- The inherited callback worker posts legacy-shaped start/completion payloads to configured URLs, derives `max_kwh` from the start callback response, and retries from an outbox. Those URLs and payloads are legacy integration facts.
-- Boot recovery loads local open rows, force-closes a narrow "Available" ghost case, and otherwise hydrates in-memory state before retrying RemoteStop and Unlock. It does not make a remote-stop acknowledgement a local completion.
-- Existing `/api/*` and `/frontend/ws/*` surfaces use one shared API key or no frontend authentication. Their schemas and authorization are not an approved new-CMS interface.
-- The copied module/import identity still names the legacy repository. Build and regression scripts now derive this checkout root from their script location; that remediation did not change test semantics or runtime behavior.
+- Current central handlers already create/close local transaction rows only from
+  charger-originated StartTransaction/StopTransaction, and use a connection
+  generation guard against stale disconnects.
+- Current MeterValues selects one usable energy-register sample and may trigger
+  a legacy max-kWh stop workflow. It does not persist raw meter history.
+- Current PostgreSQL transaction/outbox state has an in-memory fallback. The
+  approved production rule now prohibits that fallback in production, but code
+  has not yet been changed.
+- Existing callback URLs/payloads, `max_kwh` response coupling, `POST /api/*`,
+  optional charger-directory behavior, and frontend WebSockets are legacy
+  behavior, not v1 routes or contracts.
+- The copied module/import identity still names the legacy repository. Scripts
+  derive this checkout root from their script location; that remediation did not
+  change runtime test semantics.
 
-## Unresolved Design Decisions
+## Open Decisions
 
-The following require a jointly reviewed new-CMS/HAL design before runtime work. No endpoint, event, callback, table, or payload schema is fixed here.
+The following remain deliberately unresolved and must not be invented during
+implementation:
 
-1. The authenticated service-boundary mechanism, service identities, key or certificate rotation, authorization context, replay protection, and audit fields.
-2. How CMS submits charger commands, obtains command acceptance/timeout status, retries idempotently, and later correlates charger-originated truth with a business charging-session projection.
-3. The stable cross-system identifiers for CPO, charger, connector, customer, authorization attempt, OCPP transaction, CMS session, and command intent.
-4. The CMS-to-HAL eligibility decision and the HAL-to-CMS start, meter, stop, recovery, and command-result information. This includes which data is durable, raw, sampled, aggregated, or privacy-restricted.
-5. The tariff/wallet limit decision flow: CMS owns pricing and eligibility; HAL may execute an approved charger stop command, but the source, units, timing, and acknowledgement/reconciliation semantics are undecided.
-6. Whether a durable outbox/event mechanism, synchronous service calls, or a combination is used across the service boundary, including retries, deduplication, ordering, terminal failures, and reconciliation.
-7. The new owner and source of truth for charger enrollment/directory data, availability and status projections, customer-facing realtime updates, and access control.
-8. Which inherited database fields and migrations remain HAL-local OCPP audit state, how they are evolved additively, and how no CMS database coupling is introduced.
-9. The fate of legacy single-session routing, the legacy REST compatibility API, permissive frontend WebSockets, remote-only configuration policy, and all legacy callback URLs/payloads.
-10. The authoritative machine-readable contracts, interactive documentation, contract-drift checks, and migration/rollout sequence for any new external surface.
+1. Exact service authentication, key/certificate rotation, and deployment
+   topology.
+2. Wallet overshoot, debt, or negative-balance policy.
+3. Exact energy stop-guard formula and supporting charger power/sampling
+   evidence.
+4. RFID lifecycle and offline authorization policy.
+5. Generalized realtime/live-availability projection.
+6. Legacy REST/callback/WebSocket retirement sequencing.
+7. Detailed migration/table design and implementation retry constants.
 
-## Required Decision Method
+## Required Implementation Method
 
-Before resolving an item above, inspect both sides of the proposed interaction: the CMS business requirement and data authority, the HAL OCPP/recovery requirement, existing consumers, failure modes, duplicate delivery, restart behavior, authorization, and auditability. Record the approved result here and in the appropriate machine-readable and integration contract documents.
+Implement the approved first vertical slice only through the v1 contract. Before
+runtime work, map every affected CMS/HAL producer, consumer, durable state,
+migration, authentication boundary, retry, recovery, test, and documentation
+surface. Do not reinterpret an open decision as a license to bypass a v1
+invariant.
