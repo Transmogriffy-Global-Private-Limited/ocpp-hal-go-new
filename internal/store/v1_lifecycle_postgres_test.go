@@ -32,6 +32,14 @@ func TestCanonicalV1JSONRFC8785Vector(t *testing.T) {
 	}
 }
 
+func TestNormalizeV1FactOccurredAtUsesUTCMicroseconds(t *testing.T) {
+	input := time.Date(2026, 8, 13, 17, 31, 37, 155787095, time.FixedZone("IST", 5*60*60+30*60))
+	want := time.Date(2026, 8, 13, 12, 1, 37, 155787000, time.UTC)
+	if got := normalizeV1FactOccurredAt(input); !got.Equal(want) || got.Location() != time.UTC || got.Nanosecond() != want.Nanosecond() {
+		t.Fatalf("normalized occurred_at=%s, want %s", got, want)
+	}
+}
+
 func TestV1FactPayloadsConformToApprovedFieldNames(t *testing.T) {
 	now := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	transaction := &V1Transaction{

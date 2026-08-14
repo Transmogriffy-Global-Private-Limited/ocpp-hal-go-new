@@ -70,15 +70,7 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 }
 
 func (w *Worker) deliver(ctx context.Context, fact store.V1Fact) {
-	envelope, err := json.Marshal(struct {
-		FactID                 string          `json:"fact_id"`
-		FactType               string          `json:"fact_type"`
-		SchemaVersion          int             `json:"schema_version"`
-		OccurredAt             time.Time       `json:"occurred_at"`
-		Producer               string          `json:"producer"`
-		ImmutableContentSHA256 string          `json:"immutable_content_sha256"`
-		Payload                json.RawMessage `json:"payload"`
-	}{fact.FactID, fact.FactType, fact.SchemaVersion, fact.OccurredAt, fact.Producer, fact.ContentSHA256, json.RawMessage(fact.Payload)})
+	envelope, err := json.Marshal(fact.Envelope())
 	if err != nil {
 		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, 0, false, true, "invalid durable fact payload", time.Now().UTC())
 		return

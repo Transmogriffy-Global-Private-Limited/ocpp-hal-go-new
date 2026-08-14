@@ -2,7 +2,10 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
+	"encoding/json"
 	"os"
 	"sync"
 	"testing"
@@ -10,6 +13,56 @@ import (
 
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/config"
 )
+
+func TestV1FactOutboxPostgresRoundTripPreservesImmutableDigest(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is required for the disposable PostgreSQL fact-outbox regression test")
+	}
+	ctx := context.Background()
+	s, err := NewPostgresStore(config.Config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+
+	occurredAt := time.Date(2026, 8, 13, 12, 1, 37, 155787095, time.UTC)
+	factID := insertFactOutboxFixtureAt(t, s, "digest-round-trip", occurredAt)
+	defer deleteFactOutboxFixture(t, s, factID)
+
+	claimed, err := s.ClaimV1Facts(ctx, time.Now().UTC(), 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fact, ok := findFact(claimed, factID)
+	if !ok {
+		t.Fatalf("fact %s was not claimed", factID)
+	}
+	wantOccurredAt := occurredAt.UTC().Truncate(time.Microsecond)
+	if !fact.OccurredAt.Equal(wantOccurredAt) || fact.OccurredAt.Location() != time.UTC || fact.OccurredAt.Nanosecond() != wantOccurredAt.Nanosecond() {
+		t.Fatalf("reloaded occurred_at=%s, want UTC microsecond %s", fact.OccurredAt, wantOccurredAt)
+	}
+
+	// Start from the same wire envelope used by the delivery worker, then model
+	// the receiver's immutable-content check by omitting the digest field.
+	delivered, err := json.Marshal(fact.Envelope())
+	if err != nil {
+		t.Fatal(err)
+	}
+	immutable := map[string]json.RawMessage{}
+	if err := json.Unmarshal(delivered, &immutable); err != nil {
+		t.Fatal(err)
+	}
+	delete(immutable, "immutable_content_sha256")
+	canonical, err := canonicalV1JSON(immutable)
+	if err != nil {
+		t.Fatal(err)
+	}
+	digest := sha256.Sum256(canonical)
+	if got := hex.EncodeToString(digest[:]); got != fact.ContentSHA256 {
+		t.Fatalf("reloaded immutable digest=%s, stored=%s", got, fact.ContentSHA256)
+	}
+}
 
 func TestV1FactOutboxReclaimsExpiredDeliveryLease(t *testing.T) {
 	dsn := os.Getenv("DATABASE_URL")
@@ -108,6 +161,10 @@ func TestV1FactOutboxDoesNotStealActiveLeaseAndClaimsOnceConcurrently(t *testing
 }
 
 func insertFactOutboxFixture(t *testing.T, s *PostgresStore, marker string) string {
+	return insertFactOutboxFixtureAt(t, s, marker, time.Now().UTC())
+}
+
+func insertFactOutboxFixtureAt(t *testing.T, s *PostgresStore, marker string, occurredAt time.Time) string {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -116,7 +173,7 @@ func insertFactOutboxFixture(t *testing.T, s *PostgresStore, marker string) stri
 	}
 	defer tx.Rollback()
 	aggregate := "test-fact-" + NewUUIDString()
-	if err := s.insertV1FactTx(ctx, tx, "test.fact", aggregate, nil, time.Now().UTC(), map[string]any{"marker": marker, "nested": map[string]any{"active": true}, "nullable": nil}); err != nil {
+	if err := s.insertV1FactTx(ctx, tx, "charger.connection.updated", aggregate, nil, occurredAt, map[string]any{"marker": marker, "nested": map[string]any{"active": true}, "observed_at": occurredAt, "nullable": nil}); err != nil {
 		t.Fatal(err)
 	}
 	if err := tx.Commit(); err != nil {

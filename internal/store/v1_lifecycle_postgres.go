@@ -14,6 +14,57 @@ import (
 
 const v1FactProducer = "ocpp-hal-go-new"
 
+// V1FactEnvelope is the exact immutable fact representation sent to the CMS.
+// The digest field is omitted only while canonicalizing immutable content.
+type V1FactEnvelope struct {
+	FactID                 string          `json:"fact_id"`
+	FactType               string          `json:"fact_type"`
+	SchemaVersion          int             `json:"schema_version"`
+	OccurredAt             time.Time       `json:"occurred_at"`
+	Producer               string          `json:"producer"`
+	ImmutableContentSHA256 string          `json:"immutable_content_sha256"`
+	Payload                json.RawMessage `json:"payload"`
+}
+
+type v1ImmutableFactEnvelope struct {
+	FactID        string          `json:"fact_id"`
+	FactType      string          `json:"fact_type"`
+	SchemaVersion int             `json:"schema_version"`
+	OccurredAt    time.Time       `json:"occurred_at"`
+	Producer      string          `json:"producer"`
+	Payload       json.RawMessage `json:"payload"`
+}
+
+// Envelope returns the wire representation used for CMS fact delivery.
+func (f V1Fact) Envelope() V1FactEnvelope {
+	return V1FactEnvelope{
+		FactID:                 f.FactID,
+		FactType:               f.FactType,
+		SchemaVersion:          f.SchemaVersion,
+		OccurredAt:             f.OccurredAt,
+		Producer:               f.Producer,
+		ImmutableContentSHA256: f.ContentSHA256,
+		Payload:                json.RawMessage(f.Payload),
+	}
+}
+
+func (f V1Fact) immutableEnvelope() v1ImmutableFactEnvelope {
+	return v1ImmutableFactEnvelope{
+		FactID:        f.FactID,
+		FactType:      f.FactType,
+		SchemaVersion: f.SchemaVersion,
+		OccurredAt:    f.OccurredAt,
+		Producer:      f.Producer,
+		Payload:       json.RawMessage(f.Payload),
+	}
+}
+
+// normalizeV1FactOccurredAt matches PostgreSQL TIMESTAMPTZ's durable precision
+// and produces the single representation used for hashing and delivery.
+func normalizeV1FactOccurredAt(occurredAt time.Time) time.Time {
+	return occurredAt.UTC().Truncate(time.Microsecond)
+}
+
 // canonicalV1JSON first establishes ordinary JSON representation, then applies
 // RFC 8785 JSON Canonicalization Scheme to that JSON-compatible value.
 func canonicalV1JSON(value any) ([]byte, error) {
@@ -25,17 +76,25 @@ func canonicalV1JSON(value any) ([]byte, error) {
 }
 
 func (s *PostgresStore) insertV1FactTx(ctx context.Context, tx *sql.Tx, factType, aggregate string, sequence *int64, occurredAt time.Time, payload map[string]any) error {
+	occurredAt = normalizeV1FactOccurredAt(occurredAt)
 	body, err := canonicalV1JSON(payload)
 	if err != nil {
 		return err
 	}
-	factID := NewUUIDString()
-	envelope, err := canonicalV1JSON(map[string]any{"fact_id": factID, "fact_type": factType, "schema_version": 1, "occurred_at": occurredAt, "producer": v1FactProducer, "payload": payload})
+	fact := V1Fact{
+		FactID:        NewUUIDString(),
+		FactType:      factType,
+		SchemaVersion: 1,
+		OccurredAt:    occurredAt,
+		Producer:      v1FactProducer,
+		Payload:       body,
+	}
+	envelope, err := canonicalV1JSON(fact.immutableEnvelope())
 	if err != nil {
 		return err
 	}
 	digest := sha256.Sum256(envelope)
-	_, err = tx.ExecContext(ctx, `INSERT INTO v1_fact_outbox (fact_id,fact_type,aggregate_key,sequence,payload,content_digest,schema_version,occurred_at,producer,status,next_retry_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,1,$7,$8,'PENDING',$7) ON CONFLICT (fact_type,aggregate_key,sequence) DO NOTHING`, factID, factType, aggregate, sequence, string(body), hex.EncodeToString(digest[:]), occurredAt, v1FactProducer)
+	_, err = tx.ExecContext(ctx, `INSERT INTO v1_fact_outbox (fact_id,fact_type,aggregate_key,sequence,payload,content_digest,schema_version,occurred_at,producer,status,next_retry_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,1,$7,$8,'PENDING',$7) ON CONFLICT (fact_type,aggregate_key,sequence) DO NOTHING`, fact.FactID, factType, aggregate, sequence, string(body), hex.EncodeToString(digest[:]), occurredAt, v1FactProducer)
 	return err
 }
 
@@ -456,6 +515,7 @@ func (s *PostgresStore) ClaimV1Facts(ctx context.Context, now time.Time, limit i
 		if err := rows.Scan(&f.FactID, &f.FactType, &f.SchemaVersion, &f.OccurredAt, &f.Producer, &f.ContentSHA256, &f.Payload, &f.Status, &f.Retries, &f.NextRetryAt, &claim, &status, &f.LastError); err != nil {
 			return nil, err
 		}
+		f.OccurredAt = normalizeV1FactOccurredAt(f.OccurredAt)
 		if claim.Valid {
 			f.ClaimedUntil = &claim.Time
 		}

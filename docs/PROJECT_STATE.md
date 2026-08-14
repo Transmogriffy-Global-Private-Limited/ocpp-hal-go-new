@@ -12,8 +12,9 @@ only exposes the authenticated v1 service boundary.
   workflows, recovery queries, and immutable fact delivery.
 - `POST /v1/hal-facts` delivery supports stable fact identity/digest,
   idempotent retry, transient/terminal classification, lost acknowledgement,
-  and expired-lease reclaim. API docs are served only when
-  `API_DOCS_ENABLED=true`.
+  expired-lease reclaim, and UTC-microsecond durable envelope timestamps so
+  the persisted fact digest remains valid after PostgreSQL reload. API docs
+  are served only when `API_DOCS_ENABLED=true`.
 - The Go module identity is
   `github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new`.
 

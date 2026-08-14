@@ -301,6 +301,11 @@ HAL creates `fact_id` once with the durable immutable fact/outbox record.
 Serialization of the complete envelope with that field omitted. CMS stores the
 fact ID and digest in its durable receipt transaction.
 
+At the durable outbox boundary, HAL normalizes the envelope `occurred_at` to
+UTC microsecond precision before both hashing and PostgreSQL persistence. This
+is the immutable top-level timestamp delivered on every retry; payload
+timestamps retain their own contract-defined precision.
+
 - The same fact ID and digest is an exact duplicate: CMS returns `204` without
   repeating state or financial effects.
 - The same fact ID with a different digest is `409 fact_integrity_violation`.

@@ -4,7 +4,7 @@ Status: In Progress
 Owner: Codex
 Collaborators: None
 Started: 2026-08-10
-Last updated: 2026-08-10
+Last updated: 2026-08-14
 
 Development-plan reference: `docs/DEVELOPMENT_PLAN.md`
 Detailed-plan reference: `docs/plans/HAL_V1_CONSUMER_DEMAND_MATRIX.md`
@@ -77,6 +77,10 @@ durable fact delivery.
   completion command correlation, and command error evidence), replaced the
   local fact canonicalizer with RFC 8785 JCS, and added PostgreSQL lease/
   contention plus HTTP delivery classification tests.
+- Fact creation now normalizes the immutable envelope `occurred_at` to UTC
+  microsecond precision before hashing and persistence; reload normalizes the
+  same field before delivery. A PostgreSQL round-trip regression covers a
+  non-microsecond-aligned timestamp.
 - Remaining work is end-to-end verification expansion: real full lifecycle
   with a fact receiver, manual/energy/time/natural stop, concurrent stop races,
   and restart/crash scenarios. CMS consumer work is not in scope.
@@ -90,6 +94,11 @@ durable fact delivery.
   `git diff --check`, and a complete diff review.
 - This pass still requires final full-suite, vet, build-script, regression
   script, and complete-diff verification after the v1-only retirement edits.
+- 2026-08-14 fact timestamp hardening: focused `internal/store` and
+  `internal/v1facts` tests, `go test ./...`, and `go vet ./...` pass with
+  database environment variables removed. The new PostgreSQL round-trip
+  regression is skipped until a clearly disposable `TEST_DATABASE_URL` is
+  supplied; it has not been run against a runtime database.
 
 ## Handoff
 

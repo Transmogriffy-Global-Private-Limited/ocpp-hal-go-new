@@ -1,5 +1,28 @@
 # AI-assisted changelog
 
+## 2026-08-14 - durable fact timestamp canonicalization
+
+- Normalized v1 fact-envelope `occurred_at` to UTC microsecond precision at
+  the PostgreSQL outbox boundary before immutable-content hashing and
+  persistence, then normalized the reloaded value before delivery.
+- Made the durable fact model the shared owner of the delivery-envelope shape,
+  so digest construction, PostgreSQL round-trip coverage, and worker delivery
+  use the same immutable fields.
+- Added a focused unit test and a disposable-`TEST_DATABASE_URL` PostgreSQL
+  regression that creates a fact with non-microsecond nanoseconds, reloads it
+  through the real claim path, reconstructs the delivered envelope, and
+  verifies the receiver-side canonical digest equals `content_digest`.
+
+Compatibility: the v1 fact contract and CMS integrity validation are unchanged.
+Existing outbox rows are not rewritten; fact IDs, sequences, retries, and
+reconciliation behavior are unchanged.
+
+Verification: `gofmt`; focused `go test ./internal/store ./internal/v1facts`;
+`go test ./...`; and `go vet ./...` passed with `DATABASE_URL` and
+`TEST_DATABASE_URL` removed from the process environment. The PostgreSQL
+round-trip regression requires a clearly disposable `TEST_DATABASE_URL` and
+was not run against a runtime database.
+
 ## 2026-08-10 - v1-only HAL runtime and lifecycle proof
 
 - Replaced the inherited old-CMS process wiring with the authenticated v1
