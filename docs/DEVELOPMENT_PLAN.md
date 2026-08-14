@@ -23,6 +23,9 @@ Completed in this slice:
 - Current connection-liveness slice: accepted current-connection Heartbeats
   renew durable `ONLINE` evidence and ordered facts without changing generation;
   the requested OCPP cadence is configurable with a five-minute default.
+- Software-charger automation slice: `cpconsole` now models Boot-driven
+  Heartbeats and an optional one-shot normal charging session without creating
+  a second protocol or state-machine path.
 
 ## Next Approved Work
 

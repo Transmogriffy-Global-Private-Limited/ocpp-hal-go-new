@@ -27,6 +27,12 @@ setting, to interpret that evidence.
 `scripts/build-all.ps1` and `scripts/regression-local.ps1` from any checkout
 directory; both derive the repository root from their own location.
 
+After an accepted BootNotification, `cpconsole` sends automatic Heartbeats at
+the server-requested interval by default. Its `-heartbeat-interval` flag and
+`CP_SIM_HEARTBEAT_INTERVAL` fallback permit a deterministic test cadence, while
+optional one-shot startup charging and automatic metering retain the same
+interactive OCPP state machine. See `docs/SOFTWARE_CHARGER.md`.
+
 Read [docs/README.md](docs/README.md) for the contract, architecture, audit,
 and verification map. Do not commit, push, deploy, or modify the legacy or CMS
 repositories without explicit human permission.

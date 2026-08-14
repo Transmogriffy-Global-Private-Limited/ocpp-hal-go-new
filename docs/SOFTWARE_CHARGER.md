@@ -56,9 +56,21 @@ Supported flags:
 | `-meter-start-wh` | `CP_SIM_METER_START_WH` | `100000` | Initial cumulative energy register. |
 | `-voltage` | `CP_SIM_VOLTAGE` | `230` | Voltage used for coherent current calculation. |
 | `-soc` | `CP_SIM_SOC` | `35` | Initial EV state of charge. |
+| `-heartbeat-interval` | `CP_SIM_HEARTBEAT_INTERVAL` | `0` | Simulator Heartbeat cadence in seconds. `0` honors the accepted `BootNotification.conf.interval`; a positive value is an explicit override. |
+| `-auto-start-id-tag` | `CP_SIM_AUTO_START_ID_TAG` | empty | Run one normal local session after boot using this idTag. |
+| `-auto-power-kw` | `CP_SIM_AUTO_POWER_KW` | `7.2` | Power used by startup automatic metering. |
+| `-auto-meter-interval` | `CP_SIM_AUTO_METER_INTERVAL` | `0` | Automatic MeterValues cadence in seconds after a successful startup transaction. `0` disables it. |
 
 Flags take precedence over environment values. These variables are simulator
 client settings; they are not consumed by the HAL server.
+
+`cpconsole` starts automatic Heartbeats only after an accepted BootNotification.
+It prints both the server-requested interval and, when configured, the explicit
+effective override. A valid Central System `ChangeConfiguration` for
+`HeartbeatInterval` reschedules the live worker when no override is set. An
+explicit `-heartbeat-interval` or `CP_SIM_HEARTBEAT_INTERVAL` wins for the
+process lifetime, so that remote configuration request is rejected rather than
+silently reporting one cadence while using another.
 
 ## Build and run on Windows
 
@@ -66,6 +78,19 @@ client settings; they are not consumed by the HAL server.
 Set-Location C:\path\to\ocpp-hal-go-new
 .\scripts\build-all.ps1
 .\builds\cpconsole.exe -id CP-SIM-001 -url ws://127.0.0.1:18081
+```
+
+Hosted development examples:
+
+```powershell
+# Manual charger with the server-requested Heartbeat cadence.
+go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connector 1
+
+# Manual charger with a 60-second simulator Heartbeat override.
+go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connector 1 -heartbeat-interval 60
+
+# One realistic local session, then retain the interactive cp> prompt.
+go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connector 1 -heartbeat-interval 60 -auto-start-id-tag USER001 -auto-power-kw 7.2 -auto-meter-interval 10
 ```
 
 ## Build for Linux VPS2 from Windows
@@ -147,6 +172,15 @@ unplug
 The energy register is monotonic and is transmitted in Wh. Transaction IDs are
 assigned by the Central System and never fabricated by the simulator.
 
+When `-auto-start-id-tag` is present, cpconsole performs this exact flow once
+after boot reports `Available`: `plug`, `Authorize`, `StartTransaction`, and
+`StatusNotification Charging`. It retains the Central-System-assigned
+transaction ID. If `-auto-meter-interval` is positive, it starts the same
+periodic meter worker used by `auto <seconds> <power-kW>` only after that start
+has succeeded. A failed startup step is printed with its exact phase and leaves
+the terminal prompt usable; automatic startup never retries after a stop or
+failure.
+
 ## Remote CMS flow
 
 By default, valid `RemoteStartTransaction` and `RemoteStopTransaction` requests
@@ -178,10 +212,15 @@ matches the active server-assigned transaction.
 Run `help` inside the program for the canonical compact command list.
 
 - `state` prints connection, boot, connector, meter, transaction and policy state.
-- `heartbeat` sends an on-demand OCPP heartbeat.
+- `state` also shows server/effective Heartbeat cadence, active workers, and
+  automatic-meter cadence/power.
+- `heartbeat` sends an on-demand OCPP heartbeat while automatic Heartbeats run.
 - `plug`, `unplug`, `finish`, `suspend ev|evse`, and `resume` model normal states.
 - `authorize`, `start`, `tick`, `meter`, and `stop` drive the transaction lifecycle.
 - `auto <seconds> <power-kW>` sends periodic coherent readings; `auto off` stops it.
+- Automatic metering pauses without adding energy while a manual command leaves
+  the connector outside `Charging` (for example `suspend ev` or `fault`), and
+  resumes only when the same state machine returns to `Charging`.
 - `fault <error-code>` and `clear-fault` test valid OCPP fault behavior.
 - `status <ocpp-status>` is an explicit escape hatch for protocol edge testing.
 - `policy ...` controls responses and automatic execution of remote commands.
@@ -217,6 +256,11 @@ the simulator process; durable business truth remains in the Central System.
   the HAL's recovery commands.
 - `Ctrl+C` or `quit` stops the client. Use an explicit `stop` first when the test
   requires a normal completed transaction and HAL fact delivery.
+- Automatic Heartbeats continue while the terminal waits at `cp>`. A Heartbeat
+  failure is printed and the worker continues so transient transport errors do
+  not invent success or terminate manual control. `quit`, Ctrl+C, `auto off`,
+  and normal transaction stop cancel the applicable worker; shutdown waits for
+  active simulator workers before closing the Charge Point.
 
 ## Verification
 

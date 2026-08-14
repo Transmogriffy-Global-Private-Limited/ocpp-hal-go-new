@@ -1,5 +1,26 @@
 # AI-assisted changelog
 
+## 2026-08-14 - cpconsole heartbeat and startup automation
+
+- Added BootNotification-driven periodic Heartbeats to the OCPP-native
+  `cpconsole` simulator. `-heartbeat-interval` and
+  `CP_SIM_HEARTBEAT_INTERVAL` use `0` for the accepted server interval and a
+  positive value for an explicit process-lifetime override.
+- Added optional one-shot `-auto-start-id-tag`, `-auto-power-kw`, and
+  `-auto-meter-interval` startup behavior. It invokes the existing plug,
+  authorization, transaction, status, and meter operations, then preserves
+  manual terminal control of that same state.
+- Made simulator `HeartbeatInterval` configuration coherent with the effective
+  scheduler. A valid remote reconfiguration reschedules an unoverridden worker;
+  an explicit CLI/env override rejects the change deterministically.
+
+Compatibility: HAL runtime, durable state, database schema, CMS, and legacy
+repositories are unchanged.
+
+Verification: focused cpconsole scheduler/configuration/automation tests,
+full Go tests, vet, repository build, and diff checks are recorded with this
+slice. No runtime service, database, or live charger was used.
+
 ## 2026-08-14 - durable Heartbeat connection liveness
 
 - Added `OCPP_HEARTBEAT_INTERVAL_SECONDS` with a backward-compatible `300`

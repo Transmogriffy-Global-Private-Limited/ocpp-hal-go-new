@@ -89,6 +89,10 @@ durable fact delivery.
   observation through the same ordered connection-fact stream without changing
   generation. The v1 contract deliberately uses Heartbeats only for renewal to
   bound fact volume; CMS owns the longer independent stale horizon.
+- The retained OCPP-native `cpconsole` now has Boot-driven automatic
+  Heartbeats, an optional one-shot local session, and optional periodic
+  MeterValues while preserving the manual terminal state machine. This is test
+  tooling only and does not alter the HAL service contract.
 - Remaining work is end-to-end verification expansion: real full lifecycle
   with a fact receiver, manual/energy/time/natural stop, concurrent stop races,
   and restart/crash scenarios. CMS consumer work is not in scope.
@@ -116,6 +120,10 @@ durable fact delivery.
   removed. The disposable PostgreSQL renewal regression is skipped without
   `TEST_DATABASE_URL`. The physical charger procedure is documented in the CMS
   boundary guide and requires a separately approved deployment.
+- 2026-08-14 cpconsole automation: focused and race-enabled cpconsole tests,
+  `go test ./...`, `go vet ./...`, and `scripts/build-all.ps1` pass. The
+  PostgreSQL regression script and physical charger check remain unrun because
+  no disposable database or deployment approval was supplied.
 
 ## Handoff
 

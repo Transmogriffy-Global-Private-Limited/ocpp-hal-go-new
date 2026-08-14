@@ -11,6 +11,10 @@ only exposes the authenticated v1 service boundary.
   Heartbeat-driven durable liveness renewal, connector OCPP status, exact credential authorization, charger-originated
   transaction start/completion, integer-Wh meter progression, energy/time stop
   workflows, recovery queries, and immutable fact delivery.
+- `cpconsole` is an OCPP-native interactive virtual charger with Boot-driven
+  automatic Heartbeats, an explicit cadence override, one-shot normal local
+  startup sessions, and optional periodic metering. It remains a test client,
+  not HAL runtime behavior or a durable source of truth.
 - `POST /v1/hal-facts` delivery supports stable fact identity/digest,
   idempotent retry, transient/terminal classification, lost acknowledgement,
   expired-lease reclaim, and UTC-microsecond durable envelope timestamps so
