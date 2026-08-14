@@ -15,8 +15,9 @@ type Config struct {
 	RESTHost string
 	RESTPort string
 
-	OCPPListenPort int
-	OCPPListenPath string
+	OCPPListenPort               int
+	OCPPListenPath               string
+	OCPPHeartbeatIntervalSeconds int
 
 	LogLevel slog.Level
 
@@ -44,8 +45,9 @@ func Load() Config {
 		RESTHost: env("F_SERVER_HOST", "127.0.0.1"),
 		RESTPort: env("F_SERVER_PORT", "18080"),
 
-		OCPPListenPort: envInt("OCPP_LISTEN_PORT", 18081),
-		OCPPListenPath: env("OCPP_LISTEN_PATH", "/{ws}"),
+		OCPPListenPort:               envInt("OCPP_LISTEN_PORT", 18081),
+		OCPPListenPath:               env("OCPP_LISTEN_PATH", "/{ws}"),
+		OCPPHeartbeatIntervalSeconds: envInt("OCPP_HEARTBEAT_INTERVAL_SECONDS", 300),
 
 		LogLevel: parseLogLevel(env("LOG_LEVEL", "info")),
 

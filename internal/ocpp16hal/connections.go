@@ -72,6 +72,18 @@ func (t *connectionTracker) unregisterIfCurrent(chargerID string, key string) (b
 	return true, &currentCopy
 }
 
+func (t *connectionTracker) current(chargerID string) (*connectionRecord, bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	record, ok := t.active[chargerID]
+	if !ok {
+		return nil, false
+	}
+	copy := record
+	return &copy, true
+}
+
 func connectionKey(chargePoint ocpp16.ChargePointConnection) string {
 	value := reflect.ValueOf(chargePoint)
 	if value.IsValid() {

@@ -80,6 +80,11 @@ outside this work.
   durable generation baseline, and then lets the first new-process connection
   establish `ONLINE`. Durable connection sequence, not generation, orders CMS
   projection facts across process restarts.
+- An accepted OCPP Heartbeat from the current tracked connection is durable
+  liveness evidence: it preserves `ONLINE` and generation, advances connection
+  sequence, and publishes the corresponding fact. Heartbeat renewal cannot
+  create or resurrect a connection. The default requested cadence is five
+  minutes; CMS owns a separately configured, longer stale horizon.
 - Boundary handling is fail-safe: malformed, unauthorized, stale, duplicate,
   out-of-order, inconsistent, or ambiguous input never authorizes a business
   outcome by guesswork. Durable identity and auditability are required.

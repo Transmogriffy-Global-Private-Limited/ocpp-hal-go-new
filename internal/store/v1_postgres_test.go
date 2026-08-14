@@ -292,3 +292,107 @@ func TestV1ConnectionRuntimeRestartAcceptsNewProcessGeneration(t *testing.T) {
 		}
 	}
 }
+
+func TestV1CurrentConnectionRenewal(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is required for disposable PostgreSQL liveness regression")
+	}
+	ctx := context.Background()
+	s, err := NewPostgresStore(config.Config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.db.Close() })
+
+	input := V1MappingInput{
+		CPOID:               NewUUIDString(),
+		CMSChargerID:        NewUUIDString(),
+		ChargerOCPPIdentity: "CP-LIVENESS-" + NewUUIDString()[:8],
+		Enabled:             true,
+		CorrelationID:       "connection-liveness-test",
+		RequestDigest:       "connection-liveness-digest",
+	}
+	if _, existed, err := s.SyncV1Mapping(ctx, input); err != nil || existed {
+		t.Fatalf("sync mapping existed=%v err=%v", existed, err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_fact_outbox WHERE aggregate_key=$1`, input.ChargerOCPPIdentity)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_charger_runtime WHERE charger_ocpp_identity=$1`, input.ChargerOCPPIdentity)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_mapping_audit WHERE cms_charger_id=$1::uuid`, input.CMSChargerID)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_charger_mappings WHERE cms_charger_id=$1::uuid`, input.CMSChargerID)
+	})
+
+	first := time.Now().UTC().Truncate(time.Microsecond)
+	if err := s.RecordV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, true, first); err != nil {
+		t.Fatal(err)
+	}
+	second := first.Add(time.Minute)
+	if err := s.RenewCurrentV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, second); err != nil {
+		t.Fatal(err)
+	}
+	third := second.Add(time.Minute)
+	if err := s.RenewCurrentV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, third); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := s.GetV1ChargerRuntime(ctx, input.ChargerOCPPIdentity)
+	if err != nil || runtime.ConnectionState != "ONLINE" || runtime.ConnectionGeneration != 1 || runtime.ConnectionSequence != 3 || runtime.LastObservedAt == nil || !runtime.LastObservedAt.Equal(third) {
+		t.Fatalf("renewed runtime=%#v err=%v", runtime, err)
+	}
+	if err := s.RenewCurrentV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, second); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err = s.GetV1ChargerRuntime(ctx, input.ChargerOCPPIdentity)
+	if err != nil || runtime.ConnectionSequence != 3 || runtime.LastObservedAt == nil || !runtime.LastObservedAt.Equal(third) {
+		t.Fatalf("older renewal changed runtime=%#v err=%v", runtime, err)
+	}
+
+	if err := s.RecordV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, false, third.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenewCurrentV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, third.Add(2*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err = s.GetV1ChargerRuntime(ctx, input.ChargerOCPPIdentity)
+	if err != nil || runtime.ConnectionState != "OFFLINE" || runtime.ConnectionGeneration != 1 || runtime.ConnectionSequence != 4 {
+		t.Fatalf("offline renewal runtime=%#v err=%v", runtime, err)
+	}
+
+	if err := s.RecordV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 2, true, third.Add(3*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RenewCurrentV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, third.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err = s.GetV1ChargerRuntime(ctx, input.ChargerOCPPIdentity)
+	if err != nil || runtime.ConnectionState != "ONLINE" || runtime.ConnectionGeneration != 2 || runtime.ConnectionSequence != 5 {
+		t.Fatalf("stale-generation renewal runtime=%#v err=%v", runtime, err)
+	}
+
+	if err := s.RenewCurrentV1ChargerConnection(ctx, "CP-LIVENESS-UNKNOWN", 1, second); err != ErrV1MappingNotFound {
+		t.Fatalf("unmapped renewal err=%v", err)
+	}
+	disabled := input
+	disabled.CPOID, disabled.CMSChargerID = NewUUIDString(), NewUUIDString()
+	disabled.ChargerOCPPIdentity = "CP-LIVENESS-DISABLED-" + NewUUIDString()[:8]
+	disabled.Enabled, disabled.RequestDigest = false, "connection-liveness-disabled"
+	if _, existed, err := s.SyncV1Mapping(ctx, disabled); err != nil || existed {
+		t.Fatalf("sync disabled mapping existed=%v err=%v", existed, err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_charger_runtime WHERE charger_ocpp_identity=$1`, disabled.ChargerOCPPIdentity)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_mapping_audit WHERE cms_charger_id=$1::uuid`, disabled.CMSChargerID)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_charger_mappings WHERE cms_charger_id=$1::uuid`, disabled.CMSChargerID)
+	})
+	if err := s.RenewCurrentV1ChargerConnection(ctx, disabled.ChargerOCPPIdentity, 1, second); err != ErrV1CredentialRejected {
+		t.Fatalf("disabled renewal err=%v", err)
+	}
+
+	var facts int
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM v1_fact_outbox WHERE aggregate_key=$1 AND fact_type='charger.connection.updated'`, input.ChargerOCPPIdentity).Scan(&facts); err != nil {
+		t.Fatal(err)
+	}
+	if facts != 5 {
+		t.Fatalf("connection facts=%d, want 5", facts)
+	}
+}

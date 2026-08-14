@@ -8,7 +8,7 @@ only exposes the authenticated v1 service boundary.
 
 - Mapping-based charger admission, process-scoped generation-safe connection
   runtime with a restart-reset durable baseline and monotonic durable sequence,
-  connector OCPP status, exact credential authorization, charger-originated
+  Heartbeat-driven durable liveness renewal, connector OCPP status, exact credential authorization, charger-originated
   transaction start/completion, integer-Wh meter progression, energy/time stop
   workflows, recovery queries, and immutable fact delivery.
 - `POST /v1/hal-facts` delivery supports stable fact identity/digest,

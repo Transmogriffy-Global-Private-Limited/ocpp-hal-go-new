@@ -256,6 +256,7 @@ type V1Store interface {
 	ClaimV1Facts(context.Context, time.Time, int) ([]V1Fact, error)
 	MarkV1FactDelivery(context.Context, string, int, bool, bool, string, time.Time) error
 	RecordV1ChargerConnection(context.Context, string, int64, bool, time.Time) error
+	RenewCurrentV1ChargerConnection(context.Context, string, int64, time.Time) error
 	RecordV1ConnectorStatus(context.Context, V1ConnectorRuntime) error
 	GetV1ChargerRuntime(context.Context, string) (*V1ChargerRuntime, error)
 	GetV1ConnectorRuntime(context.Context, string) (*V1ConnectorRuntime, error)

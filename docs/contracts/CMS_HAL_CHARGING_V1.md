@@ -463,6 +463,17 @@ monotonically increasing `connection_sequence` per OCPP identity; CMS applies a
 connection fact only when its sequence advances, so delayed delivery cannot
 regress current connection state across reconnects or restarts.
 
+The first connection fact and each accepted OCPP Heartbeat from the current
+tracked connection are durable liveness observations. Heartbeat renewal keeps
+state `ONLINE` and its existing generation, advances `connection_sequence`, and
+publishes `charger.connection.updated` with a new `observed_at`; it never
+creates or resurrects a connection. Other charger-originated messages do not
+renew this connection fact in v1, preventing MeterValues and status traffic
+from amplifying connection-fact volume. The default requested OCPP heartbeat
+interval is `OCPP_HEARTBEAT_INTERVAL_SECONDS=300`; CMS connection freshness
+must be configured comfortably longer than that cadence and separately from
+meter freshness.
+
 When connection is `OFFLINE` or `UNKNOWN`, CMS marks the latest connector status
 as `STALE` for live use. It may retain `last_ocpp_status` and its observation
 time as historical data, but must not represent that old status as fresh live

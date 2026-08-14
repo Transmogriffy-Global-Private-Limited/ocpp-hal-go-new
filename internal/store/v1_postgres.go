@@ -588,6 +588,42 @@ func (s *PostgresStore) RecordV1ChargerConnection(ctx context.Context, identity 
 	}
 	return tx.Commit()
 }
+
+// RenewCurrentV1ChargerConnection records a current connection's durable
+// liveness evidence. It cannot create or resurrect a connection state.
+func (s *PostgresStore) RenewCurrentV1ChargerConnection(ctx context.Context, identity string, generation int64, at time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var cpoID, chargerID string
+	var enabled bool
+	err = tx.QueryRowContext(ctx, `SELECT cpo_id::text,cms_charger_id::text,enabled FROM v1_charger_mappings WHERE charger_ocpp_identity=$1 FOR SHARE`, identity).Scan(&cpoID, &chargerID, &enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrV1MappingNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return ErrV1CredentialRejected
+	}
+
+	var sequence int64
+	err = tx.QueryRowContext(ctx, `UPDATE v1_charger_runtime SET last_observed_at=$3::timestamptz,updated_at=$3::timestamptz,connection_sequence=connection_sequence+1 WHERE charger_ocpp_identity=$1 AND connection_generation=$2 AND connection_state='ONLINE' AND last_observed_at<$3::timestamptz RETURNING connection_sequence`, identity, generation, at).Scan(&sequence)
+	if errors.Is(err, sql.ErrNoRows) {
+		return tx.Commit()
+	}
+	if err != nil {
+		return err
+	}
+	if err := s.insertV1FactTx(ctx, tx, "charger.connection.updated", identity, &sequence, at, v1ConnectionFact(cpoID, chargerID, identity, "ONLINE", generation, sequence, at)); err != nil {
+		return err
+	}
+	return tx.Commit()
+}
 func (s *PostgresStore) RecordV1ConnectorStatus(ctx context.Context, r V1ConnectorRuntime) error {
 	if r.ObservedAt == nil {
 		now := time.Now().UTC()

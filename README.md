@@ -17,6 +17,12 @@ allowed only for an enabled v1 mapping. CMS uses the authenticated v1 command,
 runtime, and reconciliation routes; HAL sends immutable facts to the configured
 authenticated `/v1/hal-facts` receiver.
 
+`OCPP_HEARTBEAT_INTERVAL_SECONDS` defaults to `300`. An accepted Heartbeat from
+the current mapped connection renews durable `ONLINE` evidence and emits a new
+ordered connection fact; it does not create a new connection generation. CMS
+must use its separate connection freshness setting, not its meter freshness
+setting, to interpret that evidence.
+
 `cpconsole` is the retained OCPP-native virtual charge point. Use
 `scripts/build-all.ps1` and `scripts/regression-local.ps1` from any checkout
 directory; both derive the repository root from their own location.

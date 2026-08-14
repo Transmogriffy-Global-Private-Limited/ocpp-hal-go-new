@@ -16,7 +16,7 @@ func TestLoadLocalEnvPreservesProcessEnvironment(t *testing.T) {
 	if err := os.Chdir(temporary); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(temporary, ".env"), []byte("F_SERVER_PORT=19999\nHAL_V1_CMS_BEARER_TOKEN=local-token\n"), 0600); err != nil {
+	if err := os.WriteFile(filepath.Join(temporary, ".env"), []byte("F_SERVER_PORT=19999\nOCPP_HEARTBEAT_INTERVAL_SECONDS=120\nHAL_V1_CMS_BEARER_TOKEN=local-token\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("F_SERVER_PORT", "18888")
@@ -27,6 +27,9 @@ func TestLoadLocalEnvPreservesProcessEnvironment(t *testing.T) {
 	}
 	if loaded.V1CMSBearerToken != "local-token" {
 		t.Fatalf("V1CMSBearerToken=%q", loaded.V1CMSBearerToken)
+	}
+	if loaded.OCPPHeartbeatIntervalSeconds != 120 {
+		t.Fatalf("OCPPHeartbeatIntervalSeconds=%d", loaded.OCPPHeartbeatIntervalSeconds)
 	}
 }
 

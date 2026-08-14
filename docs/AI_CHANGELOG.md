@@ -1,5 +1,27 @@
 # AI-assisted changelog
 
+## 2026-08-14 - durable Heartbeat connection liveness
+
+- Added `OCPP_HEARTBEAT_INTERVAL_SECONDS` with a backward-compatible `300`
+  second default and used it in accepted BootNotification confirmations.
+- Accepted Heartbeats now renew only the current tracked, enabled mapping's
+  existing `ONLINE` runtime. Renewal preserves generation, advances durable
+  connection sequence and observation time, and emits the normal immutable
+  connection fact. It cannot create or resurrect a connection.
+- Kept connection fact volume bounded: v1 renews on Heartbeat only, not on
+  high-frequency MeterValues or other charger-originated messages. The contract
+  records the separate CMS connection-freshness responsibility and acceptance
+  procedure.
+
+Compatibility: no schema migration or legacy behavior change. Existing fact
+digest canonicalization, startup `UNKNOWN`, process-scoped generation fencing,
+and durable fact delivery remain unchanged.
+
+Verification: `gofmt`; focused config, tracker, and store tests; `go test
+./...`; and `go vet ./...` passed with database environment variables removed.
+The disposable PostgreSQL renewal regression is skipped without
+`TEST_DATABASE_URL`; no runtime database was used.
+
 ## 2026-08-14 - connection runtime restart generation recovery
 
 - Defined connection generation as a live-process callback fence rather than a

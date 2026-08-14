@@ -85,6 +85,10 @@ durable fact delivery.
   after marking prior runtime `UNKNOWN`. Durable connection sequence remains the
   cross-restart ordering value, while the live tracker still fences a
   superseded same-process disconnect.
+- Accepted current-connection Heartbeats now renew the durable `ONLINE`
+  observation through the same ordered connection-fact stream without changing
+  generation. The v1 contract deliberately uses Heartbeats only for renewal to
+  bound fact volume; CMS owns the longer independent stale horizon.
 - Remaining work is end-to-end verification expansion: real full lifecycle
   with a fact receiver, manual/energy/time/natural stop, concurrent stop races,
   and restart/crash scenarios. CMS consumer work is not in scope.
@@ -107,6 +111,11 @@ durable fact delivery.
   `go test ./...`, and `go vet ./...` pass with database environment variables
   removed. The disposable PostgreSQL regression is skipped without
   `TEST_DATABASE_URL` and has not run against a runtime database.
+- 2026-08-14 connection liveness hardening: focused tracker/config/store tests,
+  `go test ./...`, and `go vet ./...` pass with database environment variables
+  removed. The disposable PostgreSQL renewal regression is skipped without
+  `TEST_DATABASE_URL`. The physical charger procedure is documented in the CMS
+  boundary guide and requires a separately approved deployment.
 
 ## Handoff
 

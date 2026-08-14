@@ -1,6 +1,15 @@
 package ocpp16hal
 
-import "testing"
+import (
+	"context"
+	"io"
+	"log/slog"
+	"testing"
+	"time"
+
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/state"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
+)
 
 func TestConnectionTrackerFencesSupersededDisconnect(t *testing.T) {
 	tracker := newConnectionTracker()
@@ -32,5 +41,42 @@ func TestConnectionTrackerStartsNewProcessAtGenerationOne(t *testing.T) {
 	connection, previous := tracker.register("CP-1", "first", "127.0.0.1:1")
 	if connection.Generation != 1 || previous != nil {
 		t.Fatalf("new process registration=%#v previous=%#v", connection, previous)
+	}
+}
+
+type heartbeatRenewalStore struct {
+	store.V1Store
+	calls      int
+	identity   string
+	generation int64
+	at         time.Time
+}
+
+func (s *heartbeatRenewalStore) RenewCurrentV1ChargerConnection(_ context.Context, identity string, generation int64, at time.Time) error {
+	s.calls++
+	s.identity, s.generation, s.at = identity, generation, at
+	return nil
+}
+
+func TestHeartbeatRenewsOnlyCurrentTrackedConnection(t *testing.T) {
+	store := &heartbeatRenewalStore{}
+	hal := New(state.NewRegistry(), store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	connection, _ := hal.connections.register("CP-1", "current", "127.0.0.1:1")
+
+	if _, err := hal.OnHeartbeat("CP-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 1 || store.identity != "CP-1" || store.generation != int64(connection.Generation) || store.at.IsZero() {
+		t.Fatalf("heartbeat renewal=%#v", store)
+	}
+
+	if current, _ := hal.connections.unregisterIfCurrent("CP-1", "current"); !current {
+		t.Fatal("current connection was not removed")
+	}
+	if _, err := hal.OnHeartbeat("CP-1", nil); err != nil {
+		t.Fatal(err)
+	}
+	if store.calls != 1 {
+		t.Fatalf("heartbeat without a current connection renewed %d times", store.calls)
 	}
 }

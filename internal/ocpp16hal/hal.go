@@ -16,23 +16,25 @@ import (
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 )
 
-const heartbeatIntervalSeconds = 900
+const defaultHeartbeatIntervalSeconds = 300
 
 type HAL struct {
-	cs          ocpp16.CentralSystem
-	registry    *state.Registry
-	connections *connectionTracker
-	logger      *slog.Logger
-	v1Store     store.V1Store
+	cs                       ocpp16.CentralSystem
+	registry                 *state.Registry
+	connections              *connectionTracker
+	logger                   *slog.Logger
+	v1Store                  store.V1Store
+	heartbeatIntervalSeconds int
 }
 
 func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *HAL {
 	h := &HAL{
-		cs:          ocpp16.NewCentralSystem(nil, nil),
-		registry:    registry,
-		connections: newConnectionTracker(),
-		logger:      logger,
-		v1Store:     v1Store,
+		cs:                       ocpp16.NewCentralSystem(nil, nil),
+		registry:                 registry,
+		connections:              newConnectionTracker(),
+		logger:                   logger,
+		v1Store:                  v1Store,
+		heartbeatIntervalSeconds: defaultHeartbeatIntervalSeconds,
 	}
 
 	h.cs.SetNewChargingStationValidationHandler(h.validateIncomingCharger)
@@ -112,6 +114,14 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 	h.cs.SetFirmwareManagementHandler(h)
 
 	return h
+}
+
+// SetHeartbeatIntervalSeconds controls the OCPP interval requested at the next
+// BootNotification. A non-positive value retains the safe default.
+func (h *HAL) SetHeartbeatIntervalSeconds(seconds int) {
+	if seconds > 0 {
+		h.heartbeatIntervalSeconds = seconds
+	}
 }
 
 func (h *HAL) Start(port int, path string) {
@@ -502,7 +512,7 @@ func (h *HAL) OnBootNotification(chargePointID string, request *core.BootNotific
 
 	return core.NewBootNotificationConfirmation(
 		types.NewDateTime(time.Now().UTC()),
-		heartbeatIntervalSeconds,
+		h.heartbeatIntervalSeconds,
 		core.RegistrationStatusAccepted,
 	), nil
 }
@@ -514,6 +524,13 @@ func (h *HAL) OnDataTransfer(chargePointID string, request *core.DataTransferReq
 
 func (h *HAL) OnHeartbeat(chargePointID string, request *core.HeartbeatRequest) (*core.HeartbeatConfirmation, error) {
 	h.registry.Touch(chargePointID)
+	if h.v1Store != nil {
+		if current, ok := h.connections.current(chargePointID); ok {
+			if err := h.v1Store.RenewCurrentV1ChargerConnection(context.Background(), chargePointID, int64(current.Generation), time.Now().UTC()); err != nil && !errors.Is(err, store.ErrV1MappingNotFound) {
+				h.logger.Warn("failed to renew v1 charger connection liveness", "charge_point_id", chargePointID, "connection_generation", current.Generation, "error", err)
+			}
+		}
+	}
 	return core.NewHeartbeatConfirmation(types.NewDateTime(time.Now().UTC())), nil
 }
 

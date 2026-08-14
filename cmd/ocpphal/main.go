@@ -34,6 +34,7 @@ func main() {
 
 	registry := state.NewRegistry()
 	hal := ocpp16hal.New(registry, v1Store, logger)
+	hal.SetHeartbeatIntervalSeconds(cfg.OCPPHeartbeatIntervalSeconds)
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 	if err := hal.RecoverV1Lifecycle(workerCtx); err != nil {

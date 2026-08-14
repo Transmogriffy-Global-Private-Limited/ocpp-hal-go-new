@@ -20,6 +20,9 @@ Completed in this slice:
   WebSocket, single-session, automatic offline-auth policy, and legacy smoke
   runtime; and
 - Go module identity correction.
+- Current connection-liveness slice: accepted current-connection Heartbeats
+  renew durable `ONLINE` evidence and ordered facts without changing generation;
+  the requested OCPP cadence is configurable with a five-minute default.
 
 ## Next Approved Work
 
