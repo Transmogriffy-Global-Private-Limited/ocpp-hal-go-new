@@ -75,6 +75,11 @@ outside this work.
   CMS keeps those as a durable operational/session projection with observation
   time and explicit freshness. Offline or unknown connection makes historical
   connector status stale, never fresh live truth.
+- Connection generation fences superseded callbacks only within one live HAL
+  process. Startup first marks prior connection state `UNKNOWN`, resets the
+  durable generation baseline, and then lets the first new-process connection
+  establish `ONLINE`. Durable connection sequence, not generation, orders CMS
+  projection facts across process restarts.
 - Boundary handling is fail-safe: malformed, unauthorized, stale, duplicate,
   out-of-order, inconsistent, or ambiguous input never authorizes a business
   outcome by guesswork. Durable identity and auditability are required.

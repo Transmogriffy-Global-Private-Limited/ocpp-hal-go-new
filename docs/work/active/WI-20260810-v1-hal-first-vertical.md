@@ -81,6 +81,10 @@ durable fact delivery.
   microsecond precision before hashing and persistence; reload normalizes the
   same field before delivery. A PostgreSQL round-trip regression covers a
   non-microsecond-aligned timestamp.
+- Startup connection recovery now resets the process-scoped generation baseline
+  after marking prior runtime `UNKNOWN`. Durable connection sequence remains the
+  cross-restart ordering value, while the live tracker still fences a
+  superseded same-process disconnect.
 - Remaining work is end-to-end verification expansion: real full lifecycle
   with a fact receiver, manual/energy/time/natural stop, concurrent stop races,
   and restart/crash scenarios. CMS consumer work is not in scope.
@@ -99,6 +103,10 @@ durable fact delivery.
   database environment variables removed. The new PostgreSQL round-trip
   regression is skipped until a clearly disposable `TEST_DATABASE_URL` is
   supplied; it has not been run against a runtime database.
+- 2026-08-14 connection restart hardening: focused tracker and store tests,
+  `go test ./...`, and `go vet ./...` pass with database environment variables
+  removed. The disposable PostgreSQL regression is skipped without
+  `TEST_DATABASE_URL` and has not run against a runtime database.
 
 ## Handoff
 

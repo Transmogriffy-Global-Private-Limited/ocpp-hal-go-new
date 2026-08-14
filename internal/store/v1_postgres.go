@@ -568,7 +568,7 @@ func (s *PostgresStore) RecordV1ChargerConnection(ctx context.Context, identity 
 	if !enabled {
 		return ErrV1CredentialRejected
 	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO v1_charger_runtime (charger_ocpp_identity,connection_state,connection_generation,connection_sequence,connected_at,last_observed_at,updated_at) VALUES ($1,$2,$3,1,CASE WHEN $2='ONLINE' THEN $4::timestamptz ELSE NULL END,$4::timestamptz,$4::timestamptz) ON CONFLICT (charger_ocpp_identity) DO UPDATE SET connection_state=EXCLUDED.connection_state,connection_generation=EXCLUDED.connection_generation,connection_sequence=v1_charger_runtime.connection_sequence+1,connected_at=CASE WHEN EXCLUDED.connection_state='ONLINE' THEN EXCLUDED.last_observed_at ELSE v1_charger_runtime.connected_at END,last_observed_at=EXCLUDED.last_observed_at,updated_at=EXCLUDED.updated_at WHERE EXCLUDED.connection_generation>=v1_charger_runtime.connection_generation`, identity, state, generation, at)
+	result, err := tx.ExecContext(ctx, `INSERT INTO v1_charger_runtime (charger_ocpp_identity,connection_state,connection_generation,connection_sequence,connected_at,last_observed_at,updated_at) VALUES ($1,$2,$3,1,CASE WHEN $2='ONLINE' THEN $4::timestamptz ELSE NULL END,$4::timestamptz,$4::timestamptz) ON CONFLICT (charger_ocpp_identity) DO UPDATE SET connection_state=EXCLUDED.connection_state,connection_generation=EXCLUDED.connection_generation,connection_sequence=v1_charger_runtime.connection_sequence+1,connected_at=CASE WHEN EXCLUDED.connection_state='ONLINE' THEN EXCLUDED.last_observed_at ELSE v1_charger_runtime.connected_at END,last_observed_at=EXCLUDED.last_observed_at,updated_at=EXCLUDED.updated_at WHERE EXCLUDED.connection_generation>v1_charger_runtime.connection_generation OR (EXCLUDED.connection_generation=v1_charger_runtime.connection_generation AND v1_charger_runtime.connection_state='ONLINE' AND EXCLUDED.connection_state='OFFLINE')`, identity, state, generation, at)
 	if err != nil {
 		return err
 	}
@@ -672,6 +672,12 @@ func (s *PostgresStore) ResetV1ConnectionRuntime(ctx context.Context) error {
 		return err
 	}
 	defer tx.Rollback()
+	// Connection generations fence callbacks only within one live HAL process.
+	// Startup has no surviving callbacks, so reset their durable comparison baseline
+	// before recording the prior process's state as UNKNOWN.
+	if _, err := tx.ExecContext(ctx, `UPDATE v1_charger_runtime r SET connection_generation=0 FROM v1_charger_mappings m WHERE r.charger_ocpp_identity=m.charger_ocpp_identity AND r.connection_generation<>0`); err != nil {
+		return err
+	}
 	rows, err := tx.QueryContext(ctx, `UPDATE v1_charger_runtime r SET connection_state='UNKNOWN',connection_sequence=connection_sequence+1,updated_at=NOW() FROM v1_charger_mappings m WHERE r.charger_ocpp_identity=m.charger_ocpp_identity AND r.connection_state <> 'UNKNOWN' RETURNING m.cpo_id::text,m.cms_charger_id::text,r.charger_ocpp_identity,r.connection_generation,r.connection_sequence,r.updated_at`)
 	if err != nil {
 		return err

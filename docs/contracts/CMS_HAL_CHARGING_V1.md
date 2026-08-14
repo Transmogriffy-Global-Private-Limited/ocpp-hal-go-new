@@ -453,11 +453,15 @@ CMS must retain these dimensions separately:
 
 `UNKNOWN` means HAL has no reliable current connection observation. `ONLINE`
 means the current registered connection exists. `OFFLINE` means the current
-connection is absent after a current-generation disconnect. HAL includes the
-connection generation in its durable operational fact record. HAL also assigns a
+connection is absent after a current-generation disconnect. Connection
+generation is a live-HAL-process callback fence, not an ordering value across
+process restarts. Startup first projects prior connection state as `UNKNOWN`
+and resets the generation baseline; the first legitimate connection in the new
+process can therefore establish `ONLINE` immediately. HAL includes the
+generation in its durable operational fact record. HAL also assigns a
 monotonically increasing `connection_sequence` per OCPP identity; CMS applies a
 connection fact only when its sequence advances, so delayed delivery cannot
-regress current connection state.
+regress current connection state across reconnects or restarts.
 
 When connection is `OFFLINE` or `UNKNOWN`, CMS marks the latest connector status
 as `STALE` for live use. It may retain `last_ocpp_status` and its observation
@@ -488,7 +492,9 @@ truth.
 
 Every field is required. HAL publishes an operational fact only for a charger
 that maps to exactly one CMS charger and CPO. The connection-generation guard
-must make an obsolete disconnect a no-op before it can create an `OFFLINE` fact.
+must make an obsolete same-process disconnect a no-op before it can create an
+`OFFLINE` fact; CMS relies on durable `connection_sequence` rather than
+generation to order facts across a HAL restart.
 
 ### 9.3 `connector.status.updated`
 

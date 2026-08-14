@@ -1,5 +1,24 @@
 # AI-assisted changelog
 
+## 2026-08-14 - connection runtime restart generation recovery
+
+- Defined connection generation as a live-process callback fence rather than a
+  cross-restart ordering value. Startup now resets the durable generation
+  baseline before projecting prior connection state as `UNKNOWN`, allowing the
+  first legitimate new-process connection to publish `ONLINE` immediately.
+- Tightened persistence fencing so only a newer generation, or the current
+  generation's `ONLINE` to `OFFLINE` transition, can advance runtime state.
+  Durable `connection_sequence` remains the CMS ordering value across restarts.
+- Added focused tracker coverage for superseded and duplicate disconnects, and
+  a disposable-`TEST_DATABASE_URL` regression covering stale durable generation,
+  startup `UNKNOWN`, immediate new-process `ONLINE`, fact sequencing, and a
+  stale prior-generation disconnect.
+
+Verification: `gofmt`; focused `go test ./internal/ocpp16hal ./internal/store`;
+`go test ./...`; and `go vet ./...` pass with database environment variables
+removed. The PostgreSQL regression is skipped unless a clearly disposable
+`TEST_DATABASE_URL` is supplied; it is not run against a runtime database.
+
 ## 2026-08-14 - durable fact timestamp canonicalization
 
 - Normalized v1 fact-envelope `occurred_at` to UTC microsecond precision at

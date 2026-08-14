@@ -193,3 +193,102 @@ func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 		t.Fatalf("restart runtime=%#v err=%v", runtime, err)
 	}
 }
+
+func TestV1ConnectionRuntimeRestartAcceptsNewProcessGeneration(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is required for disposable PostgreSQL restart regression")
+	}
+	ctx := context.Background()
+	s, err := NewPostgresStore(config.Config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.db.Close() })
+
+	input := V1MappingInput{
+		CPOID:               NewUUIDString(),
+		CMSChargerID:        NewUUIDString(),
+		ChargerOCPPIdentity: "CP-RESTART-" + NewUUIDString()[:8],
+		Enabled:             true,
+		CorrelationID:       "restart-generation-test",
+		RequestDigest:       "restart-generation-digest",
+	}
+	if _, existed, err := s.SyncV1Mapping(ctx, input); err != nil || existed {
+		t.Fatalf("sync mapping existed=%v err=%v", existed, err)
+	}
+	t.Cleanup(func() {
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_fact_outbox WHERE aggregate_key=$1`, input.ChargerOCPPIdentity)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_charger_runtime WHERE charger_ocpp_identity=$1`, input.ChargerOCPPIdentity)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_mapping_audit WHERE cms_charger_id=$1::uuid`, input.CMSChargerID)
+		_, _ = s.db.ExecContext(ctx, `DELETE FROM v1_charger_mappings WHERE cms_charger_id=$1::uuid`, input.CMSChargerID)
+	})
+
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	if err := s.RecordV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 3, true, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.ResetV1ConnectionRuntime(ctx); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err := s.GetV1ChargerRuntime(ctx, input.ChargerOCPPIdentity)
+	if err != nil || runtime.ConnectionState != "UNKNOWN" || runtime.ConnectionGeneration != 0 || runtime.ConnectionSequence != 2 {
+		t.Fatalf("startup reset runtime=%#v err=%v", runtime, err)
+	}
+	if err := s.RecordV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, true, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 2, true, now.Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RecordV1ChargerConnection(ctx, input.ChargerOCPPIdentity, 1, false, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	runtime, err = s.GetV1ChargerRuntime(ctx, input.ChargerOCPPIdentity)
+	if err != nil || runtime.ConnectionState != "ONLINE" || runtime.ConnectionGeneration != 2 || runtime.ConnectionSequence != 4 {
+		t.Fatalf("current runtime=%#v err=%v", runtime, err)
+	}
+
+	rows, err := s.db.QueryContext(ctx, `SELECT sequence,payload->>'connection_state',payload->>'connection_generation' FROM v1_fact_outbox WHERE aggregate_key=$1 AND fact_type='charger.connection.updated' ORDER BY sequence`, input.ChargerOCPPIdentity)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []struct {
+		sequence   int64
+		state      string
+		generation string
+	}
+	for rows.Next() {
+		var item struct {
+			sequence   int64
+			state      string
+			generation string
+		}
+		if err := rows.Scan(&item.sequence, &item.state, &item.generation); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, item)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	want := []struct {
+		sequence   int64
+		state      string
+		generation string
+	}{
+		{sequence: 1, state: "ONLINE", generation: "3"},
+		{sequence: 2, state: "UNKNOWN", generation: "0"},
+		{sequence: 3, state: "ONLINE", generation: "1"},
+		{sequence: 4, state: "ONLINE", generation: "2"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("connection facts=%#v", got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("connection fact %d=%#v want=%#v", i, got[i], want[i])
+		}
+	}
+}
