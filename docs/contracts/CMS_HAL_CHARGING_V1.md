@@ -175,7 +175,7 @@ cross-system audit and lookup.
 | `PUT /v1/mappings/chargers/{cms_charger_id}` | Enroll the durable CMS CPO/charger/connector to OCPP mapping used for command and runtime validation. Conflicting identity changes fail. | Safe with the same immutable mapping. |
 | `POST /v1/remote-commands/stop` | Persist and schedule one RemoteStop command. `202` only after durable HAL command creation/recovery; it is not completion. | Safe with the same idempotency key and immutable body. |
 | `GET /v1/remote-commands?cms_command_id={uuid}` | Reconcile a CMS command after a lost response or delayed fact. `200` returns one durable command; `404` means HAL never accepted it. | Safe read. |
-| `GET /v1/transactions?cms_start_intent_id={uuid}` | Reconcile a start intent without a "latest" lookup. `200` returns zero or one snapshots whose command correlation proves the intent. | Safe read. |
+| `GET /v1/transactions?cms_start_intent_id={uuid}` | Reconcile a start intent without a "latest" lookup. `200` returns the one authoritative transaction snapshot; `404` means HAL has no materialized transaction for that exact intent and must never be treated as a session. The `transaction` object uses snake_case v1 field names. | Safe read. |
 | `GET /v1/transactions/{hal_transaction_id}` | Reconcile a known HAL transaction. `200` returns authoritative HAL state; `404` means HAL does not know it. | Safe read. |
 
 ### 6.2 HAL to CMS

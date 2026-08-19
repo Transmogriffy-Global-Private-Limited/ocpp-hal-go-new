@@ -6,6 +6,12 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- Exact `GET /v1/transactions?cms_start_intent_id={uuid}` responses expose
+  stable snake_case v1 JSON fields, allowing CMS to consume the existing
+  recovery socket as authoritative transaction truth. HAL fact delivery records
+  only bounded receiver status/code diagnostics and never changes OCPP truth
+  because CMS returns an error.
+
 - Mapping-based charger admission, process-scoped generation-safe connection
   runtime with a restart-reset durable baseline and monotonic durable sequence,
   Heartbeat-driven durable liveness renewal, connector OCPP status, exact credential authorization, charger-originated

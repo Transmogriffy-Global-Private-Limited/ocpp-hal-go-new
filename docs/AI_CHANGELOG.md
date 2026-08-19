@@ -1,5 +1,18 @@
 # AI-assisted changelog
 
+## 2026-08-19 - CMS fact-receiver diagnostics and exact lookup compatibility
+
+- Added explicit snake_case JSON field names to the existing exact transaction
+  lookup response so the CMS recovery client can consume HAL-authoritative
+  transaction truth by `cms_start_intent_id`.
+- HAL fact delivery now safely records a bounded receiver error code with fact
+  ID/type/status for retry and terminal-reconciliation diagnosis. It never
+  reads or stores an error message/body, and CMS failure does not stop or alter
+  a physical OCPP transaction.
+
+Verification: `go test ./internal/v1facts ./internal/httpapi ./internal/store`
+passed. Full PostgreSQL/dual-service acceptance remains separate.
+
 ## 2026-08-14 - cpconsole heartbeat and startup automation
 
 - Added BootNotification-driven periodic Heartbeats to the OCPP-native

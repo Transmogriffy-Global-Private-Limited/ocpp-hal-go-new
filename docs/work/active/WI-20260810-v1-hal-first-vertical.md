@@ -4,7 +4,7 @@ Status: In Progress
 Owner: Codex
 Collaborators: None
 Started: 2026-08-10
-Last updated: 2026-08-14
+Last updated: 2026-08-19
 
 Development-plan reference: `docs/DEVELOPMENT_PLAN.md`
 Detailed-plan reference: `docs/plans/HAL_V1_CONSUMER_DEMAND_MATRIX.md`
@@ -39,6 +39,9 @@ durable fact delivery.
 - `internal/ocpp16hal/`
 - `internal/store/` and `migrations/`
 - `internal/httpapi/` and service-boundary documentation
+- `internal/v1facts/` receiver-error classification diagnostics for the active
+  CMS fact-projection incident; the existing exact transaction lookup remains
+  the recovery socket.
 - `internal/config/`, `cmd/ocpphal/`, regression/smoke tooling as necessary
 - `docs/contracts/`, `docs/plans/`, project memory, and API contract material
 
@@ -93,6 +96,11 @@ durable fact delivery.
   Heartbeats, an optional one-shot local session, and optional periodic
   MeterValues while preserving the manual terminal state machine. This is test
   tooling only and does not alter the HAL service contract.
+- 2026-08-19 joint boundary repair: CMS has observed repeated 500 responses
+  after HAL persisted `transaction.started`, leaving charger truth without a
+  CMS session. HAL must retain durable retry semantics and add only safe,
+  bounded receiver error-class diagnostics; it must not stop a physical
+  transaction or change charger/OCPP truth because CMS projection failed.
 - Remaining work is end-to-end verification expansion: real full lifecycle
   with a fact receiver, manual/energy/time/natural stop, concurrent stop races,
   and restart/crash scenarios. CMS consumer work is not in scope.

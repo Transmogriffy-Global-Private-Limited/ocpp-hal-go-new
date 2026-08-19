@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -118,6 +119,18 @@ func TestWorkerRetriesTransportFailure(t *testing.T) {
 	}
 	if len(fake.marks) != 1 || fake.marks[0].success || fake.marks[0].terminal {
 		t.Fatalf("marks=%#v", fake.marks)
+	}
+}
+
+func TestReceiverDeliveryDetailKeepsOnlyStableErrorCode(t *testing.T) {
+	if got := receiverDeliveryDetail(http.StatusInternalServerError, "invalid_hal_fact"); got != "receiver HTTP 500 (invalid_hal_fact)" {
+		t.Fatalf("detail=%q", got)
+	}
+	if got := readReceiverErrorCode(strings.NewReader(`{"error":{"code":"invalid_hal_fact","message":"must not be retained"}}`)); got != "invalid_hal_fact" {
+		t.Fatalf("code=%q", got)
+	}
+	if got := readReceiverErrorCode(strings.NewReader(`{"error":{"code":"unsafe code"}}`)); got != "" {
+		t.Fatalf("unsafe code=%q", got)
 	}
 }
 

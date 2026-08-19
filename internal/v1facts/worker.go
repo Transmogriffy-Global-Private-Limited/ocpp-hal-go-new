@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"strings"
@@ -94,11 +95,48 @@ func (w *Worker) deliver(ctx context.Context, fact store.V1Fact) {
 		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, response.StatusCode, true, false, "", time.Now().UTC())
 		return
 	}
+	receiverCode := readReceiverErrorCode(response.Body)
 	if response.StatusCode == 429 || response.StatusCode == 500 || response.StatusCode == 502 || response.StatusCode == 503 || response.StatusCode == 504 {
-		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, response.StatusCode, false, false, "transient receiver response", retryAt(fact.Retries))
+		w.logReceiverResponse("v1 fact receiver returned a transient response", fact, response.StatusCode, receiverCode)
+		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, response.StatusCode, false, false, receiverDeliveryDetail(response.StatusCode, receiverCode), retryAt(fact.Retries))
 		return
 	}
-	_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, response.StatusCode, false, true, "receiver reconciliation required", time.Now().UTC())
+	w.logReceiverResponse("v1 fact receiver requires reconciliation", fact, response.StatusCode, receiverCode)
+	_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, response.StatusCode, false, true, receiverDeliveryDetail(response.StatusCode, receiverCode), time.Now().UTC())
+}
+
+func readReceiverErrorCode(body io.Reader) string {
+	var response struct {
+		Error struct {
+			Code string `json:"code"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(body, 4096)).Decode(&response); err != nil {
+		return ""
+	}
+	code := strings.TrimSpace(response.Error.Code)
+	if len(code) > 64 {
+		return ""
+	}
+	for _, r := range code {
+		if !(r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_') {
+			return ""
+		}
+	}
+	return code
+}
+
+func receiverDeliveryDetail(status int, code string) string {
+	if code == "" {
+		return fmt.Sprintf("receiver HTTP %d", status)
+	}
+	return fmt.Sprintf("receiver HTTP %d (%s)", status, code)
+}
+
+func (w *Worker) logReceiverResponse(message string, fact store.V1Fact, status int, code string) {
+	if w.logger != nil {
+		w.logger.Warn(message, "fact_id", fact.FactID, "fact_type", fact.FactType, "status", status, "receiver_error_code", code)
+	}
 }
 
 func retryAt(retries int) time.Time {

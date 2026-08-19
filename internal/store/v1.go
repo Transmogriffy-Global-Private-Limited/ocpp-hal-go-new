@@ -129,32 +129,32 @@ type V1Credential struct {
 }
 
 type V1Transaction struct {
-	HALTransactionID       string
-	CMSStartIntentID       string
-	CMSCommandID           string
-	CPOID                  string
-	CustomerID             string
-	CMSChargerID           string
-	CMSConnectorID         string
-	ChargerOCPPIdentity    string
-	OCPPConnectorNumber    int
-	IDTag                  string
-	OCPPTransactionID      int64
-	ActualStartedAt        time.Time
-	MeterStartWh           int64
-	LatestMeterWh          *int64
-	ConsumedWh             *int64
-	MeterObservedAt        *time.Time
-	MeterSequence          int64
-	EnergyLimitWh          *int64
-	MaxDurationSeconds     *int64
-	StopDeadlineAt         *time.Time
-	StopState              string
-	RequestedStopInitiator string
-	RequestedStopReason    string
-	OCPPStopReason         string
-	CompletedAt            *time.Time
-	MeterStopWh            *int64
+	HALTransactionID       string     `json:"hal_transaction_id"`
+	CMSStartIntentID       string     `json:"cms_start_intent_id"`
+	CMSCommandID           string     `json:"cms_command_id"`
+	CPOID                  string     `json:"cpo_id"`
+	CustomerID             string     `json:"customer_id"`
+	CMSChargerID           string     `json:"cms_charger_id"`
+	CMSConnectorID         string     `json:"cms_connector_id"`
+	ChargerOCPPIdentity    string     `json:"charger_ocpp_identity"`
+	OCPPConnectorNumber    int        `json:"ocpp_connector_number"`
+	IDTag                  string     `json:"id_tag"`
+	OCPPTransactionID      int64      `json:"ocpp_transaction_id"`
+	ActualStartedAt        time.Time  `json:"actual_started_at"`
+	MeterStartWh           int64      `json:"meter_start_wh"`
+	LatestMeterWh          *int64     `json:"latest_meter_wh,omitempty"`
+	ConsumedWh             *int64     `json:"consumed_wh,omitempty"`
+	MeterObservedAt        *time.Time `json:"meter_observed_at,omitempty"`
+	MeterSequence          int64      `json:"meter_sequence"`
+	EnergyLimitWh          *int64     `json:"energy_limit_wh,omitempty"`
+	MaxDurationSeconds     *int64     `json:"max_duration_seconds,omitempty"`
+	StopDeadlineAt         *time.Time `json:"stop_deadline_at,omitempty"`
+	StopState              string     `json:"stop_state"`
+	RequestedStopInitiator string     `json:"requested_stop_initiator,omitempty"`
+	RequestedStopReason    string     `json:"requested_stop_reason,omitempty"`
+	OCPPStopReason         string     `json:"ocpp_stop_reason,omitempty"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty"`
+	MeterStopWh            *int64     `json:"meter_stop_wh,omitempty"`
 }
 
 type V1StopWorkflow struct {
