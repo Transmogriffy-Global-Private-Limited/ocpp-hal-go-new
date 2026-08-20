@@ -1,5 +1,19 @@
 # AI-assisted changelog
 
+## 2026-08-20 - Fact-delivery claim fencing and explicit config presence
+
+- Added migration 010 and a secure fact-delivery claim token. Delivery state
+  transitions now compare the exact fact and active token, preventing a stale
+  worker from overwriting a reclaimed lease; one outbound delivery remains
+  within the documented lease budget.
+- Configuration now preserves explicit empty process/local values as supplied
+  input and validates them rather than silently falling back. Only process
+  `HAL_ENVIRONMENT` selects bootstrap environment/local-file behavior.
+
+Verification: focused config, store, fact-worker, and HTTP tests pass. The
+new disposable PostgreSQL fencing test skips without `TEST_DATABASE_URL`; no
+database or deployment was changed.
+
 ## 2026-08-20 - HAL-wide fail-closed configuration, evidence, and fact recovery hardening
 
 - Replaced silent malformed-configuration fallbacks with validated startup

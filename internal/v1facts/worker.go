@@ -26,7 +26,7 @@ type Worker struct {
 
 type factDeliveryStore interface {
 	ClaimV1Facts(context.Context, time.Time, int) ([]store.V1Fact, error)
-	MarkV1FactDelivery(context.Context, string, int, bool, bool, string, time.Time) error
+	MarkV1FactDelivery(context.Context, string, string, int, bool, bool, string, time.Time) error
 }
 
 func New(cfg config.Config, v1Store store.V1Store, logger *slog.Logger) (*Worker, error) {
@@ -61,7 +61,10 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	if w == nil {
 		return nil
 	}
-	facts, err := w.store.ClaimV1Facts(ctx, time.Now().UTC(), 50)
+	// One active delivery keeps the 30-second durable lease comfortably ahead
+	// of the 15-second HTTP timeout. Parallelism can be raised only with an
+	// explicit lease-budget review.
+	facts, err := w.store.ClaimV1Facts(ctx, time.Now().UTC(), 1)
 	if err != nil {
 		return err
 	}
@@ -77,11 +80,11 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 func (w *Worker) deliver(ctx context.Context, fact store.V1Fact) error {
 	envelope, err := json.Marshal(fact.Envelope())
 	if err != nil {
-		return w.mark(ctx, fact.FactID, 0, false, true, "invalid durable fact payload", time.Now().UTC())
+		return w.mark(ctx, fact, 0, false, true, "invalid durable fact payload", time.Now().UTC())
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(envelope))
 	if err != nil {
-		return w.mark(ctx, fact.FactID, 0, false, true, "invalid fact destination", time.Now().UTC())
+		return w.mark(ctx, fact, 0, false, true, "invalid fact destination", time.Now().UTC())
 	}
 	req.Header.Set("Authorization", "Bearer "+w.token)
 	req.Header.Set("Idempotency-Key", fact.FactID)
@@ -89,24 +92,24 @@ func (w *Worker) deliver(ctx context.Context, fact store.V1Fact) error {
 	req.Header.Set("X-Correlation-ID", fact.FactID)
 	response, err := w.client.Do(req)
 	if err != nil {
-		return w.mark(ctx, fact.FactID, 0, false, false, "transport failure", retryAt(fact.Retries))
+		return w.mark(ctx, fact, 0, false, false, "transport failure", retryAt(fact.Retries))
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNoContent {
-		return w.mark(ctx, fact.FactID, response.StatusCode, true, false, "", time.Now().UTC())
+		return w.mark(ctx, fact, response.StatusCode, true, false, "", time.Now().UTC())
 	}
 	receiverCode := readReceiverErrorCode(response.Body)
 	if response.StatusCode == 429 || response.StatusCode == 500 || response.StatusCode == 502 || response.StatusCode == 503 || response.StatusCode == 504 {
 		w.logReceiverResponse("v1 fact receiver returned a transient response", fact, response.StatusCode, receiverCode)
-		return w.mark(ctx, fact.FactID, response.StatusCode, false, false, receiverDeliveryDetail(response.StatusCode, receiverCode), retryAt(fact.Retries))
+		return w.mark(ctx, fact, response.StatusCode, false, false, receiverDeliveryDetail(response.StatusCode, receiverCode), retryAt(fact.Retries))
 	}
 	w.logReceiverResponse("v1 fact receiver requires reconciliation", fact, response.StatusCode, receiverCode)
-	return w.mark(ctx, fact.FactID, response.StatusCode, false, true, receiverDeliveryDetail(response.StatusCode, receiverCode), time.Now().UTC())
+	return w.mark(ctx, fact, response.StatusCode, false, true, receiverDeliveryDetail(response.StatusCode, receiverCode), time.Now().UTC())
 }
 
-func (w *Worker) mark(ctx context.Context, factID string, statusCode int, success, terminal bool, detail string, next time.Time) error {
-	if err := w.store.MarkV1FactDelivery(ctx, factID, statusCode, success, terminal, detail, next); err != nil {
-		return fmt.Errorf("record fact delivery state for %s: %w", factID, err)
+func (w *Worker) mark(ctx context.Context, fact store.V1Fact, statusCode int, success, terminal bool, detail string, next time.Time) error {
+	if err := w.store.MarkV1FactDelivery(ctx, fact.FactID, fact.ClaimToken, statusCode, success, terminal, detail, next); err != nil {
+		return fmt.Errorf("record fact delivery state for %s: %w", fact.FactID, err)
 	}
 	return nil
 }

@@ -6,6 +6,16 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- Fact delivery leases are now fenced by a durable secure claim token. A
+  delayed worker can no longer transition a fact after an expired lease was
+  reclaimed; only the current `fact_id` plus token owner may record delivery.
+  The source change requires additive migration `010` and has not been applied
+  to a database. Delivery remains serial so the 15-second HTTP timeout fits
+  the 30-second lease budget.
+- Explicit process or local configuration values, including empty values, are
+  now validated as supplied values rather than silently replaced by defaults.
+  Only process `HAL_ENVIRONMENT` selects whether local `.env` can be read.
+
 - Startup configuration now fails closed: only `development`, `test`, and
   `production` are valid environments; malformed explicit booleans, ports,
   heartbeat values, log levels, URLs, and coupled fact-delivery credentials

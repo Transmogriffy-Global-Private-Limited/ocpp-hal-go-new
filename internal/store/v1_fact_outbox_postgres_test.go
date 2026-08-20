@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"os"
 	"sync"
 	"testing"
@@ -95,12 +96,49 @@ func TestV1FactOutboxReclaimsExpiredDeliveryLease(t *testing.T) {
 	if !ok || fact.ContentSHA256 != beforeDigest || string(fact.Payload) != beforePayload {
 		t.Fatalf("reclaimed fact=%#v present=%v, want immutable payload=%s digest=%s", fact, ok, beforePayload, beforeDigest)
 	}
-	if err := s.MarkV1FactDelivery(ctx, factID, 204, true, false, "", now); err != nil {
+	if err := s.MarkV1FactDelivery(ctx, factID, fact.ClaimToken, 204, true, false, "", now); err != nil {
 		t.Fatal(err)
 	}
 	var status string
 	if err := s.db.QueryRowContext(ctx, `SELECT status FROM v1_fact_outbox WHERE fact_id=$1`, factID).Scan(&status); err != nil || status != "DELIVERED" {
 		t.Fatalf("status=%q err=%v", status, err)
+	}
+}
+
+func TestV1FactOutboxRejectsStaleLeaseCompletion(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is required for the disposable PostgreSQL fact-lease fencing regression")
+	}
+	ctx := context.Background()
+	s, err := NewPostgresStore(config.Config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	factID := insertFactOutboxFixture(t, s, "lease-fencing")
+	defer deleteFactOutboxFixture(t, s, factID)
+	now := time.Now().UTC()
+	first, err := s.ClaimV1Facts(ctx, now, 1)
+	if err != nil || len(first) != 1 {
+		t.Fatalf("first claim=%#v err=%v", first, err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE v1_fact_outbox SET claimed_until=$2 WHERE fact_id=$1`, factID, now.Add(-time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.ClaimV1Facts(ctx, now, 1)
+	if err != nil || len(second) != 1 || second[0].ClaimToken == first[0].ClaimToken {
+		t.Fatalf("reclaimed=%#v err=%v", second, err)
+	}
+	if err := s.MarkV1FactDelivery(ctx, factID, second[0].ClaimToken, 204, true, false, "", now); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.MarkV1FactDelivery(ctx, factID, first[0].ClaimToken, 500, false, true, "stale", now); !errors.Is(err, ErrV1FactClaimLost) {
+		t.Fatalf("stale completion error=%v, want claim lost", err)
+	}
+	var status string
+	if err := s.db.QueryRowContext(ctx, `SELECT status FROM v1_fact_outbox WHERE fact_id=$1`, factID).Scan(&status); err != nil || status != "DELIVERED" {
+		t.Fatalf("final status=%q err=%v", status, err)
 	}
 }
 

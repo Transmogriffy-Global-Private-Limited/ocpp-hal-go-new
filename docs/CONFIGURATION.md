@@ -1,17 +1,20 @@
 # HAL Configuration
 
 `config.Load()` is a startup boundary: a default applies only when a setting is
-absent. An explicitly supplied malformed value stops startup before listeners,
+absent. An explicitly supplied empty or malformed value stops startup before listeners,
 workers, or database connections are created. Secrets are never included in
 startup errors or logs.
 
 ## Environment
 
 `HAL_ENVIRONMENT` accepts only `development` (default), `test`, or
-`production`. An explicitly supplied `production` value prevents local `.env`
-loading. In development/test, a local `.env` supplies only absent process
-values; process values always win. Unknown values—including misspellings—fail
-instead of becoming development.
+`production`. Only a process `HAL_ENVIRONMENT` chooses the bootstrap mode: a
+local `.env` cannot silently make an otherwise development process production.
+An explicitly supplied `production` value prevents local `.env` loading. In
+development/test, a local `.env` supplies only absent process values; an empty
+process value is present, fails validation, and never falls back to `.env`.
+Unknown values—including empties and misspellings—fail instead of becoming
+development.
 
 ## Validated settings
 

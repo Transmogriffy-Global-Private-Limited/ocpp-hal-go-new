@@ -540,12 +540,19 @@ func (s *PostgresStore) getV1CompletionCommandTx(ctx context.Context, tx *sql.Tx
 }
 
 func (s *PostgresStore) ClaimV1Facts(ctx context.Context, now time.Time, limit int) ([]V1Fact, error) {
+	if limit < 1 {
+		return nil, nil
+	}
+	claimToken, err := NewSecureUUIDString()
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-	rows, err := tx.QueryContext(ctx, `WITH due AS (SELECT fact_id FROM v1_fact_outbox WHERE ((status IN ('PENDING','RETRY') AND next_retry_at <= $1) OR (status='DELIVERING' AND claimed_until < $1)) AND (claimed_until IS NULL OR claimed_until < $1) ORDER BY next_retry_at,created_at FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE v1_fact_outbox f SET status='DELIVERING',claimed_until=$1+INTERVAL '30 seconds' FROM due WHERE f.fact_id=due.fact_id RETURNING f.fact_id::text,f.fact_type,f.schema_version,f.occurred_at,f.producer,f.content_digest,f.payload::text,f.status,f.retries,f.next_retry_at,f.claimed_until,f.delivery_status_code,COALESCE(f.last_error,'')`, now, limit)
+	rows, err := tx.QueryContext(ctx, `WITH due AS (SELECT fact_id FROM v1_fact_outbox WHERE ((status IN ('PENDING','RETRY') AND next_retry_at <= $1) OR (status='DELIVERING' AND claimed_until < $1)) AND (claimed_until IS NULL OR claimed_until < $1) ORDER BY next_retry_at,created_at FOR UPDATE SKIP LOCKED LIMIT $2) UPDATE v1_fact_outbox f SET status='DELIVERING',claimed_until=$1+INTERVAL '30 seconds',claim_token=$3::uuid FROM due WHERE f.fact_id=due.fact_id RETURNING f.fact_id::text,f.fact_type,f.schema_version,f.occurred_at,f.producer,f.content_digest,f.payload::text,f.status,f.retries,f.next_retry_at,f.claimed_until,f.claim_token::text,f.delivery_status_code,COALESCE(f.last_error,'')`, now, limit, claimToken)
 	if err != nil {
 		return nil, err
 	}
@@ -555,7 +562,7 @@ func (s *PostgresStore) ClaimV1Facts(ctx context.Context, now time.Time, limit i
 		var f V1Fact
 		var claim sql.NullTime
 		var status sql.NullInt64
-		if err := rows.Scan(&f.FactID, &f.FactType, &f.SchemaVersion, &f.OccurredAt, &f.Producer, &f.ContentSHA256, &f.Payload, &f.Status, &f.Retries, &f.NextRetryAt, &claim, &status, &f.LastError); err != nil {
+		if err := rows.Scan(&f.FactID, &f.FactType, &f.SchemaVersion, &f.OccurredAt, &f.Producer, &f.ContentSHA256, &f.Payload, &f.Status, &f.Retries, &f.NextRetryAt, &claim, &f.ClaimToken, &status, &f.LastError); err != nil {
 			return nil, err
 		}
 		f.OccurredAt = normalizeV1FactOccurredAt(f.OccurredAt)
@@ -577,7 +584,7 @@ func (s *PostgresStore) ClaimV1Facts(ctx context.Context, now time.Time, limit i
 	return out, nil
 }
 
-func (s *PostgresStore) MarkV1FactDelivery(ctx context.Context, factID string, statusCode int, success, terminal bool, detail string, next time.Time) error {
+func (s *PostgresStore) MarkV1FactDelivery(ctx context.Context, factID, claimToken string, statusCode int, success, terminal bool, detail string, next time.Time) error {
 	state := "RETRY"
 	if success {
 		state = "DELIVERED"
@@ -585,8 +592,18 @@ func (s *PostgresStore) MarkV1FactDelivery(ctx context.Context, factID string, s
 	if terminal {
 		state = "RECONCILIATION_REQUIRED"
 	}
-	_, err := s.db.ExecContext(ctx, `UPDATE v1_fact_outbox SET status=$2,retries=CASE WHEN $2='DELIVERED' THEN retries ELSE retries+1 END,next_retry_at=$3,claimed_until=NULL,delivery_status_code=$4,last_error=$5,sent_at=CASE WHEN $2='DELIVERED' THEN NOW() ELSE sent_at END WHERE fact_id=$1`, factID, state, next, statusCode, nullString(detail))
-	return err
+	result, err := s.db.ExecContext(ctx, `UPDATE v1_fact_outbox SET status=$2,retries=CASE WHEN $2='DELIVERED' THEN retries ELSE retries+1 END,next_retry_at=$3,claimed_until=NULL,claim_token=NULL,delivery_status_code=$4,last_error=$5,sent_at=CASE WHEN $2='DELIVERED' THEN NOW() ELSE sent_at END WHERE fact_id=$1 AND status='DELIVERING' AND claim_token=$6::uuid`, factID, state, next, statusCode, nullString(detail), claimToken)
+	if err != nil {
+		return err
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if rows == 0 {
+		return ErrV1FactClaimLost
+	}
+	return nil
 }
 
 // RequeueV1Fact transitions only a terminal/reconciliation fact back to
@@ -616,7 +633,7 @@ func (s *PostgresStore) RequeueV1Fact(ctx context.Context, factID, correlationID
 	if _, err = tx.ExecContext(ctx, `INSERT INTO v1_fact_reconciliation_audit (id,fact_id,correlation_id,previous_status,previous_error) VALUES ($1,$2,$3,$4,$5)`, auditID, factID, correlationID, status, nullString(previousError)); err != nil {
 		return err
 	}
-	if _, err = tx.ExecContext(ctx, `UPDATE v1_fact_outbox SET status='PENDING',claimed_until=NULL,next_retry_at=NOW(),last_error='manual reconciliation requeue requested' WHERE fact_id=$1`, factID); err != nil {
+	if _, err = tx.ExecContext(ctx, `UPDATE v1_fact_outbox SET status='PENDING',claimed_until=NULL,claim_token=NULL,next_retry_at=NOW(),last_error='manual reconciliation requeue requested' WHERE fact_id=$1`, factID); err != nil {
 		return err
 	}
 	return tx.Commit()

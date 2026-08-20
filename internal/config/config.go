@@ -63,15 +63,16 @@ func loadValues() (map[string]string, error) {
 	values := make(map[string]string)
 	for _, pair := range os.Environ() {
 		key, raw, ok := strings.Cut(pair, "=")
-		if ok && strings.TrimSpace(raw) != "" {
+		if ok {
 			values[key] = raw
 		}
 	}
 	if raw, present := values["HAL_ENVIRONMENT"]; present {
-		if _, err := parseEnvironment(raw); err != nil {
+		environment, err := parseEnvironment(raw)
+		if err != nil {
 			return nil, err
 		}
-		if strings.EqualFold(strings.TrimSpace(raw), "production") {
+		if environment == "production" {
 			return values, nil
 		}
 	}
@@ -80,7 +81,13 @@ func loadValues() (map[string]string, error) {
 		return nil, err
 	}
 	for key, raw := range local {
-		if _, supplied := values[key]; !supplied && strings.TrimSpace(raw) != "" {
+		// Process environment alone chooses the bootstrap environment. A local
+		// file may provide development defaults but may not silently turn an
+		// unclassified process into production.
+		if key == "HAL_ENVIRONMENT" {
+			continue
+		}
+		if _, supplied := values[key]; !supplied {
 			values[key] = raw
 		}
 	}
@@ -194,9 +201,6 @@ func (c Config) validate() error {
 
 func parseEnvironment(raw string) (string, error) {
 	parsed := strings.ToLower(strings.TrimSpace(raw))
-	if parsed == "" {
-		parsed = defaultEnvironment
-	}
 	switch parsed {
 	case "development", "test", "production":
 		return parsed, nil
@@ -255,7 +259,7 @@ func validatePostgresURL(raw string) error {
 	return nil
 }
 func value(values map[string]string, key, fallback string) string {
-	if raw, ok := values[key]; ok && strings.TrimSpace(raw) != "" {
+	if raw, ok := values[key]; ok {
 		return strings.TrimSpace(raw)
 	}
 	return fallback

@@ -11,7 +11,7 @@ func TestLoadDefaultsOnlyAbsentValues(t *testing.T) {
 	withTempWorkingDirectory(t)
 	configureValidRuntime(t)
 	for _, key := range []string{"OCPP_LISTEN_PORT", "OCPP_HEARTBEAT_INTERVAL_SECONDS", "HAL_V1_FACT_DELIVERY_ENABLED", "API_DOCS_ENABLED", "LOG_LEVEL"} {
-		t.Setenv(key, "")
+		unsetEnvironment(t, key)
 	}
 	cfg, err := Load()
 	if err != nil {
@@ -19,6 +19,31 @@ func TestLoadDefaultsOnlyAbsentValues(t *testing.T) {
 	}
 	if cfg.OCPPListenPort != defaultOCPPListenPort || cfg.OCPPHeartbeatIntervalSeconds != defaultHeartbeatIntervalSeconds || cfg.V1FactDeliveryEnabled || cfg.APIDocsEnabled || cfg.LogLevel.String() != "INFO" {
 		t.Fatalf("unexpected defaults: %#v", cfg)
+	}
+}
+
+func TestLoadRejectsExplicitEmptyValues(t *testing.T) {
+	for _, key := range []string{"HAL_ENVIRONMENT", "OCPP_LISTEN_PORT", "HAL_V1_FACT_DELIVERY_ENABLED", "HAL_V1_CMS_BEARER_TOKEN"} {
+		t.Run(key, func(t *testing.T) {
+			withTempWorkingDirectory(t)
+			configureValidRuntime(t)
+			t.Setenv(key, "")
+			if _, err := Load(); err == nil || !strings.Contains(err.Error(), key) {
+				t.Fatalf("error=%v, want explicit %s validation", err, key)
+			}
+		})
+	}
+}
+
+func TestProcessEmptyValueBlocksLocalFallback(t *testing.T) {
+	temporary := withTempWorkingDirectory(t)
+	if err := os.WriteFile(filepath.Join(temporary, ".env"), []byte("F_SERVER_PORT=19999\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	configureValidRuntime(t)
+	t.Setenv("F_SERVER_PORT", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "F_SERVER_PORT") {
+		t.Fatalf("error=%v, want explicit process empty port failure", err)
 	}
 }
 
@@ -92,6 +117,21 @@ func configureValidRuntime(t *testing.T) {
 	t.Setenv("HAL_V1_FACT_DELIVERY_ENABLED", "false")
 	t.Setenv("HAL_V1_CMS_FACTS_URL", "")
 	t.Setenv("HAL_V1_CMS_FACT_BEARER_TOKEN", "")
+}
+
+func unsetEnvironment(t *testing.T, key string) {
+	t.Helper()
+	previous, present := os.LookupEnv(key)
+	if err := os.Unsetenv(key); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if present {
+			_ = os.Setenv(key, previous)
+			return
+		}
+		_ = os.Unsetenv(key)
+	})
 }
 
 func withTempWorkingDirectory(t *testing.T) string {

@@ -36,6 +36,10 @@ Completed in this slice:
   connection-projection retry, multi-connector fault aggregation, and audited
   exact-fact requeue are implemented in source. The additive reconciliation
   audit migration still needs disposable-PostgreSQL verification.
+- Fact-delivery lease fencing and explicit-empty configuration semantics are
+  implemented in source. Migration 010 adds the nullable claim token; a
+  delayed former lease owner is rejected instead of overwriting a reclaimed
+  fact. PostgreSQL confirmation remains pending a disposable database.
 
 ## Next Approved Work
 

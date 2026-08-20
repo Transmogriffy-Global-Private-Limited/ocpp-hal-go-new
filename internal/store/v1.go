@@ -17,6 +17,7 @@ var (
 	ErrV1InvalidEvidence      = errors.New("v1 transaction evidence is invalid")
 	ErrV1FactNotFound         = errors.New("v1 fact not found")
 	ErrV1FactNotReconciliable = errors.New("v1 fact is not awaiting reconciliation")
+	ErrV1FactClaimLost        = errors.New("v1 fact delivery claim is no longer current")
 )
 
 type V1StartCommandInput struct {
@@ -188,6 +189,7 @@ type V1Fact struct {
 	Retries        int
 	NextRetryAt    time.Time
 	ClaimedUntil   *time.Time
+	ClaimToken     string
 	DeliveryStatus *int
 	LastError      string
 }
@@ -261,7 +263,7 @@ type V1Store interface {
 	ListV1DispatchableStops(context.Context, int) ([]*V1StopWorkflow, error)
 	ListV1OverdueTransactions(context.Context, time.Time, int) ([]*V1Transaction, error)
 	ClaimV1Facts(context.Context, time.Time, int) ([]V1Fact, error)
-	MarkV1FactDelivery(context.Context, string, int, bool, bool, string, time.Time) error
+	MarkV1FactDelivery(context.Context, string, string, int, bool, bool, string, time.Time) error
 	RequeueV1Fact(context.Context, string, string) error
 	RecordV1ChargerConnection(context.Context, string, int64, bool, time.Time) error
 	RenewCurrentV1ChargerConnection(context.Context, string, int64, time.Time) error

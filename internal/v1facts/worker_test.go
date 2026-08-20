@@ -34,7 +34,7 @@ func (s *fakeFactDeliveryStore) ClaimV1Facts(context.Context, time.Time, int) ([
 	return append([]store.V1Fact(nil), s.facts...), nil
 }
 
-func (s *fakeFactDeliveryStore) MarkV1FactDelivery(_ context.Context, factID string, statusCode int, success, terminal bool, _ string, _ time.Time) error {
+func (s *fakeFactDeliveryStore) MarkV1FactDelivery(_ context.Context, factID, _ string, statusCode int, success, terminal bool, _ string, _ time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.marks = append(s.marks, factDeliveryMark{factID: factID, statusCode: statusCode, success: success, terminal: terminal})
@@ -144,7 +144,7 @@ func TestReceiverDeliveryDetailKeepsOnlyStableErrorCode(t *testing.T) {
 }
 
 func testFact() store.V1Fact {
-	return store.V1Fact{FactID: "f8a8d975-1f5d-4971-b1c6-4d1c583675ef", FactType: "transaction.meter", SchemaVersion: 1, OccurredAt: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC), Producer: "ocpp-hal-go-new", ContentSHA256: "c3e72fd9d1f2f89e4ca9b1579dfdecc9e56a05a53240fa5d1d45907da16ac085", Payload: []byte(`{"meter_sequence":7,"meter_value_wh":106220}`)}
+	return store.V1Fact{FactID: "f8a8d975-1f5d-4971-b1c6-4d1c583675ef", ClaimToken: "e9b7a4ed-6106-4bd7-a209-0d08c888a2d1", FactType: "transaction.meter", SchemaVersion: 1, OccurredAt: time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC), Producer: "ocpp-hal-go-new", ContentSHA256: "c3e72fd9d1f2f89e4ca9b1579dfdecc9e56a05a53240fa5d1d45907da16ac085", Payload: []byte(`{"meter_sequence":7,"meter_value_wh":106220}`)}
 }
 
 func isTerminalStatus(status int) bool {
