@@ -77,9 +77,14 @@ func (r *Registry) ApplyStatusNotification(chargerID string, connectorID int, st
 		conn.ErrorCode = errorCode
 	}
 
-	connectorHasError := conn.ErrorCode != "" && conn.ErrorCode != "NoError"
-	cp.HasError = connectorHasError
 	cp.Connectors[key] = conn
+	cp.HasError = false
+	for _, connector := range cp.Connectors {
+		if connector.ErrorCode != "" && connector.ErrorCode != "NoError" {
+			cp.HasError = true
+			break
+		}
+	}
 }
 
 func (r *Registry) ApplyStartTransaction(chargerID string, connectorID int, transactionID int64, meterStart float64) {

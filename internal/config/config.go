@@ -1,159 +1,266 @@
 package config
 
 import (
+	"fmt"
 	"log/slog"
 	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
 
+const (
+	defaultEnvironment              = "development"
+	defaultRESTHost                 = "127.0.0.1"
+	defaultRESTPort                 = "18080"
+	defaultOCPPListenPort           = 18081
+	defaultOCPPListenPath           = "/{ws}"
+	defaultHeartbeatIntervalSeconds = 300
+	defaultDBHost                   = "127.0.0.1"
+	defaultDBPort                   = 5432
+	defaultDBSSLMode                = "disable"
+)
+
 type Config struct {
-	Environment string
-
-	RESTHost string
-	RESTPort string
-
+	Environment                  string
+	RESTHost                     string
+	RESTPort                     string
 	OCPPListenPort               int
 	OCPPListenPath               string
 	OCPPHeartbeatIntervalSeconds int
-
-	LogLevel slog.Level
-
-	DatabaseURL string
-	DBName      string
-	DBUser      string
-	DBPassword  string
-	DBHost      string
-	DBPort      int
-	DBSSLMode   string
-
-	V1CMSBearerToken      string
-	V1FactDeliveryEnabled bool
-	V1CMSFactsURL         string
-	V1CMSFactsBearerToken string
-	APIDocsEnabled        bool
+	LogLevel                     slog.Level
+	DatabaseURL                  string
+	DBName                       string
+	DBUser                       string
+	DBPassword                   string
+	DBHost                       string
+	DBPort                       int
+	DBSSLMode                    string
+	V1CMSBearerToken             string
+	V1FactDeliveryEnabled        bool
+	V1CMSFactsURL                string
+	V1CMSFactsBearerToken        string
+	APIDocsEnabled               bool
 }
 
-func Load() Config {
-	loadLocalEnv()
-
-	return Config{
-		Environment: env("HAL_ENVIRONMENT", "development"),
-
-		RESTHost: env("F_SERVER_HOST", "127.0.0.1"),
-		RESTPort: env("F_SERVER_PORT", "18080"),
-
-		OCPPListenPort:               envInt("OCPP_LISTEN_PORT", 18081),
-		OCPPListenPath:               env("OCPP_LISTEN_PATH", "/{ws}"),
-		OCPPHeartbeatIntervalSeconds: envInt("OCPP_HEARTBEAT_INTERVAL_SECONDS", 300),
-
-		LogLevel: parseLogLevel(env("LOG_LEVEL", "info")),
-
-		DatabaseURL: os.Getenv("DATABASE_URL"),
-		DBName:      os.Getenv("DB_NAME"),
-		DBUser:      os.Getenv("DB_USER"),
-		DBPassword:  os.Getenv("DB_PASSWORD"),
-		DBHost:      env("DB_HOST", "127.0.0.1"),
-		DBPort:      envInt("DB_PORT", 5432),
-		DBSSLMode:   env("DB_SSLMODE", "disable"),
-
-		V1CMSBearerToken:      os.Getenv("HAL_V1_CMS_BEARER_TOKEN"),
-		V1FactDeliveryEnabled: envBool("HAL_V1_FACT_DELIVERY_ENABLED", false),
-		V1CMSFactsURL:         os.Getenv("HAL_V1_CMS_FACTS_URL"),
-		V1CMSFactsBearerToken: os.Getenv("HAL_V1_CMS_FACT_BEARER_TOKEN"),
-		APIDocsEnabled:        envBool("API_DOCS_ENABLED", false),
-	}
-}
-
-// loadLocalEnv is intentionally small: it provides local development defaults
-// without changing already-supplied process configuration. Production deploys
-// provide their environment directly and do not depend on this file.
-func loadLocalEnv() {
-	if strings.EqualFold(strings.TrimSpace(os.Getenv("HAL_ENVIRONMENT")), "production") {
-		return
-	}
-	path := filepath.Join(".", ".env")
-	data, err := os.ReadFile(path)
+// Load returns only a fully validated runtime configuration. Defaults apply
+// when a setting is absent; an explicitly supplied invalid setting prevents
+// startup rather than changing the operator's intent.
+func Load() (Config, error) {
+	values, err := loadValues()
 	if err != nil {
-		return
+		return Config{}, err
 	}
+	return parse(values)
+}
 
-	for _, line := range strings.Split(string(data), "\n") {
+// loadValues gives process configuration precedence over local development
+// defaults without mutating process state. Explicit production never consumes
+// a repository-local .env file.
+func loadValues() (map[string]string, error) {
+	values := make(map[string]string)
+	for _, pair := range os.Environ() {
+		key, raw, ok := strings.Cut(pair, "=")
+		if ok && strings.TrimSpace(raw) != "" {
+			values[key] = raw
+		}
+	}
+	if raw, present := values["HAL_ENVIRONMENT"]; present {
+		if _, err := parseEnvironment(raw); err != nil {
+			return nil, err
+		}
+		if strings.EqualFold(strings.TrimSpace(raw), "production") {
+			return values, nil
+		}
+	}
+	local, err := readLocalEnv(filepath.Join(".", ".env"))
+	if err != nil {
+		return nil, err
+	}
+	for key, raw := range local {
+		if _, supplied := values[key]; !supplied && strings.TrimSpace(raw) != "" {
+			values[key] = raw
+		}
+	}
+	return values, nil
+}
+
+func readLocalEnv(path string) (map[string]string, error) {
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read local .env: %w", err)
+	}
+	values := make(map[string]string)
+	for lineNumber, line := range strings.Split(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
+		key, raw, ok := strings.Cut(line, "=")
 		key = strings.TrimSpace(key)
-		value = strings.Trim(strings.TrimSpace(value), "\"'")
-		if key == "" || os.Getenv(key) != "" {
-			continue
+		if !ok || key == "" {
+			return nil, fmt.Errorf("invalid local .env line %d", lineNumber+1)
 		}
-		_ = os.Setenv(key, value)
+		values[key] = strings.Trim(strings.TrimSpace(raw), "\"'")
 	}
+	return values, nil
 }
 
-func (c Config) RESTListenAddr() string {
-	return net.JoinHostPort(c.RESTHost, c.RESTPort)
+func parse(values map[string]string) (Config, error) {
+	environment, err := parseEnvironment(value(values, "HAL_ENVIRONMENT", defaultEnvironment))
+	if err != nil {
+		return Config{}, err
+	}
+	restPort, err := parsePort("F_SERVER_PORT", value(values, "F_SERVER_PORT", defaultRESTPort))
+	if err != nil {
+		return Config{}, err
+	}
+	ocppPortString, err := parsePort("OCPP_LISTEN_PORT", value(values, "OCPP_LISTEN_PORT", strconv.Itoa(defaultOCPPListenPort)))
+	if err != nil {
+		return Config{}, err
+	}
+	ocppPort, _ := strconv.Atoi(ocppPortString)
+	heartbeat, err := parseBoundedInt("OCPP_HEARTBEAT_INTERVAL_SECONDS", value(values, "OCPP_HEARTBEAT_INTERVAL_SECONDS", strconv.Itoa(defaultHeartbeatIntervalSeconds)), 1, 86400)
+	if err != nil {
+		return Config{}, err
+	}
+	dbPortString, err := parsePort("DB_PORT", value(values, "DB_PORT", strconv.Itoa(defaultDBPort)))
+	if err != nil {
+		return Config{}, err
+	}
+	dbPort, _ := strconv.Atoi(dbPortString)
+	factDelivery, err := parseBool("HAL_V1_FACT_DELIVERY_ENABLED", value(values, "HAL_V1_FACT_DELIVERY_ENABLED", "false"))
+	if err != nil {
+		return Config{}, err
+	}
+	docsEnabled, err := parseBool("API_DOCS_ENABLED", value(values, "API_DOCS_ENABLED", "false"))
+	if err != nil {
+		return Config{}, err
+	}
+	level, err := parseLogLevel(value(values, "LOG_LEVEL", "info"))
+	if err != nil {
+		return Config{}, err
+	}
+	cfg := Config{
+		Environment: environment, RESTHost: value(values, "F_SERVER_HOST", defaultRESTHost), RESTPort: restPort,
+		OCPPListenPort: ocppPort, OCPPListenPath: value(values, "OCPP_LISTEN_PATH", defaultOCPPListenPath), OCPPHeartbeatIntervalSeconds: heartbeat,
+		LogLevel:    level,
+		DatabaseURL: value(values, "DATABASE_URL", ""), DBName: value(values, "DB_NAME", ""), DBUser: value(values, "DB_USER", ""), DBPassword: value(values, "DB_PASSWORD", ""), DBHost: value(values, "DB_HOST", defaultDBHost), DBPort: dbPort, DBSSLMode: value(values, "DB_SSLMODE", defaultDBSSLMode),
+		V1CMSBearerToken: value(values, "HAL_V1_CMS_BEARER_TOKEN", ""), V1FactDeliveryEnabled: factDelivery, V1CMSFactsURL: value(values, "HAL_V1_CMS_FACTS_URL", ""), V1CMSFactsBearerToken: value(values, "HAL_V1_CMS_FACT_BEARER_TOKEN", ""), APIDocsEnabled: docsEnabled,
+	}
+	if err := cfg.validate(); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
 }
 
-func (c Config) HasDatabase() bool {
+func (c Config) validate() error {
+	if strings.TrimSpace(c.RESTHost) == "" {
+		return fmt.Errorf("invalid F_SERVER_HOST: must not be empty")
+	}
+	if !strings.HasPrefix(c.OCPPListenPath, "/") {
+		return fmt.Errorf("invalid OCPP_LISTEN_PATH: must start with /")
+	}
+	if strings.TrimSpace(c.V1CMSBearerToken) == "" {
+		return fmt.Errorf("HAL_V1_CMS_BEARER_TOKEN is required")
+	}
+	if c.V1FactDeliveryEnabled {
+		if err := validateHTTPURL("HAL_V1_CMS_FACTS_URL", c.V1CMSFactsURL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(c.V1CMSFactsBearerToken) == "" {
+			return fmt.Errorf("HAL_V1_CMS_FACT_BEARER_TOKEN is required when HAL_V1_FACT_DELIVERY_ENABLED=true")
+		}
+	}
 	if strings.TrimSpace(c.DatabaseURL) != "" {
-		return true
+		if err := validatePostgresURL(c.DatabaseURL); err != nil {
+			return err
+		}
+	} else if strings.TrimSpace(c.DBName) == "" || strings.TrimSpace(c.DBUser) == "" || strings.TrimSpace(c.DBPassword) == "" || strings.TrimSpace(c.DBHost) == "" {
+		return fmt.Errorf("DATABASE_URL or DB_NAME, DB_USER, DB_PASSWORD, and DB_HOST are required")
 	}
-
-	return strings.TrimSpace(c.DBName) != "" &&
-		strings.TrimSpace(c.DBUser) != "" &&
-		strings.TrimSpace(c.DBHost) != "" &&
-		c.DBPort > 0
-}
-
-func env(key string, fallback string) string {
-	value := strings.TrimSpace(os.Getenv(key))
-	if value == "" {
-		return fallback
-	}
-	return value
-}
-
-func envInt(key string, fallback int) int {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return fallback
-	}
-	return value
-}
-
-func envBool(key string, fallback bool) bool {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.ParseBool(raw)
-	if err != nil {
-		return fallback
-	}
-	return value
-}
-
-func parseLogLevel(value string) slog.Level {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "debug":
-		return slog.LevelDebug
-	case "warn", "warning":
-		return slog.LevelWarn
-	case "error":
-		return slog.LevelError
+	switch c.DBSSLMode {
+	case "disable", "allow", "prefer", "require", "verify-ca", "verify-full":
 	default:
-		return slog.LevelInfo
+		return fmt.Errorf("invalid DB_SSLMODE: %q", c.DBSSLMode)
 	}
+	return nil
+}
+
+func parseEnvironment(raw string) (string, error) {
+	parsed := strings.ToLower(strings.TrimSpace(raw))
+	if parsed == "" {
+		parsed = defaultEnvironment
+	}
+	switch parsed {
+	case "development", "test", "production":
+		return parsed, nil
+	default:
+		return "", fmt.Errorf("invalid HAL_ENVIRONMENT: %q (supported: development, test, production)", raw)
+	}
+}
+
+func parsePort(key, raw string) (string, error) {
+	value, err := parseBoundedInt(key, raw, 1, 65535)
+	if err != nil {
+		return "", err
+	}
+	return strconv.Itoa(value), nil
+}
+func parseBoundedInt(key, raw string, minimum, maximum int) (int, error) {
+	parsed, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil || parsed < minimum || parsed > maximum {
+		return 0, fmt.Errorf("invalid %s: must be an integer between %d and %d", key, minimum, maximum)
+	}
+	return parsed, nil
+}
+func parseBool(key, raw string) (bool, error) {
+	parsed, err := strconv.ParseBool(strings.TrimSpace(raw))
+	if err != nil {
+		return false, fmt.Errorf("invalid %s: must be true or false", key)
+	}
+	return parsed, nil
+}
+func parseLogLevel(raw string) (slog.Level, error) {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "debug":
+		return slog.LevelDebug, nil
+	case "info":
+		return slog.LevelInfo, nil
+	case "warn", "warning":
+		return slog.LevelWarn, nil
+	case "error":
+		return slog.LevelError, nil
+	default:
+		return 0, fmt.Errorf("invalid LOG_LEVEL: %q (supported: debug, info, warn, error)", raw)
+	}
+}
+func validateHTTPURL(key, raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || parsed.Host == "" || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.User != nil || parsed.Fragment != "" {
+		return fmt.Errorf("invalid %s: must be an absolute http or https URL without credentials or fragment", key)
+	}
+	return nil
+}
+func validatePostgresURL(raw string) error {
+	parsed, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || (parsed.Scheme != "postgres" && parsed.Scheme != "postgresql") || parsed.Host == "" || strings.Trim(parsed.Path, "/") == "" {
+		return fmt.Errorf("invalid DATABASE_URL: must be an absolute postgres URL")
+	}
+	return nil
+}
+func value(values map[string]string, key, fallback string) string {
+	if raw, ok := values[key]; ok && strings.TrimSpace(raw) != "" {
+		return strings.TrimSpace(raw)
+	}
+	return fallback
+}
+func (c Config) RESTListenAddr() string { return net.JoinHostPort(c.RESTHost, c.RESTPort) }
+func (c Config) HasDatabase() bool {
+	return strings.TrimSpace(c.DatabaseURL) != "" || (strings.TrimSpace(c.DBName) != "" && strings.TrimSpace(c.DBUser) != "" && strings.TrimSpace(c.DBHost) != "" && c.DBPort > 0)
 }

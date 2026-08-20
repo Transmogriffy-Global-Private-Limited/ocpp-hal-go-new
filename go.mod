@@ -4,6 +4,7 @@ go 1.23.0
 
 require (
 	github.com/gowebpki/jcs v1.0.1
+	github.com/google/uuid v1.6.0
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/lorenzodonini/ocpp-go v0.19.0
 )
@@ -11,7 +12,6 @@ require (
 require (
 	github.com/go-playground/locales v0.12.1 // indirect
 	github.com/go-playground/universal-translator v0.16.0 // indirect
-	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/jackc/pgpassfile v1.0.0 // indirect

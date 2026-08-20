@@ -83,6 +83,7 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 	if h.v1Store == nil {
 		return nil
 	}
+	h.retryRuntimeProjections(ctx)
 	transactions, err := h.v1Store.ListV1OverdueTransactions(ctx, time.Now().UTC(), 100)
 	if err != nil {
 		return err
@@ -98,21 +99,32 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 	return h.DispatchPendingV1Stops(ctx)
 }
 
-func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValuesRequest) bool {
+type meterPersistenceResult uint8
+
+const (
+	meterIgnored meterPersistenceResult = iota
+	meterPersisted
+	meterPersistenceFailed
+)
+
+func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValuesRequest) meterPersistenceResult {
 	if h.v1Store == nil || request.TransactionId == nil || *request.TransactionId <= 0 {
-		return false
+		return meterIgnored
 	}
 	meterWh, observedAt, ok := extractV1MeterValueWh(request)
 	if !ok {
-		return false
+		return meterIgnored
 	}
 	transaction, accepted, err := h.v1Store.UpdateV1MeterForOCPP(context.Background(), chargePointID, int64(*request.TransactionId), meterWh, observedAt)
 	if errors.Is(err, store.ErrV1TransactionNotFound) {
-		return false
+		return meterIgnored
+	}
+	if errors.Is(err, store.ErrV1InvalidEvidence) {
+		return meterIgnored
 	}
 	if err != nil {
-		h.logger.Warn("failed to persist v1 meter", "charge_point_id", chargePointID, "error", err)
-		return true
+		h.logger.Error("failed to durably persist v1 meter", "charge_point_id", chargePointID, "error", err)
+		return meterPersistenceFailed
 	}
 	if accepted {
 		h.registry.ApplyMeterValue(chargePointID, request.ConnectorId, ptrInt64(transaction.OCPPTransactionID), float64(meterWh))
@@ -123,7 +135,7 @@ func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValue
 			}
 		}
 	}
-	return true
+	return meterPersisted
 }
 
 func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTransactionRequest) bool {
@@ -135,8 +147,8 @@ func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTr
 		return false
 	}
 	if err != nil {
-		h.logger.Warn("failed to locate v1 transaction for stop", "charge_point_id", chargePointID, "error", err)
-		return true
+		h.logger.Error("failed to locate v1 transaction for stop", "charge_point_id", chargePointID, "error", err)
+		return false
 	}
 	observedAt := time.Now().UTC()
 	completedAt := observedAt

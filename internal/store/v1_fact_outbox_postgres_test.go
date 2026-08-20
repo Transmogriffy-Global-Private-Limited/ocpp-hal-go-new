@@ -160,6 +160,40 @@ func TestV1FactOutboxDoesNotStealActiveLeaseAndClaimsOnceConcurrently(t *testing
 	}
 }
 
+func TestV1FactRequeuePreservesImmutableFactAndAuditsTerminalState(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is required for the disposable PostgreSQL fact-reconciliation regression")
+	}
+	ctx := context.Background()
+	s, err := NewPostgresStore(config.Config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	factID := insertFactOutboxFixture(t, s, "requeue")
+	defer deleteFactOutboxFixture(t, s, factID)
+	if _, err := s.db.ExecContext(ctx, `UPDATE v1_fact_outbox SET status='RECONCILIATION_REQUIRED',last_error='receiver HTTP 401' WHERE fact_id=$1`, factID); err != nil {
+		t.Fatal(err)
+	}
+	var beforePayload, beforeDigest string
+	if err := s.db.QueryRowContext(ctx, `SELECT payload::text,content_digest FROM v1_fact_outbox WHERE fact_id=$1`, factID).Scan(&beforePayload, &beforeDigest); err != nil {
+		t.Fatal(err)
+	}
+	correlationID := MustNewUUIDString()
+	if err := s.RequeueV1Fact(ctx, factID, correlationID); err != nil {
+		t.Fatal(err)
+	}
+	var status, payload, digest string
+	if err := s.db.QueryRowContext(ctx, `SELECT status,payload::text,content_digest FROM v1_fact_outbox WHERE fact_id=$1`, factID).Scan(&status, &payload, &digest); err != nil || status != "PENDING" || payload != beforePayload || digest != beforeDigest {
+		t.Fatalf("status=%q payload=%q digest=%q err=%v", status, payload, digest, err)
+	}
+	var previousStatus, previousError string
+	if err := s.db.QueryRowContext(ctx, `SELECT previous_status,COALESCE(previous_error,'') FROM v1_fact_reconciliation_audit WHERE fact_id=$1 AND correlation_id=$2`, factID, correlationID).Scan(&previousStatus, &previousError); err != nil || previousStatus != "RECONCILIATION_REQUIRED" || previousError != "receiver HTTP 401" {
+		t.Fatalf("audit status=%q error=%q query=%v", previousStatus, previousError, err)
+	}
+}
+
 func insertFactOutboxFixture(t *testing.T, s *PostgresStore, marker string) string {
 	return insertFactOutboxFixtureAt(t, s, marker, time.Now().UTC())
 }
@@ -172,7 +206,7 @@ func insertFactOutboxFixtureAt(t *testing.T, s *PostgresStore, marker string, oc
 		t.Fatal(err)
 	}
 	defer tx.Rollback()
-	aggregate := "test-fact-" + NewUUIDString()
+	aggregate := "test-fact-" + MustNewUUIDString()
 	if err := s.insertV1FactTx(ctx, tx, "charger.connection.updated", aggregate, nil, occurredAt, map[string]any{"marker": marker, "nested": map[string]any{"active": true}, "observed_at": occurredAt, "nullable": nil}); err != nil {
 		t.Fatal(err)
 	}
@@ -189,6 +223,7 @@ func insertFactOutboxFixtureAt(t *testing.T, s *PostgresStore, marker string, oc
 
 func deleteFactOutboxFixture(t *testing.T, s *PostgresStore, factID string) {
 	t.Helper()
+	_, _ = s.db.ExecContext(context.Background(), `DELETE FROM v1_fact_reconciliation_audit WHERE fact_id=$1`, factID)
 	if _, err := s.db.ExecContext(context.Background(), `DELETE FROM v1_fact_outbox WHERE fact_id=$1`, factID); err != nil && err != sql.ErrNoRows {
 		t.Fatal(err)
 	}

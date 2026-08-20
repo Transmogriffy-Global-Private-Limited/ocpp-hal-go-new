@@ -81,8 +81,12 @@ func (s *PostgresStore) insertV1FactTx(ctx context.Context, tx *sql.Tx, factType
 	if err != nil {
 		return err
 	}
+	factID, err := NewSecureUUIDString()
+	if err != nil {
+		return err
+	}
 	fact := V1Fact{
-		FactID:        NewUUIDString(),
+		FactID:        factID,
 		FactType:      factType,
 		SchemaVersion: 1,
 		OccurredAt:    occurredAt,
@@ -583,4 +587,37 @@ func (s *PostgresStore) MarkV1FactDelivery(ctx context.Context, factID string, s
 	}
 	_, err := s.db.ExecContext(ctx, `UPDATE v1_fact_outbox SET status=$2,retries=CASE WHEN $2='DELIVERED' THEN retries ELSE retries+1 END,next_retry_at=$3,claimed_until=NULL,delivery_status_code=$4,last_error=$5,sent_at=CASE WHEN $2='DELIVERED' THEN NOW() ELSE sent_at END WHERE fact_id=$1`, factID, state, next, statusCode, nullString(detail))
 	return err
+}
+
+// RequeueV1Fact transitions only a terminal/reconciliation fact back to
+// PENDING. The immutable fact row, ID, payload and content digest remain the
+// same; the separate audit row preserves the prior receiver evidence.
+func (s *PostgresStore) RequeueV1Fact(ctx context.Context, factID, correlationID string) error {
+	auditID, err := NewSecureUUIDString()
+	if err != nil {
+		return err
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var status, previousError string
+	err = tx.QueryRowContext(ctx, `SELECT status,COALESCE(last_error,'') FROM v1_fact_outbox WHERE fact_id=$1 FOR UPDATE`, factID).Scan(&status, &previousError)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrV1FactNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if status != "RECONCILIATION_REQUIRED" {
+		return ErrV1FactNotReconciliable
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO v1_fact_reconciliation_audit (id,fact_id,correlation_id,previous_status,previous_error) VALUES ($1,$2,$3,$4,$5)`, auditID, factID, correlationID, status, nullString(previousError)); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `UPDATE v1_fact_outbox SET status='PENDING',claimed_until=NULL,next_retry_at=NOW(),last_error='manual reconciliation requeue requested' WHERE fact_id=$1`, factID); err != nil {
+		return err
+	}
+	return tx.Commit()
 }

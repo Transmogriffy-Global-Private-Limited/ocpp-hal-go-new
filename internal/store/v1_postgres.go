@@ -81,7 +81,11 @@ func (s *PostgresStore) SyncV1Mapping(ctx context.Context, input V1MappingInput)
 		action = "ENABLEMENT_CHANGED"
 	}
 	if created || existingEnabled != input.Enabled {
-		_, err = tx.ExecContext(ctx, `INSERT INTO v1_mapping_audit (id,cpo_id,cms_charger_id,correlation_id,request_digest,action) VALUES ($1,$2,$3,$4,$5,$6)`, NewUUIDString(), input.CPOID, input.CMSChargerID, input.CorrelationID, input.RequestDigest, action)
+		auditID, idErr := NewSecureUUIDString()
+		if idErr != nil {
+			return nil, false, idErr
+		}
+		_, err = tx.ExecContext(ctx, `INSERT INTO v1_mapping_audit (id,cpo_id,cms_charger_id,correlation_id,request_digest,action) VALUES ($1,$2,$3,$4,$5,$6)`, auditID, input.CPOID, input.CMSChargerID, input.CorrelationID, input.RequestDigest, action)
 		if err != nil {
 			return nil, false, err
 		}
@@ -155,7 +159,10 @@ func (s *PostgresStore) CreateV1StartCommand(ctx context.Context, input V1StartC
 		return nil, false, err
 	}
 	defer tx.Rollback()
-	commandID := NewUUIDString()
+	commandID, err := NewSecureUUIDString()
+	if err != nil {
+		return nil, false, err
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO v1_remote_commands (id,cms_command_id,kind,request_digest,cpo_id,customer_id,correlation_id,cms_start_intent_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,id_tag,credential_expires_at,command_expires_at,energy_limit_wh,max_duration_seconds,state) VALUES ($1,$2,'START',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'PERSISTED') ON CONFLICT (cms_command_id) DO NOTHING`, commandID, input.CMSCommandID, input.RequestDigest, input.CPOID, nullString(input.CustomerID), nullString(input.CorrelationID), input.CMSStartIntentID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.IDTag, input.CredentialExpiresAt, input.CommandExpiresAt, input.EnergyLimitWh, input.MaxDurationSeconds)
 	if err != nil {
 		if isDuplicate(err) {
@@ -208,7 +215,10 @@ func (s *PostgresStore) CreateV1StopCommand(ctx context.Context, input V1StopCom
 	if err != nil {
 		return nil, false, err
 	}
-	commandID := NewUUIDString()
+	commandID, err := NewSecureUUIDString()
+	if err != nil {
+		return nil, false, err
+	}
 	result, err := tx.ExecContext(ctx, `INSERT INTO v1_remote_commands (id,cms_command_id,kind,request_digest,cpo_id,customer_id,correlation_id,cms_charging_session_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,command_expires_at,requested_stop_initiator,requested_stop_reason,hal_transaction_id,ocpp_transaction_id,stop_workflow_transaction_id,state) VALUES ($1,$2,'STOP',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'PERSISTED') ON CONFLICT (cms_command_id) DO NOTHING`, commandID, input.CMSCommandID, input.RequestDigest, input.CPOID, nullString(input.CustomerID), nullString(input.CorrelationID), input.CMSChargingSessionID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.CommandExpiresAt, input.RequestedStopInitiator, input.RequestedStopReason, input.HALTransactionID, input.OCPPTransactionID, workflow.HALTransactionID)
 	if err != nil {
 		return nil, false, err
@@ -376,7 +386,10 @@ func (s *PostgresStore) MaterializeV1Start(ctx context.Context, input V1StartMat
 	if !command.CommandExpiresAt.After(input.ObservedAt) {
 		return nil, false, ErrV1CredentialRejected
 	}
-	halID := NewUUIDString()
+	halID, err := NewSecureUUIDString()
+	if err != nil {
+		return nil, false, err
+	}
 	var deadline any = nil
 	if command.MaxDurationSeconds != nil {
 		deadline = input.ObservedAt.Add(time.Duration(*command.MaxDurationSeconds) * time.Second)

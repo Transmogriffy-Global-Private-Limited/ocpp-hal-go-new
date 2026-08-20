@@ -61,11 +61,14 @@ func postgresURL(cfg config.Config) string {
 func (s *PostgresStore) CreateTransaction(ctx context.Context, input CreateTransactionInput) (*Transaction, error) {
 	for attempts := 0; attempts < 100; attempts++ {
 		tid := RandomTransactionID()
-		uuiddb := NewUUIDString()
+		uuiddb, err := NewSecureUUIDString()
+		if err != nil {
+			return nil, err
+		}
 		startTime := time.Now().UTC()
 
 		var rowID int64
-		err := s.db.QueryRowContext(
+		err = s.db.QueryRowContext(
 			ctx,
 			`INSERT INTO transactions
 (uuiddb, charger_id, connector_id, meter_start, start_time, id_tag, transaction_id, is_single_session)

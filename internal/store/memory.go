@@ -48,9 +48,13 @@ func (s *MemoryStore) CreateTransaction(ctx context.Context, input CreateTransac
 			continue
 		}
 
+		uuiddb, err := NewSecureUUIDString()
+		if err != nil {
+			return nil, err
+		}
 		tx := &Transaction{
 			ID:              s.nextRowID,
-			UUIDDB:          NewUUIDString(),
+			UUIDDB:          uuiddb,
 			ChargerID:       input.ChargerID,
 			ConnectorID:     input.ConnectorID,
 			MeterStart:      input.MeterStart,

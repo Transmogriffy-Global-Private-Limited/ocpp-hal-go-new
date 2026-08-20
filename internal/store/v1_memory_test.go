@@ -115,7 +115,7 @@ func TestV1MemoryStoreUsesReceiptTimeAndRejectsInvalidCompletionEvidence(t *test
 	s := NewV1MemoryStore()
 	now := time.Now().UTC().Truncate(time.Second)
 	limit := int64(100)
-	_, _, err := s.CreateV1StartCommand(ctx, V1StartCommandInput{CMSCommandID: NewUUIDString(), RequestDigest: "receipt", CPOID: NewUUIDString(), CMSStartIntentID: NewUUIDString(), CMSChargerID: NewUUIDString(), CMSConnectorID: NewUUIDString(), ChargerOCPPIdentity: "CP-RECEIPT", OCPPConnectorNumber: 1, IDTag: "appv1_receipt", CredentialExpiresAt: now.Add(time.Minute), CommandExpiresAt: now.Add(time.Minute), EnergyLimitWh: &limit})
+	_, _, err := s.CreateV1StartCommand(ctx, V1StartCommandInput{CMSCommandID: MustNewUUIDString(), RequestDigest: "receipt", CPOID: MustNewUUIDString(), CMSStartIntentID: MustNewUUIDString(), CMSChargerID: MustNewUUIDString(), CMSConnectorID: MustNewUUIDString(), ChargerOCPPIdentity: "CP-RECEIPT", OCPPConnectorNumber: 1, IDTag: "appv1_receipt", CredentialExpiresAt: now.Add(time.Minute), CommandExpiresAt: now.Add(time.Minute), EnergyLimitWh: &limit})
 	if err != nil {
 		t.Fatal(err)
 	}

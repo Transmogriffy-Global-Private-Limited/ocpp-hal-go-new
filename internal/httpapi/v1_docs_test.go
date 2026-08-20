@@ -52,6 +52,7 @@ func TestV1OpenAPICoversRegisteredRoutes(t *testing.T) {
 		"/v1/transactions/{hal_transaction_id}",
 		"/v1/runtime/chargers/{charger_ocpp_identity}",
 		"/v1/runtime/connectors/{cms_connector_id}",
+		"/v1/facts/{fact_id}/requeue",
 	} {
 		if _, ok := document.Paths[path]; !ok {
 			t.Fatalf("OpenAPI is missing registered v1 route %s", path)

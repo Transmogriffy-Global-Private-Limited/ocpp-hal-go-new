@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	ocpp16 "github.com/lorenzodonini/ocpp-go/ocpp1.6"
@@ -25,6 +26,15 @@ type HAL struct {
 	logger                   *slog.Logger
 	v1Store                  store.V1Store
 	heartbeatIntervalSeconds int
+	runtimeMu                sync.Mutex
+	pendingRuntime           map[string]pendingRuntimeProjection
+}
+
+type pendingRuntimeProjection struct {
+	identity   string
+	generation int64
+	online     bool
+	observedAt time.Time
 }
 
 func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *HAL {
@@ -35,6 +45,7 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 		logger:                   logger,
 		v1Store:                  v1Store,
 		heartbeatIntervalSeconds: defaultHeartbeatIntervalSeconds,
+		pendingRuntime:           make(map[string]pendingRuntimeProjection),
 	}
 
 	h.cs.SetNewChargingStationValidationHandler(h.validateIncomingCharger)
@@ -64,11 +75,7 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 		}
 
 		h.registry.Touch(chargePointID)
-		if h.v1Store != nil {
-			if err := h.v1Store.RecordV1ChargerConnection(context.Background(), chargePointID, int64(current.Generation), true, current.ConnectedAt); err != nil && !errors.Is(err, store.ErrV1MappingNotFound) {
-				h.logger.Warn("failed to persist v1 charger connection", "charge_point_id", chargePointID, "error", err)
-			}
-		}
+		h.persistRuntimeProjection(context.Background(), pendingRuntimeProjection{identity: chargePointID, generation: int64(current.Generation), online: true, observedAt: current.ConnectedAt})
 	})
 
 	h.cs.SetChargePointDisconnectedHandler(func(chargePoint ocpp16.ChargePointConnection) {
@@ -103,11 +110,7 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 		)
 
 		h.registry.MarkOffline(chargePointID)
-		if h.v1Store != nil {
-			if err := h.v1Store.RecordV1ChargerConnection(context.Background(), chargePointID, int64(current.Generation), false, time.Now().UTC()); err != nil && !errors.Is(err, store.ErrV1MappingNotFound) {
-				h.logger.Warn("failed to persist v1 charger disconnect", "charge_point_id", chargePointID, "error", err)
-			}
-		}
+		h.persistRuntimeProjection(context.Background(), pendingRuntimeProjection{identity: chargePointID, generation: int64(current.Generation), online: false, observedAt: time.Now().UTC()})
 	})
 
 	h.cs.SetCoreHandler(h)
@@ -535,28 +538,24 @@ func (h *HAL) OnHeartbeat(chargePointID string, request *core.HeartbeatRequest) 
 }
 
 func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNotificationRequest) (*core.StatusNotificationConfirmation, error) {
-	h.registry.ApplyStatusNotification(
-		chargePointID,
-		request.ConnectorId,
-		string(request.Status),
-		string(request.ErrorCode),
-	)
-	if h.v1Store != nil {
-		observedAt := time.Now().UTC()
-		err := h.v1Store.RecordV1ConnectorStatus(context.Background(), store.V1ConnectorRuntime{
-			ChargerOCPPIdentity: chargePointID,
-			OCPPConnectorNumber: request.ConnectorId,
-			Status:              string(request.Status),
-			ErrorCode:           string(request.ErrorCode),
-			Info:                request.Info,
-			VendorID:            request.VendorId,
-			VendorErrorCode:     request.VendorErrorCode,
-			ObservedAt:          &observedAt,
-		})
-		if err != nil && !errors.Is(err, store.ErrV1MappingNotFound) {
-			h.logger.Warn("failed to persist v1 connector status", "charge_point_id", chargePointID, "connector_id", request.ConnectorId, "error", err)
-		}
+	if h.v1Store == nil {
+		return nil, errors.New("StatusNotification requires durable v1 storage")
 	}
+	observedAt := time.Now().UTC()
+	err := h.v1Store.RecordV1ConnectorStatus(context.Background(), store.V1ConnectorRuntime{
+		ChargerOCPPIdentity: chargePointID, OCPPConnectorNumber: request.ConnectorId, Status: string(request.Status), ErrorCode: string(request.ErrorCode), Info: request.Info, VendorID: request.VendorId, VendorErrorCode: request.VendorErrorCode, ObservedAt: &observedAt,
+	})
+	if errors.Is(err, store.ErrV1MappingNotFound) || errors.Is(err, store.ErrV1CredentialRejected) {
+		// The charger cannot be correlated to a durable v1 connector. No derived
+		// local projection is created, but an ordinary OCPP confirmation avoids
+		// turning an unsupported observation into a retry storm.
+		return core.NewStatusNotificationConfirmation(), nil
+	}
+	if err != nil {
+		h.logger.Error("failed to durably persist v1 connector status", "charge_point_id", chargePointID, "connector_id", request.ConnectorId, "error", err)
+		return nil, errors.New("StatusNotification was not durably persisted")
+	}
+	h.registry.ApplyStatusNotification(chargePointID, request.ConnectorId, string(request.Status), string(request.ErrorCode))
 
 	return core.NewStatusNotificationConfirmation(), nil
 }
@@ -593,8 +592,43 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 
 func (h *HAL) OnMeterValues(chargePointID string, request *core.MeterValuesRequest) (*core.MeterValuesConfirmation, error) {
 	h.registry.Touch(chargePointID)
-	_ = h.HandleV1MeterValues(chargePointID, request)
+	if h.HandleV1MeterValues(chargePointID, request) == meterPersistenceFailed {
+		return nil, errors.New("MeterValues was not durably persisted")
+	}
 	return core.NewMeterValuesConfirmation(), nil
+}
+
+// persistRuntimeProjection keeps physical connection state local even when a
+// durable projection write fails. The same exact observation is retried by the
+// lifecycle worker; after a crash, startup resets stale durable state to
+// UNKNOWN instead of claiming the charger is still fresh or connected.
+func (h *HAL) persistRuntimeProjection(ctx context.Context, observation pendingRuntimeProjection) {
+	if h.v1Store == nil {
+		return
+	}
+	err := h.v1Store.RecordV1ChargerConnection(ctx, observation.identity, observation.generation, observation.online, observation.observedAt)
+	if err == nil || errors.Is(err, store.ErrV1MappingNotFound) || errors.Is(err, store.ErrV1CredentialRejected) {
+		h.runtimeMu.Lock()
+		delete(h.pendingRuntime, observation.identity)
+		h.runtimeMu.Unlock()
+		return
+	}
+	h.runtimeMu.Lock()
+	h.pendingRuntime[observation.identity] = observation
+	h.runtimeMu.Unlock()
+	h.logger.Warn("failed to project physical charger connection durably; retry scheduled", "charge_point_id", observation.identity, "online", observation.online, "connection_generation", observation.generation, "error", err)
+}
+
+func (h *HAL) retryRuntimeProjections(ctx context.Context) {
+	h.runtimeMu.Lock()
+	pending := make([]pendingRuntimeProjection, 0, len(h.pendingRuntime))
+	for _, observation := range h.pendingRuntime {
+		pending = append(pending, observation)
+	}
+	h.runtimeMu.Unlock()
+	for _, observation := range pending {
+		h.persistRuntimeProjection(ctx, observation)
+	}
 }
 
 func (h *HAL) OnStopTransaction(chargePointID string, request *core.StopTransactionRequest) (*core.StopTransactionConfirmation, error) {

@@ -720,6 +720,49 @@ acknowledgement does not start the timer. When a charger-originated
 
 ## 12. Failure and Reconciliation Rules
 
+### 12.0 Inbound evidence inventory
+
+HAL classifies inbound OCPP and transport evidence by what can safely be
+reconstructed. A database write failure is therefore not a uniform protocol
+failure rule.
+
+| Source | Evidence class | Acknowledgement and recovery rule |
+| --- | --- | --- |
+| `StartTransaction` | Irreplaceable lifecycle truth | Its accepted lifecycle state and immutable fact commit atomically; persistence failure is not hidden behind a successful protocol result. |
+| `StopTransaction` | Irreplaceable lifecycle truth | Its authoritative completion and immutable fact commit atomically; persistence failure is a protocol error. |
+| `StatusNotification` | Discrete operational state truth | Persist the mapped observation before confirmation; storage failure is a protocol error. Unmapped/disabled observations are unsupported or un-correlatable and receive a normal confirmation without a projection. |
+| `MeterValues` | Active-transaction operational evidence | A known-valid supported sample for an active transaction is persisted before confirmation. Unsupported samples, unknown correlation, duplicates, and stale/regressive readings are normal acknowledgements; only failure to persist a known-valid sample is a protocol error. |
+| `Heartbeat` | Repeated, refreshable liveness evidence | Return the normal confirmation even when one liveness renewal cannot persist; log the failure and rely on the next heartbeat or reconnect. Durable state must never be treated as fresh past its own freshness rule. |
+| `Authorize` | Credential decision | Validate against durable credential state and fail closed when that state cannot be read; it does not materialize a transaction itself. |
+| `BootNotification`, diagnostics, firmware, data transfer | Unsupported/bootstrap/diagnostic evidence in v1 | Use their protocol-specific normal response where no v1 authoritative durable projection exists; do not manufacture transaction/session state. |
+| WebSocket open/close | Physical transport event, not an OCPP CALL | Preserve immediate local transport truth, queue the exact failed durable runtime observation for retry, and reset unreconciled durable connection state to `UNKNOWN` on restart. There is no CALL acknowledgement to reject. |
+
+### 12.1 Charger-originated acknowledgement policy
+
+`StartTransaction` and `StopTransaction` are irreplaceable lifecycle truth.
+HAL never accepts either as successful lifecycle evidence unless its transaction
+state and immutable outbox fact commit together. A failed start is returned as a
+non-accepted authorization result; an unpersisted stop is a protocol error.
+
+`StatusNotification` is a discrete mapped connector-state observation. HAL
+persists its runtime/fact transaction before its confirmation. A storage error
+returns a protocol error; an unmapped or disabled observation is acknowledged
+without creating a local or durable projection because it cannot be correlated.
+
+For `MeterValues`, a supported integer-Wh energy register correlated to an
+active v1 transaction is persisted before acknowledgement. Store failure is a
+protocol error so a valid observation cannot silently vanish. Unsupported
+samples, unknown transactions, duplicate values, and rejected stale/regressive
+evidence are acknowledged without advancing durable meter state.
+
+Heartbeat is repeatable liveness evidence, not a non-reconstructable lifecycle
+event. HAL logs a failed renewal but returns the normal confirmation; a later
+Heartbeat or reconnect can refresh the same `ONLINE` projection. Connection
+open/close are physical transport callbacks rather than OCPP requests: HAL
+keeps the local transport truth, retries the same failed durable observation in
+process, and startup resets any unreconciled durable connection state to
+`UNKNOWN` after a crash.
+
 | Situation | Required behavior |
 | --- | --- |
 | Duplicate customer/API start | CMS returns the original intent/hold result; no second hold or command. |
@@ -735,6 +778,7 @@ acknowledgement does not start the timer. When a charger-originated
 | HAL restart with active transaction | HAL restores durable command/transaction/outbox state and conservatively replays/reconciles facts. |
 | CMS restart with pending start | CMS restores intent/hold/credential/command/receipt state and queries HAL; it does not recreate work. |
 | CMS unavailable for started/completed fact | HAL outbox retries same immutable fact and records delivery state; completion is never discarded. |
+| CMS fact receiver returns auth/client/correlation failure | HAL marks the exact fact `RECONCILIATION_REQUIRED`, stops blind retry, and retains its ID/payload/digest. After repair, CMS calls `POST /v1/facts/{fact_id}/requeue` with a canonical correlation UUID; HAL audits the prior state and requeues that same fact only. |
 | HAL unavailable to CMS | CMS preserves intent/hold and retries/reconciles same command identity; it does not create a fresh command. |
 | RemoteStop ack with no StopTransaction | Session remains active/reconciliation-required. HAL retains controlled stop/recovery awaiting protocol truth. |
 | Stale stop retry | HAL revalidates and marks it superseded/prevents dispatch after state advanced. |

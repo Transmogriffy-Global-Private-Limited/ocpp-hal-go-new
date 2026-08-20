@@ -31,8 +31,12 @@ func (s *V1MemoryStore) CreateV1StartCommand(_ context.Context, input V1StartCom
 		return cloneV1Command(existing), true, nil
 	}
 	now := time.Now().UTC()
+	halCommandID, err := NewSecureUUIDString()
+	if err != nil {
+		return nil, false, err
+	}
 	credentialExpiry := input.CredentialExpiresAt
-	command := &V1RemoteCommand{HALCommandID: NewUUIDString(), CMSCommandID: input.CMSCommandID, Kind: "START", RequestDigest: input.RequestDigest, CPOID: input.CPOID, CMSStartIntentID: input.CMSStartIntentID, CMSChargerID: input.CMSChargerID, CMSConnectorID: input.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, IDTag: input.IDTag, CredentialExpiresAt: &credentialExpiry, CommandExpiresAt: input.CommandExpiresAt, EnergyLimitWh: cloneInt64(input.EnergyLimitWh), MaxDurationSeconds: cloneInt64(input.MaxDurationSeconds), State: "PERSISTED", CreatedAt: now, UpdatedAt: now}
+	command := &V1RemoteCommand{HALCommandID: halCommandID, CMSCommandID: input.CMSCommandID, Kind: "START", RequestDigest: input.RequestDigest, CPOID: input.CPOID, CMSStartIntentID: input.CMSStartIntentID, CMSChargerID: input.CMSChargerID, CMSConnectorID: input.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, IDTag: input.IDTag, CredentialExpiresAt: &credentialExpiry, CommandExpiresAt: input.CommandExpiresAt, EnergyLimitWh: cloneInt64(input.EnergyLimitWh), MaxDurationSeconds: cloneInt64(input.MaxDurationSeconds), State: "PERSISTED", CreatedAt: now, UpdatedAt: now}
 	s.commands[input.CMSCommandID] = command
 	s.credentials[input.IDTag] = &V1Credential{IDTag: input.IDTag, CMSStartIntentID: input.CMSStartIntentID, CPOID: input.CPOID, CMSChargerID: input.CMSChargerID, CMSConnectorID: input.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, ExpiresAt: input.CredentialExpiresAt}
 	return cloneV1Command(command), false, nil
@@ -48,8 +52,12 @@ func (s *V1MemoryStore) CreateV1StopCommand(_ context.Context, input V1StopComma
 		return cloneV1Command(existing), true, nil
 	}
 	now := time.Now().UTC()
+	halCommandID, err := NewSecureUUIDString()
+	if err != nil {
+		return nil, false, err
+	}
 	txID := input.OCPPTransactionID
-	command := &V1RemoteCommand{HALCommandID: NewUUIDString(), CMSCommandID: input.CMSCommandID, Kind: "STOP", RequestDigest: input.RequestDigest, CPOID: input.CPOID, CMSChargingSessionID: input.CMSChargingSessionID, CMSChargerID: input.CMSChargerID, CMSConnectorID: input.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, HALTransactionID: input.HALTransactionID, OCPPTransactionID: &txID, RequestedStopInitiator: input.RequestedStopInitiator, RequestedStopReason: input.RequestedStopReason, CommandExpiresAt: input.CommandExpiresAt, State: "PERSISTED", CreatedAt: now, UpdatedAt: now}
+	command := &V1RemoteCommand{HALCommandID: halCommandID, CMSCommandID: input.CMSCommandID, Kind: "STOP", RequestDigest: input.RequestDigest, CPOID: input.CPOID, CMSChargingSessionID: input.CMSChargingSessionID, CMSChargerID: input.CMSChargerID, CMSConnectorID: input.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, HALTransactionID: input.HALTransactionID, OCPPTransactionID: &txID, RequestedStopInitiator: input.RequestedStopInitiator, RequestedStopReason: input.RequestedStopReason, CommandExpiresAt: input.CommandExpiresAt, State: "PERSISTED", CreatedAt: now, UpdatedAt: now}
 	s.commands[input.CMSCommandID] = command
 	return cloneV1Command(command), false, nil
 }
@@ -98,7 +106,10 @@ func (s *V1MemoryStore) MaterializeV1Start(_ context.Context, input V1StartMater
 	if command == nil || !command.CommandExpiresAt.After(input.ObservedAt) {
 		return nil, false, ErrV1CredentialRejected
 	}
-	halTransactionID := NewUUIDString()
+	halTransactionID, err := NewSecureUUIDString()
+	if err != nil {
+		return nil, false, err
+	}
 	tx := &V1Transaction{HALTransactionID: halTransactionID, CMSStartIntentID: credential.CMSStartIntentID, CMSCommandID: command.CMSCommandID, CPOID: credential.CPOID, CMSChargerID: credential.CMSChargerID, CMSConnectorID: credential.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, IDTag: input.IDTag, OCPPTransactionID: input.OCPPTransactionID, ActualStartedAt: input.ActualStartedAt, ObservedStartedAt: input.ObservedAt, MeterStartWh: input.MeterStartWh, EnergyLimitWh: cloneInt64(command.EnergyLimitWh), MaxDurationSeconds: cloneInt64(command.MaxDurationSeconds), StopState: "NONE"}
 	if tx.MaxDurationSeconds != nil {
 		deadline := input.ObservedAt.Add(time.Duration(*tx.MaxDurationSeconds) * time.Second)
@@ -189,6 +200,12 @@ func (s *V1MemoryStore) GetV1Transaction(_ context.Context, id string) (*V1Trans
 		return cloneV1Transaction(tx), nil
 	}
 	return nil, ErrV1TransactionNotFound
+}
+
+// V1MemoryStore intentionally has no durable fact outbox. It remains a test
+// helper and cannot claim to recover a terminal production delivery state.
+func (s *V1MemoryStore) RequeueV1Fact(context.Context, string, string) error {
+	return ErrV1FactNotFound
 }
 
 func cloneInt64(value *int64) *int64 {

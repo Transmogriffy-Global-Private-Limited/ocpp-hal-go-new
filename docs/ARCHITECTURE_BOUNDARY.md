@@ -93,6 +93,15 @@ outside this work.
   sequence, and publishes the corresponding fact. Heartbeat renewal cannot
   create or resurrect a connection. The default requested cadence is five
   minutes; CMS owns a separately configured, longer stale horizon.
+- HAL treats charger input by evidence class: StartTransaction and
+  StopTransaction are irreplaceable lifecycle truth and must commit with their
+  durable outbox evidence before acceptance; mapped StatusNotification and
+  supported active-transaction MeterValues persist before acknowledgement;
+  unsupported, stale, and uncorrelatable observations do not advance a
+  projection. Heartbeat is refreshable liveness and physical socket callbacks
+  are transport facts, so failed durable connection projection is retried with
+  the same observation and becomes `UNKNOWN` on restart rather than invented
+  freshness.
 - Boundary handling is fail-safe: malformed, unauthorized, stale, duplicate,
   out-of-order, inconsistent, or ambiguous input never authorizes a business
   outcome by guesswork. Durable identity and auditability are required.

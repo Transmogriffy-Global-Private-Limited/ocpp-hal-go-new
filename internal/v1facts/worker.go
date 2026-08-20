@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -64,22 +65,23 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	var deliveryErrors []error
 	for _, fact := range facts {
-		w.deliver(ctx, fact)
+		if err := w.deliver(ctx, fact); err != nil {
+			deliveryErrors = append(deliveryErrors, err)
+		}
 	}
-	return nil
+	return errors.Join(deliveryErrors...)
 }
 
-func (w *Worker) deliver(ctx context.Context, fact store.V1Fact) {
+func (w *Worker) deliver(ctx context.Context, fact store.V1Fact) error {
 	envelope, err := json.Marshal(fact.Envelope())
 	if err != nil {
-		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, 0, false, true, "invalid durable fact payload", time.Now().UTC())
-		return
+		return w.mark(ctx, fact.FactID, 0, false, true, "invalid durable fact payload", time.Now().UTC())
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.url, bytes.NewReader(envelope))
 	if err != nil {
-		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, 0, false, true, "invalid fact destination", time.Now().UTC())
-		return
+		return w.mark(ctx, fact.FactID, 0, false, true, "invalid fact destination", time.Now().UTC())
 	}
 	req.Header.Set("Authorization", "Bearer "+w.token)
 	req.Header.Set("Idempotency-Key", fact.FactID)
@@ -87,22 +89,26 @@ func (w *Worker) deliver(ctx context.Context, fact store.V1Fact) {
 	req.Header.Set("X-Correlation-ID", fact.FactID)
 	response, err := w.client.Do(req)
 	if err != nil {
-		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, 0, false, false, "transport failure", retryAt(fact.Retries))
-		return
+		return w.mark(ctx, fact.FactID, 0, false, false, "transport failure", retryAt(fact.Retries))
 	}
 	defer response.Body.Close()
 	if response.StatusCode == http.StatusNoContent {
-		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, response.StatusCode, true, false, "", time.Now().UTC())
-		return
+		return w.mark(ctx, fact.FactID, response.StatusCode, true, false, "", time.Now().UTC())
 	}
 	receiverCode := readReceiverErrorCode(response.Body)
 	if response.StatusCode == 429 || response.StatusCode == 500 || response.StatusCode == 502 || response.StatusCode == 503 || response.StatusCode == 504 {
 		w.logReceiverResponse("v1 fact receiver returned a transient response", fact, response.StatusCode, receiverCode)
-		_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, response.StatusCode, false, false, receiverDeliveryDetail(response.StatusCode, receiverCode), retryAt(fact.Retries))
-		return
+		return w.mark(ctx, fact.FactID, response.StatusCode, false, false, receiverDeliveryDetail(response.StatusCode, receiverCode), retryAt(fact.Retries))
 	}
 	w.logReceiverResponse("v1 fact receiver requires reconciliation", fact, response.StatusCode, receiverCode)
-	_ = w.store.MarkV1FactDelivery(ctx, fact.FactID, response.StatusCode, false, true, receiverDeliveryDetail(response.StatusCode, receiverCode), time.Now().UTC())
+	return w.mark(ctx, fact.FactID, response.StatusCode, false, true, receiverDeliveryDetail(response.StatusCode, receiverCode), time.Now().UTC())
+}
+
+func (w *Worker) mark(ctx context.Context, factID string, statusCode int, success, terminal bool, detail string, next time.Time) error {
+	if err := w.store.MarkV1FactDelivery(ctx, factID, statusCode, success, terminal, detail, next); err != nil {
+		return fmt.Errorf("record fact delivery state for %s: %w", factID, err)
+	}
+	return nil
 }
 
 func readReceiverErrorCode(body io.Reader) string {

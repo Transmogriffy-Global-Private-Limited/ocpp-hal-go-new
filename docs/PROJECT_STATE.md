@@ -6,6 +6,26 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- Startup configuration now fails closed: only `development`, `test`, and
+  `production` are valid environments; malformed explicit booleans, ports,
+  heartbeat values, log levels, URLs, and coupled fact-delivery credentials
+  cannot silently fall back. The production process never reads local `.env`.
+  Durable HAL-generated UUIDs propagate entropy failure before a write rather
+  than fabricating a timestamp/random-string identity.
+
+- v1 OCPP evidence now has deliberate acknowledgement boundaries. Start/stop,
+  discrete mapped status, and known-valid correlated meter facts cannot be
+  acknowledged after an unpersisted store failure. Unsupported/stale/unknown
+  meter input remains a normal confirmation without projection. Heartbeat is
+  refreshable and physical connect/disconnect projection retries the same
+  observation; restart conservatively resets any unresolved durable runtime to
+  `UNKNOWN`. Connector aggregate fault state derives from all connectors.
+
+- Terminal fact delivery is recoverable through authenticated
+  `POST /v1/facts/{fact_id}/requeue`: it records a reconciliation audit and
+  returns the same fact identity/payload/digest to `PENDING`, never a new fact.
+  This source change requires migration `009` and has not been applied.
+
 - HAL v1 now treats charger timestamps as bounded protocol evidence while
   persisting trusted HAL receipt times for start expiry, duration limits, and
   completion ordering. Start requires a positive connector, OCPP transaction

@@ -20,7 +20,11 @@ import (
 )
 
 func main() {
-	cfg := config.Load()
+	cfg, err := config.Load()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "invalid configuration:", err)
+		os.Exit(1)
+	}
 
 	logger := slog.New(slog.NewTextHandler(os.Stdout, &slog.HandlerOptions{
 		Level: cfg.LogLevel,

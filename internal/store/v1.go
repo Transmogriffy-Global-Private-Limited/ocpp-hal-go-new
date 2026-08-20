@@ -7,14 +7,16 @@ import (
 )
 
 var (
-	ErrV1CommandNotFound     = errors.New("v1 remote command not found")
-	ErrV1CredentialRejected  = errors.New("v1 start credential rejected")
-	ErrV1TransactionNotFound = errors.New("v1 transaction not found")
-	ErrV1IdempotencyConflict = errors.New("v1 command idempotency conflict")
-	ErrV1MappingNotFound     = errors.New("v1 mapping not found")
-	ErrV1MappingConflict     = errors.New("v1 mapping conflict")
-	ErrV1DeliveryNotReady    = errors.New("v1 delivery is not ready")
-	ErrV1InvalidEvidence     = errors.New("v1 transaction evidence is invalid")
+	ErrV1CommandNotFound      = errors.New("v1 remote command not found")
+	ErrV1CredentialRejected   = errors.New("v1 start credential rejected")
+	ErrV1TransactionNotFound  = errors.New("v1 transaction not found")
+	ErrV1IdempotencyConflict  = errors.New("v1 command idempotency conflict")
+	ErrV1MappingNotFound      = errors.New("v1 mapping not found")
+	ErrV1MappingConflict      = errors.New("v1 mapping conflict")
+	ErrV1DeliveryNotReady     = errors.New("v1 delivery is not ready")
+	ErrV1InvalidEvidence      = errors.New("v1 transaction evidence is invalid")
+	ErrV1FactNotFound         = errors.New("v1 fact not found")
+	ErrV1FactNotReconciliable = errors.New("v1 fact is not awaiting reconciliation")
 )
 
 type V1StartCommandInput struct {
@@ -260,6 +262,7 @@ type V1Store interface {
 	ListV1OverdueTransactions(context.Context, time.Time, int) ([]*V1Transaction, error)
 	ClaimV1Facts(context.Context, time.Time, int) ([]V1Fact, error)
 	MarkV1FactDelivery(context.Context, string, int, bool, bool, string, time.Time) error
+	RequeueV1Fact(context.Context, string, string) error
 	RecordV1ChargerConnection(context.Context, string, int64, bool, time.Time) error
 	RenewCurrentV1ChargerConnection(context.Context, string, int64, time.Time) error
 	RecordV1ConnectorStatus(context.Context, V1ConnectorRuntime) error

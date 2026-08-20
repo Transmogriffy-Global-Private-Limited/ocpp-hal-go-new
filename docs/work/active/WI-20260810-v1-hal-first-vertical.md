@@ -164,6 +164,14 @@ durable fact delivery.
 
 ## Handoff
 
+2026-08-20 HAL-wide reliability hardening added strict startup configuration,
+error-returning runtime UUID generation, evidence-class-specific OCPP
+acknowledgement behavior, transport-projection retry, all-connector fault
+aggregation, and authenticated exact-fact requeue with additive migration
+`009`. Focused config/store/state/OCPP/fact-worker/HTTP/main tests pass. The
+remaining final work is broad verification and disposable-PostgreSQL migration
+coverage; no database, deployment, or external service was mutated.
+
 Complete the remaining verification matrix before archiving this item. Do not
 claim CMS integration or customer-facing completion; this repository only owns
 the HAL side and the receiver contract.

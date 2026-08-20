@@ -2,6 +2,7 @@ package ocpp16hal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"testing"
@@ -50,12 +51,54 @@ type heartbeatRenewalStore struct {
 	identity   string
 	generation int64
 	at         time.Time
+	err        error
 }
 
 func (s *heartbeatRenewalStore) RenewCurrentV1ChargerConnection(_ context.Context, identity string, generation int64, at time.Time) error {
 	s.calls++
 	s.identity, s.generation, s.at = identity, generation, at
+	return s.err
+}
+
+func TestHeartbeatAcknowledgesRefreshableLivenessFailure(t *testing.T) {
+	store := &heartbeatRenewalStore{err: errors.New("database unavailable")}
+	hal := New(state.NewRegistry(), store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	hal.connections.register("CP-1", "current", "127.0.0.1:1")
+	confirmation, err := hal.OnHeartbeat("CP-1", nil)
+	if err != nil || confirmation == nil || store.calls != 1 {
+		t.Fatalf("confirmation=%#v error=%v calls=%d", confirmation, err, store.calls)
+	}
+}
+
+type runtimeProjectionStore struct {
+	store.V1Store
+	calls int
+	fail  bool
+}
+
+func (s *runtimeProjectionStore) RecordV1ChargerConnection(context.Context, string, int64, bool, time.Time) error {
+	s.calls++
+	if s.fail {
+		s.fail = false
+		return errors.New("database unavailable")
+	}
 	return nil
+}
+
+func TestPhysicalConnectionProjectionRetriesTheSameObservation(t *testing.T) {
+	store := &runtimeProjectionStore{fail: true}
+	hal := New(state.NewRegistry(), store, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	observation := pendingRuntimeProjection{identity: "CP-1", generation: 1, online: false, observedAt: time.Now().UTC()}
+	hal.persistRuntimeProjection(context.Background(), observation)
+	hal.retryRuntimeProjections(context.Background())
+	if store.calls != 2 {
+		t.Fatalf("calls=%d", store.calls)
+	}
+	hal.runtimeMu.Lock()
+	defer hal.runtimeMu.Unlock()
+	if len(hal.pendingRuntime) != 0 {
+		t.Fatalf("pending=%#v", hal.pendingRuntime)
+	}
 }
 
 func TestHeartbeatRenewsOnlyCurrentTrackedConnection(t *testing.T) {

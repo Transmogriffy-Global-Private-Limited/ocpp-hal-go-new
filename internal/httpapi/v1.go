@@ -67,6 +67,7 @@ func (s *Server) registerV1Routes(mux *http.ServeMux) {
 	mux.Handle("/v1/remote-commands", guard(http.HandlerFunc(s.v1Command)))
 	mux.Handle("/v1/transactions", guard(http.HandlerFunc(s.v1Transactions)))
 	mux.Handle("/v1/transactions/", guard(http.HandlerFunc(s.v1Transaction)))
+	mux.Handle("/v1/facts/", guard(http.HandlerFunc(s.v1FactRequeue)))
 	mux.Handle("/v1/runtime/chargers/", guard(http.HandlerFunc(s.v1ChargerRuntime)))
 	mux.Handle("/v1/runtime/connectors/", guard(http.HandlerFunc(s.v1ConnectorRuntime)))
 }
@@ -322,6 +323,28 @@ func (s *Server) v1ConnectorRuntime(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"runtime": v1ConnectorRuntimeView(*state), "fresh": charger.ConnectionState == "ONLINE"})
 }
 
+func (s *Server) v1FactRequeue(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	factID := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/v1/facts/"), "/requeue")
+	if !strings.HasSuffix(r.URL.Path, "/requeue") || !validUUID(factID) {
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "fact_id UUID required"})
+		return
+	}
+	correlationID := strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
+	if !validUUID(correlationID) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "X-Correlation-ID must be a canonical UUID"})
+		return
+	}
+	if err := s.v1Store.RequeueV1Fact(r.Context(), factID, correlationID); err != nil {
+		s.writeV1StoreError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"fact_id": factID, "status": "PENDING"})
+}
+
 func v1MutationHeaders(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	idempotency := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	correlation := strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
@@ -342,9 +365,9 @@ func validUUID(value string) bool {
 }
 func (s *Server) writeV1StoreError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, store.ErrV1MappingNotFound), errors.Is(err, store.ErrV1CommandNotFound), errors.Is(err, store.ErrV1TransactionNotFound):
+	case errors.Is(err, store.ErrV1MappingNotFound), errors.Is(err, store.ErrV1CommandNotFound), errors.Is(err, store.ErrV1TransactionNotFound), errors.Is(err, store.ErrV1FactNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "v1 resource not found"})
-	case errors.Is(err, store.ErrV1MappingConflict), errors.Is(err, store.ErrV1IdempotencyConflict):
+	case errors.Is(err, store.ErrV1MappingConflict), errors.Is(err, store.ErrV1IdempotencyConflict), errors.Is(err, store.ErrV1FactNotReconciliable):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "v1 idempotency or mapping conflict"})
 	case errors.Is(err, store.ErrV1CredentialRejected):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "v1 request is not permitted by current mapping state"})

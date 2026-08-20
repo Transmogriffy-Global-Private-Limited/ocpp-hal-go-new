@@ -1,5 +1,28 @@
 # AI-assisted changelog
 
+## 2026-08-20 - HAL-wide fail-closed configuration, evidence, and fact recovery hardening
+
+- Replaced silent malformed-configuration fallbacks with validated startup
+  parsing, explicit environment vocabulary, range/coupling/URL checks, and
+  production-safe local `.env` handling. Secure UUID generation now returns an
+  error to every runtime persistence operation; it never manufactures a
+  non-UUID fallback.
+- Classified OCPP evidence rather than applying a blanket DB-error policy:
+  irreplaceable transaction truth, mapped discrete status, and valid correlated
+  meter observations cannot be acknowledged before durable persistence;
+  unsupported/uncorrelatable meter input and refreshable Heartbeats preserve
+  protocol interoperability. Physical connection projection retries exact
+  observations and remains conservative across restart. Charger fault
+  aggregation now derives from every connector.
+- Added migration `009_add_v1_fact_reconciliation_audit.sql` and an
+  authenticated exact-fact requeue operation. It audits the terminal receiver
+  evidence and requeues the original immutable fact, never a replacement.
+
+Verification: focused configuration, store, registry, OCPP, fact-worker, HTTP,
+and main-package tests passed. PostgreSQL migration/lifecycle tests remain
+unrun without a clearly disposable `TEST_DATABASE_URL` or `DATABASE_URL`; no
+migration, database, deployment, or physical charger was used.
+
 ## 2026-08-20 - HAL v1 transaction-evidence and stop-recovery hardening
 
 - Added migration `008` plus HAL receipt timestamps for started/completed v1

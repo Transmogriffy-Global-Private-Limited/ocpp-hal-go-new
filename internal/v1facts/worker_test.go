@@ -22,9 +22,10 @@ type factDeliveryMark struct {
 }
 
 type fakeFactDeliveryStore struct {
-	mu    sync.Mutex
-	facts []store.V1Fact
-	marks []factDeliveryMark
+	mu      sync.Mutex
+	facts   []store.V1Fact
+	marks   []factDeliveryMark
+	markErr error
 }
 
 func (s *fakeFactDeliveryStore) ClaimV1Facts(context.Context, time.Time, int) ([]store.V1Fact, error) {
@@ -37,7 +38,7 @@ func (s *fakeFactDeliveryStore) MarkV1FactDelivery(_ context.Context, factID str
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.marks = append(s.marks, factDeliveryMark{factID: factID, statusCode: statusCode, success: success, terminal: terminal})
-	return nil
+	return s.markErr
 }
 
 func TestWorkerClassifiesReceiverResponsesAndPreservesEnvelope(t *testing.T) {
@@ -119,6 +120,14 @@ func TestWorkerRetriesTransportFailure(t *testing.T) {
 	}
 	if len(fake.marks) != 1 || fake.marks[0].success || fake.marks[0].terminal {
 		t.Fatalf("marks=%#v", fake.marks)
+	}
+}
+
+func TestWorkerReportsDurableDeliveryStateWriteFailure(t *testing.T) {
+	fake := &fakeFactDeliveryStore{facts: []store.V1Fact{testFact()}, markErr: errors.New("database unavailable")}
+	worker := &Worker{store: fake, client: &http.Client{Timeout: time.Second}, url: "http://127.0.0.1:1", token: "test-token"}
+	if err := worker.RunOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "record fact delivery state") {
+		t.Fatalf("error=%v", err)
 	}
 }
 

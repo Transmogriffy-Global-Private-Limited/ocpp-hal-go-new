@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
+	"github.com/lorenzodonini/ocpp-go/ocpp1.6/types"
 
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/state"
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
@@ -16,8 +17,22 @@ import (
 
 type failingV1CompletionStore struct{ store.V1Store }
 
+type failingV1ObservationStore struct {
+	store.V1Store
+	statusErr error
+	meterErr  error
+}
+
+func (s failingV1ObservationStore) RecordV1ConnectorStatus(context.Context, store.V1ConnectorRuntime) error {
+	return s.statusErr
+}
+
+func (s failingV1ObservationStore) UpdateV1MeterForOCPP(context.Context, string, int64, int64, time.Time) (*store.V1Transaction, bool, error) {
+	return nil, false, s.meterErr
+}
+
 func (failingV1CompletionStore) GetV1TransactionByOCPP(context.Context, string, int64) (*store.V1Transaction, error) {
-	return &store.V1Transaction{HALTransactionID: store.NewUUIDString(), ChargerOCPPIdentity: "CP-persistence", OCPPConnectorNumber: 1, OCPPTransactionID: 9, ActualStartedAt: time.Now().UTC(), ObservedStartedAt: time.Now().UTC()}, nil
+	return &store.V1Transaction{HALTransactionID: store.MustNewUUIDString(), ChargerOCPPIdentity: "CP-persistence", OCPPConnectorNumber: 1, OCPPTransactionID: 9, ActualStartedAt: time.Now().UTC(), ObservedStartedAt: time.Now().UTC()}, nil
 }
 
 func (failingV1CompletionStore) CompleteV1Transaction(context.Context, string, int64, string, time.Time, time.Time) (*store.V1Transaction, error) {
@@ -29,5 +44,46 @@ func TestOnStopTransactionReturnsErrorWhenPersistenceFails(t *testing.T) {
 	confirmation, err := h.OnStopTransaction("CP-persistence", &core.StopTransactionRequest{TransactionId: 9, MeterStop: 100})
 	if err == nil || confirmation != nil {
 		t.Fatalf("confirmation=%#v err=%v", confirmation, err)
+	}
+}
+
+func TestStatusNotificationDoesNotAcknowledgePersistenceFailure(t *testing.T) {
+	registry := state.NewRegistry()
+	h := New(registry, failingV1ObservationStore{statusErr: errors.New("database unavailable")}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	confirmation, err := h.OnStatusNotification("CP-persistence", &core.StatusNotificationRequest{ConnectorId: 1})
+	if err == nil || confirmation != nil {
+		t.Fatalf("confirmation=%#v err=%v", confirmation, err)
+	}
+	if _, exists := registry.Snapshot("CP-persistence"); exists {
+		t.Fatal("local connector projection advanced without durable status evidence")
+	}
+}
+
+func TestMeterValuesAcknowledgesUnsupportedButNotPersistenceFailure(t *testing.T) {
+	transactionID := 9
+	h := New(state.NewRegistry(), failingV1ObservationStore{meterErr: errors.New("database unavailable")}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	unsupported, err := h.OnMeterValues("CP-persistence", &core.MeterValuesRequest{TransactionId: &transactionID})
+	if err != nil || unsupported == nil {
+		t.Fatalf("unsupported confirmation=%#v err=%v", unsupported, err)
+	}
+	// The valid-energy construction is covered at the extraction boundary; the
+	// store failure path must become a CALLERROR rather than an empty success.
+	request := meterRequest(transactionID)
+	confirmation, err := h.OnMeterValues("CP-persistence", request)
+	if err == nil || confirmation != nil {
+		t.Fatalf("confirmation=%#v err=%v", confirmation, err)
+	}
+}
+
+func meterRequest(transactionID int) *core.MeterValuesRequest {
+	return &core.MeterValuesRequest{
+		ConnectorId:   1,
+		TransactionId: &transactionID,
+		MeterValue: []types.MeterValue{{
+			Timestamp: types.NewDateTime(time.Now().UTC()),
+			SampledValue: []types.SampledValue{{
+				Value: "100", Measurand: types.MeasurandEnergyActiveImportRegister, Unit: types.UnitOfMeasureWh,
+			}},
+		}},
 	}
 }

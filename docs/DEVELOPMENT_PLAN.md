@@ -31,6 +31,11 @@ Completed in this slice:
   schema, and fact delivery exposes only bounded receiver classifications while
   retaining the same immutable retry body. Deployment and dual-service
   acceptance remain required.
+- HAL-wide fail-closed hardening: strict startup configuration, error-returning
+  durable UUID generation, classified OCPP acknowledgement boundaries,
+  connection-projection retry, multi-connector fault aggregation, and audited
+  exact-fact requeue are implemented in source. The additive reconciliation
+  audit migration still needs disposable-PostgreSQL verification.
 
 ## Next Approved Work
 
