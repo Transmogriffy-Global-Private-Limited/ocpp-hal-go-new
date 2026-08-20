@@ -45,7 +45,7 @@ func TestV1FactPayloadsConformToApprovedFieldNames(t *testing.T) {
 	transaction := &V1Transaction{
 		HALTransactionID: "hal-transaction", CMSCommandID: "start-command", CMSStartIntentID: "start-intent", CPOID: "cpo",
 		CMSChargerID: "charger", CMSConnectorID: "connector", ChargerOCPPIdentity: "CP-1", OCPPConnectorNumber: 1,
-		IDTag: "appv1_test", OCPPTransactionID: 73, ActualStartedAt: now, MeterStartWh: 12000,
+		IDTag: "appv1_test", OCPPTransactionID: 73, ActualStartedAt: now, ObservedStartedAt: now, MeterStartWh: 12000,
 		LatestMeterWh: int64ptr(12345), MeterObservedAt: timePtr(now.Add(time.Second)), MeterSequence: 1,
 		MeterStopWh: int64ptr(13000), CompletedAt: timePtr(now.Add(2 * time.Second)), OCPPStopReason: "Local",
 	}

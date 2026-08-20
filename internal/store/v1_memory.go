@@ -74,8 +74,11 @@ func (s *V1MemoryStore) GetV1Credential(_ context.Context, idTag string) (*V1Cre
 func (s *V1MemoryStore) MaterializeV1Start(_ context.Context, input V1StartMaterialization) (*V1Transaction, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if input.MeterStartWh < 0 || input.OCPPTransactionID <= 0 || input.OCPPConnectorNumber <= 0 || !plausibleV1ProtocolTime(input.ActualStartedAt, input.ObservedAt) {
+		return nil, false, ErrV1InvalidEvidence
+	}
 	credential := s.credentials[input.IDTag]
-	if credential == nil || !credential.ExpiresAt.After(input.ActualStartedAt) || credential.ChargerOCPPIdentity != input.ChargerOCPPIdentity || (credential.OCPPConnectorNumber != 0 && credential.OCPPConnectorNumber != input.OCPPConnectorNumber) {
+	if credential == nil || !credential.ExpiresAt.After(input.ObservedAt) || credential.ChargerOCPPIdentity != input.ChargerOCPPIdentity || (credential.OCPPConnectorNumber != 0 && credential.OCPPConnectorNumber != input.OCPPConnectorNumber) {
 		return nil, false, ErrV1CredentialRejected
 	}
 	if credential.HALTransactionID != "" {
@@ -92,22 +95,22 @@ func (s *V1MemoryStore) MaterializeV1Start(_ context.Context, input V1StartMater
 			break
 		}
 	}
-	if command == nil || !command.CommandExpiresAt.After(input.ActualStartedAt) {
+	if command == nil || !command.CommandExpiresAt.After(input.ObservedAt) {
 		return nil, false, ErrV1CredentialRejected
 	}
 	halTransactionID := NewUUIDString()
-	tx := &V1Transaction{HALTransactionID: halTransactionID, CMSStartIntentID: credential.CMSStartIntentID, CMSCommandID: command.CMSCommandID, CPOID: credential.CPOID, CMSChargerID: credential.CMSChargerID, CMSConnectorID: credential.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, IDTag: input.IDTag, OCPPTransactionID: input.OCPPTransactionID, ActualStartedAt: input.ActualStartedAt, MeterStartWh: input.MeterStartWh, EnergyLimitWh: cloneInt64(command.EnergyLimitWh), MaxDurationSeconds: cloneInt64(command.MaxDurationSeconds), StopState: "NONE"}
+	tx := &V1Transaction{HALTransactionID: halTransactionID, CMSStartIntentID: credential.CMSStartIntentID, CMSCommandID: command.CMSCommandID, CPOID: credential.CPOID, CMSChargerID: credential.CMSChargerID, CMSConnectorID: credential.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, IDTag: input.IDTag, OCPPTransactionID: input.OCPPTransactionID, ActualStartedAt: input.ActualStartedAt, ObservedStartedAt: input.ObservedAt, MeterStartWh: input.MeterStartWh, EnergyLimitWh: cloneInt64(command.EnergyLimitWh), MaxDurationSeconds: cloneInt64(command.MaxDurationSeconds), StopState: "NONE"}
 	if tx.MaxDurationSeconds != nil {
-		deadline := input.ActualStartedAt.Add(time.Duration(*tx.MaxDurationSeconds) * time.Second)
+		deadline := input.ObservedAt.Add(time.Duration(*tx.MaxDurationSeconds) * time.Second)
 		tx.StopDeadlineAt = &deadline
 	}
 	credential.HALTransactionID = halTransactionID
-	consumed := input.ActualStartedAt
+	consumed := input.ObservedAt
 	credential.ConsumedAt = &consumed
 	command.HALTransactionID = halTransactionID
 	command.OCPPTransactionID = &input.OCPPTransactionID
 	command.State = "MATERIALIZED"
-	command.UpdatedAt = input.ActualStartedAt
+	command.UpdatedAt = input.ObservedAt
 	s.transactions[halTransactionID] = tx
 	return cloneV1Transaction(tx), false, nil
 }
@@ -119,10 +122,15 @@ func (s *V1MemoryStore) UpdateV1Meter(_ context.Context, halTransactionID string
 	if tx == nil || tx.OCPPTransactionID != ocppTransactionID || tx.CompletedAt != nil || meterWh < tx.MeterStartWh {
 		return nil, ErrV1TransactionNotFound
 	}
+	if tx.LatestMeterWh != nil && meterWh < *tx.LatestMeterWh {
+		return cloneV1Transaction(tx), ErrV1InvalidEvidence
+	}
 	tx.LatestMeterWh = &meterWh
 	consumed := meterWh - tx.MeterStartWh
 	tx.ConsumedWh = &consumed
-	tx.MeterObservedAt = &observedAt
+	if tx.MeterObservedAt == nil || observedAt.After(*tx.MeterObservedAt) {
+		tx.MeterObservedAt = &observedAt
+	}
 	tx.MeterSequence++
 	return cloneV1Transaction(tx), nil
 }
@@ -141,7 +149,7 @@ func (s *V1MemoryStore) RequestV1Stop(_ context.Context, halTransactionID, initi
 	tx.RequestedStopReason = reason
 	return cloneV1Transaction(tx), true, nil
 }
-func (s *V1MemoryStore) CompleteV1Transaction(_ context.Context, halTransactionID string, meterStopWh int64, ocppReason string, completedAt time.Time) (*V1Transaction, error) {
+func (s *V1MemoryStore) CompleteV1Transaction(_ context.Context, halTransactionID string, meterStopWh int64, ocppReason string, completedAt, observedAt time.Time) (*V1Transaction, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	tx := s.transactions[halTransactionID]
@@ -149,7 +157,13 @@ func (s *V1MemoryStore) CompleteV1Transaction(_ context.Context, halTransactionI
 		return nil, ErrV1TransactionNotFound
 	}
 	if tx.CompletedAt != nil {
+		if tx.MeterStopWh == nil || *tx.MeterStopWh != meterStopWh || tx.OCPPStopReason != ocppReason || !tx.CompletedAt.Equal(completedAt) {
+			return nil, ErrV1InvalidEvidence
+		}
 		return cloneV1Transaction(tx), nil
+	}
+	if meterStopWh < tx.MeterStartWh || (tx.LatestMeterWh != nil && meterStopWh < *tx.LatestMeterWh) || completedAt.Before(tx.ActualStartedAt) || observedAt.Before(tx.ObservedStartedAt) || !plausibleV1ProtocolTime(completedAt, observedAt) {
+		return nil, ErrV1InvalidEvidence
 	}
 	tx.MeterStopWh = &meterStopWh
 	tx.LatestMeterWh = &meterStopWh
@@ -159,10 +173,13 @@ func (s *V1MemoryStore) CompleteV1Transaction(_ context.Context, halTransactionI
 	} else {
 		tx.ConsumedWh = nil
 	}
-	tx.MeterObservedAt = &completedAt
+	if tx.MeterObservedAt == nil || completedAt.After(*tx.MeterObservedAt) {
+		tx.MeterObservedAt = &completedAt
+	}
 	tx.OCPPStopReason = ocppReason
 	tx.StopState = "COMPLETED"
 	tx.CompletedAt = &completedAt
+	tx.ObservedCompletedAt = &observedAt
 	return cloneV1Transaction(tx), nil
 }
 func (s *V1MemoryStore) GetV1Transaction(_ context.Context, id string) (*V1Transaction, error) {
@@ -230,6 +247,10 @@ func cloneV1Transaction(transaction *V1Transaction) *V1Transaction {
 	if transaction.CompletedAt != nil {
 		value := *transaction.CompletedAt
 		copy.CompletedAt = &value
+	}
+	if transaction.ObservedCompletedAt != nil {
+		value := *transaction.ObservedCompletedAt
+		copy.ObservedCompletedAt = &value
 	}
 	return &copy
 }

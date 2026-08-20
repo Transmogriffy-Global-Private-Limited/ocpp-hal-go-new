@@ -108,6 +108,16 @@ durable fact delivery.
   command response with zero UUID identities. This slice replaces accidental
   store serialization with explicit snake_case HTTP views across the v1
   response boundary; no storage migration is expected.
+- 2026-08-20 hardening after fresh end-to-end evidence: HAL now validates
+  canonical nonzero UUID identities and complete JSON bodies, maps connector
+  runtime before persisting it, separates trusted HAL receipt time from charger
+  protocol time, rejects invalid start/completion meter and timestamp evidence,
+  and converts unpersisted StopTransaction handling into an OCPP error. The
+  additive `008` migration records receipt timestamps and guards new transaction
+  invariants. Startup and periodic processing drain only durable `PERSISTED`
+  stop workflows; delivery-attempted/ambiguous work is intentionally never
+  replayed. PostgreSQL migration/lifecycle verification remains pending a
+  disposable selected database.
 - Remaining work is end-to-end verification expansion: real full lifecycle
   with a fact receiver, manual/energy/time/natural stop, concurrent stop races,
   and restart/crash scenarios. CMS consumer work is not in scope.
@@ -144,6 +154,13 @@ durable fact delivery.
   ./internal/store`, full `go test ./...`, `go vet ./...`, and
   `git diff --check` pass. PostgreSQL and dual-service deployment acceptance
   remain unrun; this source-only slice did not mutate a database.
+- 2026-08-20 evidence/recovery hardening: focused `go test ./internal/store
+  ./internal/httpapi ./internal/ocpp16hal` and full `go test ./...` pass.
+  `go vet ./...` and `scripts/build-all.ps1` also pass. The repository
+  regression script correctly stopped before database work because
+  `DATABASE_URL` is unset. Database-dependent lifecycle coverage remains
+  unrun without `TEST_DATABASE_URL`/`DATABASE_URL`; no migration or runtime
+  database was changed.
 
 ## Handoff
 

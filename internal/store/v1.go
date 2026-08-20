@@ -14,6 +14,7 @@ var (
 	ErrV1MappingNotFound     = errors.New("v1 mapping not found")
 	ErrV1MappingConflict     = errors.New("v1 mapping conflict")
 	ErrV1DeliveryNotReady    = errors.New("v1 delivery is not ready")
+	ErrV1InvalidEvidence     = errors.New("v1 transaction evidence is invalid")
 )
 
 type V1StartCommandInput struct {
@@ -141,6 +142,7 @@ type V1Transaction struct {
 	IDTag                  string     `json:"id_tag"`
 	OCPPTransactionID      int64      `json:"ocpp_transaction_id"`
 	ActualStartedAt        time.Time  `json:"actual_started_at"`
+	ObservedStartedAt      time.Time  `json:"observed_started_at"`
 	MeterStartWh           int64      `json:"meter_start_wh"`
 	LatestMeterWh          *int64     `json:"latest_meter_wh,omitempty"`
 	ConsumedWh             *int64     `json:"consumed_wh,omitempty"`
@@ -154,6 +156,7 @@ type V1Transaction struct {
 	RequestedStopReason    string     `json:"requested_stop_reason,omitempty"`
 	OCPPStopReason         string     `json:"ocpp_stop_reason,omitempty"`
 	CompletedAt            *time.Time `json:"completed_at,omitempty"`
+	ObservedCompletedAt    *time.Time `json:"observed_completed_at,omitempty"`
 	MeterStopWh            *int64     `json:"meter_stop_wh,omitempty"`
 }
 
@@ -222,6 +225,7 @@ type V1StartMaterialization struct {
 	IDTag               string
 	MeterStartWh        int64
 	ActualStartedAt     time.Time
+	ObservedAt          time.Time
 	OCPPTransactionID   int64
 }
 
@@ -237,7 +241,7 @@ type V1Store interface {
 	UpdateV1Meter(context.Context, string, int64, int64, time.Time) (*V1Transaction, error)
 	UpdateV1MeterForOCPP(context.Context, string, int64, int64, time.Time) (*V1Transaction, bool, error)
 	RequestV1Stop(context.Context, string, string, string) (*V1Transaction, bool, error)
-	CompleteV1Transaction(context.Context, string, int64, string, time.Time) (*V1Transaction, error)
+	CompleteV1Transaction(context.Context, string, int64, string, time.Time, time.Time) (*V1Transaction, error)
 	GetV1Transaction(context.Context, string) (*V1Transaction, error)
 	GetV1TransactionByStartIntent(context.Context, string) (*V1Transaction, error)
 	GetV1TransactionByOCPP(context.Context, string, int64) (*V1Transaction, error)
@@ -252,6 +256,7 @@ type V1Store interface {
 	BeginV1StopDelivery(context.Context, string) (*V1StopWorkflow, error)
 	MarkV1StopDelivery(context.Context, string, string, string, string) (*V1StopWorkflow, error)
 	RecoverV1StopDelivery(context.Context) error
+	ListV1DispatchableStops(context.Context, int) ([]*V1StopWorkflow, error)
 	ListV1OverdueTransactions(context.Context, time.Time, int) ([]*V1Transaction, error)
 	ClaimV1Facts(context.Context, time.Time, int) ([]V1Fact, error)
 	MarkV1FactDelivery(context.Context, string, int, bool, bool, string, time.Time) error

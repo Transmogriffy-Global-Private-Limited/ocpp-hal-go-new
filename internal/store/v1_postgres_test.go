@@ -89,11 +89,11 @@ func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 		t.Fatalf("credential=%#v err=%v", credential, err)
 	}
 	ocppTransactionID := RandomTransactionID()
-	tx, duplicate, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: 1, IDTag: commandInput.IDTag, MeterStartWh: 12345, ActualStartedAt: now, OCPPTransactionID: ocppTransactionID})
+	tx, duplicate, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: 1, IDTag: commandInput.IDTag, MeterStartWh: 12345, ActualStartedAt: now, ObservedAt: now, OCPPTransactionID: ocppTransactionID})
 	if err != nil || duplicate {
 		t.Fatalf("materialize=%#v duplicate=%v err=%v", tx, duplicate, err)
 	}
-	retransmit, duplicate, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: 1, IDTag: commandInput.IDTag, MeterStartWh: 12345, ActualStartedAt: now, OCPPTransactionID: RandomTransactionID()})
+	retransmit, duplicate, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: 1, IDTag: commandInput.IDTag, MeterStartWh: 12345, ActualStartedAt: now, ObservedAt: now, OCPPTransactionID: RandomTransactionID()})
 	if err != nil || !duplicate || retransmit.OCPPTransactionID != ocppTransactionID {
 		t.Fatalf("retransmit=%#v duplicate=%v err=%v", retransmit, duplicate, err)
 	}
@@ -123,7 +123,7 @@ func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 	if stop, duplicate, err := s.CreateV1StopCommand(ctx, stopInput); err != nil || !duplicate || stop.HALTransactionID != tx.HALTransactionID {
 		t.Fatalf("duplicate stop command=%#v duplicate=%v err=%v", stop, duplicate, err)
 	}
-	completed, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 22400, "Remote", now.Add(3*time.Second))
+	completed, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 22400, "Remote", now.Add(3*time.Second), now.Add(3*time.Second))
 	if err != nil || completed.CompletedAt == nil || completed.MeterStopWh == nil || *completed.MeterStopWh != 22400 || completed.OCPPStopReason != "Remote" || completed.RequestedStopInitiator != "ENERGY_LIMIT" {
 		t.Fatalf("completion=%#v err=%v", completed, err)
 	}

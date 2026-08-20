@@ -96,6 +96,7 @@ type v1TransactionResponse struct {
 	OCPPConnectorNumber    int        `json:"ocpp_connector_number"`
 	OCPPTransactionID      int64      `json:"ocpp_transaction_id"`
 	ActualStartedAt        time.Time  `json:"actual_started_at"`
+	ObservedStartedAt      time.Time  `json:"observed_started_at"`
 	MeterStartWh           int64      `json:"meter_start_wh"`
 	LatestMeterWh          *int64     `json:"latest_meter_wh,omitempty"`
 	ConsumedWh             *int64     `json:"consumed_wh,omitempty"`
@@ -109,11 +110,12 @@ type v1TransactionResponse struct {
 	RequestedStopReason    string     `json:"requested_stop_reason,omitempty"`
 	OCPPStopReason         string     `json:"ocpp_stop_reason,omitempty"`
 	CompletedAt            *time.Time `json:"completed_at,omitempty"`
+	ObservedCompletedAt    *time.Time `json:"observed_completed_at,omitempty"`
 	MeterStopWh            *int64     `json:"meter_stop_wh,omitempty"`
 }
 
 func v1TransactionView(transaction *store.V1Transaction) v1TransactionResponse {
-	return v1TransactionResponse{HALTransactionID: transaction.HALTransactionID, CMSStartIntentID: transaction.CMSStartIntentID, CMSCommandID: transaction.CMSCommandID, CPOID: transaction.CPOID, CMSChargerID: transaction.CMSChargerID, CMSConnectorID: transaction.CMSConnectorID, ChargerOCPPIdentity: transaction.ChargerOCPPIdentity, OCPPConnectorNumber: transaction.OCPPConnectorNumber, OCPPTransactionID: transaction.OCPPTransactionID, ActualStartedAt: transaction.ActualStartedAt, MeterStartWh: transaction.MeterStartWh, LatestMeterWh: transaction.LatestMeterWh, ConsumedWh: transaction.ConsumedWh, MeterObservedAt: transaction.MeterObservedAt, MeterSequence: transaction.MeterSequence, EnergyLimitWh: transaction.EnergyLimitWh, MaxDurationSeconds: transaction.MaxDurationSeconds, StopDeadlineAt: transaction.StopDeadlineAt, StopState: transaction.StopState, RequestedStopInitiator: transaction.RequestedStopInitiator, RequestedStopReason: transaction.RequestedStopReason, OCPPStopReason: transaction.OCPPStopReason, CompletedAt: transaction.CompletedAt, MeterStopWh: transaction.MeterStopWh}
+	return v1TransactionResponse{HALTransactionID: transaction.HALTransactionID, CMSStartIntentID: transaction.CMSStartIntentID, CMSCommandID: transaction.CMSCommandID, CPOID: transaction.CPOID, CMSChargerID: transaction.CMSChargerID, CMSConnectorID: transaction.CMSConnectorID, ChargerOCPPIdentity: transaction.ChargerOCPPIdentity, OCPPConnectorNumber: transaction.OCPPConnectorNumber, OCPPTransactionID: transaction.OCPPTransactionID, ActualStartedAt: transaction.ActualStartedAt, ObservedStartedAt: transaction.ObservedStartedAt, MeterStartWh: transaction.MeterStartWh, LatestMeterWh: transaction.LatestMeterWh, ConsumedWh: transaction.ConsumedWh, MeterObservedAt: transaction.MeterObservedAt, MeterSequence: transaction.MeterSequence, EnergyLimitWh: transaction.EnergyLimitWh, MaxDurationSeconds: transaction.MaxDurationSeconds, StopDeadlineAt: transaction.StopDeadlineAt, StopState: transaction.StopState, RequestedStopInitiator: transaction.RequestedStopInitiator, RequestedStopReason: transaction.RequestedStopReason, OCPPStopReason: transaction.OCPPStopReason, CompletedAt: transaction.CompletedAt, ObservedCompletedAt: transaction.ObservedCompletedAt, MeterStopWh: transaction.MeterStopWh}
 }
 
 type v1ConnectorRuntimeResponse struct {

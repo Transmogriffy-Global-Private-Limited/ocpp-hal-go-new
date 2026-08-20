@@ -39,6 +39,7 @@ func TestV1MemoryStoreMaterializesOneCredentialBoundTransaction(t *testing.T) {
 		IDTag:               "appv1_test_001",
 		MeterStartWh:        1000,
 		ActualStartedAt:     now,
+		ObservedAt:          now,
 		OCPPTransactionID:   44,
 	})
 	if err != nil || duplicate {
@@ -57,6 +58,7 @@ func TestV1MemoryStoreMaterializesOneCredentialBoundTransaction(t *testing.T) {
 		IDTag:               "appv1_test_001",
 		MeterStartWh:        1000,
 		ActualStartedAt:     now,
+		ObservedAt:          now,
 		OCPPTransactionID:   44,
 	})
 	if err != nil || !duplicate || replayed.HALTransactionID != tx.HALTransactionID {
@@ -69,6 +71,7 @@ func TestV1MemoryStoreMaterializesOneCredentialBoundTransaction(t *testing.T) {
 		IDTag:               "appv1_test_001",
 		MeterStartWh:        1000,
 		ActualStartedAt:     now,
+		ObservedAt:          now,
 		OCPPTransactionID:   45,
 	})
 	if !errors.Is(err, ErrV1CredentialRejected) {
@@ -85,7 +88,7 @@ func TestV1MemoryStoreCommandsAreIdempotentAndStopIsUnified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tx, _, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: "CP-V1-STOP", OCPPConnectorNumber: 1, IDTag: "appv1_stop", MeterStartWh: 100, ActualStartedAt: now, OCPPTransactionID: 99})
+	tx, _, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: "CP-V1-STOP", OCPPConnectorNumber: 1, IDTag: "appv1_stop", MeterStartWh: 100, ActualStartedAt: now, ObservedAt: now, OCPPTransactionID: 99})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,8 +104,32 @@ func TestV1MemoryStoreCommandsAreIdempotentAndStopIsUnified(t *testing.T) {
 	if err != nil || created || stopped.RequestedStopInitiator != "ENERGY_LIMIT" {
 		t.Fatalf("duplicate stop = %#v, created=%v, err=%v", stopped, created, err)
 	}
-	completed, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 125, "Remote", now.Add(2*time.Second))
+	completed, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 125, "Remote", now.Add(2*time.Second), now.Add(2*time.Second))
 	if err != nil || completed.OCPPStopReason != "Remote" || completed.MeterStopWh == nil || *completed.MeterStopWh != 125 {
 		t.Fatalf("complete = %#v, err=%v", completed, err)
+	}
+}
+
+func TestV1MemoryStoreUsesReceiptTimeAndRejectsInvalidCompletionEvidence(t *testing.T) {
+	ctx := context.Background()
+	s := NewV1MemoryStore()
+	now := time.Now().UTC().Truncate(time.Second)
+	limit := int64(100)
+	_, _, err := s.CreateV1StartCommand(ctx, V1StartCommandInput{CMSCommandID: NewUUIDString(), RequestDigest: "receipt", CPOID: NewUUIDString(), CMSStartIntentID: NewUUIDString(), CMSChargerID: NewUUIDString(), CMSConnectorID: NewUUIDString(), ChargerOCPPIdentity: "CP-RECEIPT", OCPPConnectorNumber: 1, IDTag: "appv1_receipt", CredentialExpiresAt: now.Add(time.Minute), CommandExpiresAt: now.Add(time.Minute), EnergyLimitWh: &limit})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: "CP-RECEIPT", OCPPConnectorNumber: 1, IDTag: "appv1_receipt", MeterStartWh: 0, ActualStartedAt: now.Add(-time.Hour), ObservedAt: now.Add(2 * time.Minute), OCPPTransactionID: 1}); !errors.Is(err, ErrV1InvalidEvidence) {
+		t.Fatalf("backdated start err=%v", err)
+	}
+	tx, _, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: "CP-RECEIPT", OCPPConnectorNumber: 1, IDTag: "appv1_receipt", MeterStartWh: 100, ActualStartedAt: now, ObservedAt: now, OCPPTransactionID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 99, "Remote", now.Add(time.Second), now.Add(time.Second)); !errors.Is(err, ErrV1InvalidEvidence) {
+		t.Fatalf("meter rollback err=%v", err)
+	}
+	if _, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 110, "Remote", now.Add(-time.Second), now.Add(time.Second)); !errors.Is(err, ErrV1InvalidEvidence) {
+		t.Fatalf("completion before start err=%v", err)
 	}
 }

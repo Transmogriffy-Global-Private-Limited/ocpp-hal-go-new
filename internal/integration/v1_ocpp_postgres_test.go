@@ -148,7 +148,7 @@ func putJSON(t *testing.T, url, idempotency string, body any) {
 	}
 	req.Header.Set("Authorization", "Bearer v1-test-service-token")
 	req.Header.Set("Idempotency-Key", idempotency)
-	req.Header.Set("X-Correlation-ID", "test-correlation")
+	req.Header.Set("X-Correlation-ID", store.NewUUIDString())
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

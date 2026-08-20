@@ -34,9 +34,12 @@ Completed in this slice:
 
 ## Next Approved Work
 
-1. Expand real-device acceptance coverage for energy/time stop races and
+1. Apply and verify the additive v1 transaction-evidence migration against a
+   clearly disposable PostgreSQL database, including stop-worker crash and
+   recovery behavior.
+2. Expand real-device acceptance coverage for energy/time stop races and
    charger-specific MeterValues variants before production rollout.
-2. Implement CMS-owned consumer projections, commercial flow, and UI in
+3. Implement CMS-owned consumer projections, commercial flow, and UI in
    `ev-cms-backend-new` using the frozen v1 contract.
 
 ## Open Decisions

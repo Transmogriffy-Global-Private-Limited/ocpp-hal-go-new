@@ -55,7 +55,28 @@ func (h *HAL) RecoverV1Lifecycle(ctx context.Context) error {
 	if err := h.v1Store.RecoverV1StopDelivery(ctx); err != nil {
 		return err
 	}
+	if err := h.DispatchPendingV1Stops(ctx); err != nil {
+		return err
+	}
 	return h.EnforceV1Deadlines(ctx)
+}
+
+// DispatchPendingV1Stops drains only PERSISTED workflows. It never replays a
+// workflow that might already have crossed the OCPP network boundary.
+func (h *HAL) DispatchPendingV1Stops(ctx context.Context) error {
+	if h.v1Store == nil {
+		return nil
+	}
+	workflows, err := h.v1Store.ListV1DispatchableStops(ctx, 100)
+	if err != nil {
+		return err
+	}
+	for _, workflow := range workflows {
+		if _, err := h.DispatchV1Stop(ctx, workflow.HALTransactionID); err != nil && !errors.Is(err, store.ErrV1DeliveryNotReady) {
+			h.logger.Warn("failed to dispatch persisted v1 stop", "hal_transaction_id", workflow.HALTransactionID, "error", err)
+		}
+	}
+	return nil
 }
 
 func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
@@ -74,7 +95,7 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 			h.logger.Warn("failed to dispatch overdue v1 stop", "hal_transaction_id", transaction.HALTransactionID, "error", err)
 		}
 	}
-	return nil
+	return h.DispatchPendingV1Stops(ctx)
 }
 
 func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValuesRequest) bool {
@@ -117,14 +138,15 @@ func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTr
 		h.logger.Warn("failed to locate v1 transaction for stop", "charge_point_id", chargePointID, "error", err)
 		return true
 	}
-	completedAt := time.Now().UTC()
+	observedAt := time.Now().UTC()
+	completedAt := observedAt
 	if request.Timestamp != nil && !request.Timestamp.IsZero() {
 		completedAt = request.Timestamp.UTC()
 	}
-	completed, err := h.v1Store.CompleteV1Transaction(context.Background(), transaction.HALTransactionID, int64(request.MeterStop), string(request.Reason), completedAt)
+	completed, err := h.v1Store.CompleteV1Transaction(context.Background(), transaction.HALTransactionID, int64(request.MeterStop), string(request.Reason), completedAt, observedAt)
 	if err != nil {
 		h.logger.Error("failed to complete v1 transaction", "hal_transaction_id", transaction.HALTransactionID, "error", err)
-		return true
+		return false
 	}
 	h.registry.ApplyStopTransaction(chargePointID, completed.OCPPConnectorNumber, float64(request.MeterStop))
 	return true

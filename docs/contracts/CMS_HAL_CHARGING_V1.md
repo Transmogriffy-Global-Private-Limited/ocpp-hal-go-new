@@ -37,7 +37,9 @@ tax, wallet, or billing decisions.
 The implemented v1 service identity is `Authorization: Bearer <opaque token>`
 using `HAL_V1_CMS_BEARER_TOKEN`. It is never a customer token, `API_KEY`, or
 `APIAUTHKEY`; comparison is constant-time and the value is never logged.
-Mutating calls require `Idempotency-Key` and `X-Correlation-ID`. Production
+Mutating calls require `Idempotency-Key` and `X-Correlation-ID`; both must be
+canonical lowercase, nonzero UUIDs and the idempotency header must exactly
+equal the body `cms_command_id`. Production
 transport TLS/private-network topology and token rotation remain deployment
 decisions; production must provide the opaque secret outside the repository.
 
@@ -73,6 +75,10 @@ No correlation may use "latest session", charger plus time, a public charger ID
 alone, or a guessed connector. A fact that cannot prove its approved identifier
 chain is retained as auditable evidence and put into reconciliation; it does not
 materialize or settle a CMS session.
+
+HAL rejects a zero, malformed, uppercase/noncanonical, or conflicting identity
+at the HTTP boundary. It does not normalize one representation and compare a
+different raw representation elsewhere.
 
 ## 3. App Charging Credential
 
@@ -139,7 +145,7 @@ and resulting HAL transaction correlation when materialized.
 | State | Meaning | Transition rule |
 | --- | --- | --- |
 | `PERSISTED` | Durable command exists; no OCPP transmission occurred. | Must exist before transmit. |
-| `PENDING_DELIVERY` | The same logical command may be delivered/retried. | Revalidate state, expiry, mapping, and supersession before dispatch. |
+| `PENDING_DELIVERY` | A dispatcher has claimed a known pre-network window. | Startup recovery returns it to `PERSISTED`; it is the only additional replayable state. |
 | `DELIVERY_ATTEMPTED` | HAL attempted OCPP transmission and awaits an outcome. | Missing response becomes `AMBIGUOUS`. |
 | `OCPP_ACCEPTED` | Charger accepted RemoteStart/RemoteStop. | Never proves start/completion. |
 | `OCPP_REJECTED` | Charger explicitly rejected the command. | Contradictory later fact requires reconciliation. |
@@ -351,6 +357,13 @@ Every shown payload field is required for the v1 app-start flow. HAL correlates
 the fact to the persisted start command before publishing. CMS validates the
 CMS command/start-intent/credential/mapping chain before materializing one
 `ACTIVE` session.
+
+`started_at` is the charger-provided OCPP timestamp and remains protocol
+evidence. HAL records a separate trusted receipt time internally, uses that
+receipt time for credential/command expiry and duration deadlines, and rejects
+an OCPP start timestamp outside the bounded clock-skew policy. The envelope
+`occurred_at` is the trusted HAL receipt time, not a way for a charger clock to
+backdate authorization.
 
 ### 8.3 `transaction.completed`
 
@@ -694,10 +707,10 @@ semantics is.
 
 CMS may include `max_duration_seconds` in the start command. HAL persists it
 before command delivery but calculates its deadline only after the
-charger-originated `StartTransaction` establishes `actual_started_at`:
+charger-originated `StartTransaction` is durably received by HAL:
 
 ```text
-actual_started_at + max_duration_seconds = stop deadline
+trusted HAL start receipt time + max_duration_seconds = stop deadline
 ```
 
 The deadline is durable, reconstructed after restart, and enters the same
@@ -714,7 +727,7 @@ acknowledgement does not start the timer. When a charger-originated
 | Timeout after HAL persistence/delivery | HAL records `AMBIGUOUS`; CMS queries commands/transactions and awaits or replays facts. Neither guesses result. |
 | Charger reject | HAL publishes rejection. CMS safely resolves unstarted intent/hold under business policy. |
 | Accepted RemoteStart without StartTransaction | Intent remains non-active until its approved window expires or reconciliation proves a transaction. |
-| Late StartTransaction after expiry | HAL publishes evidence. CMS enters reconciliation; it does not silently accept or discard it. |
+| StartTransaction received after credential/command expiry | HAL rejects it using trusted receipt time; a charger timestamp cannot backdate authorization. CMS reconciles any contrary physical/device evidence without inventing a session. |
 | Duplicate StartTransaction | HAL reuses the same exact OCPP transaction only where protocol evidence proves retransmission; CMS accepts start fact once. |
 | Unknown/stale meter transaction | HAL never attaches it to a latest session; it records/quarantines/reconciles durable OCPP state. |
 | Duplicate/out-of-order fact | CMS dedupes ID/hash. Completion before start is retained but not settled until predecessor correlation is recovered. |

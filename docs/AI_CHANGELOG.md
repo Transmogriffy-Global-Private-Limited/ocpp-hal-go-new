@@ -1,5 +1,29 @@
 # AI-assisted changelog
 
+## 2026-08-20 - HAL v1 transaction-evidence and stop-recovery hardening
+
+- Added migration `008` plus HAL receipt timestamps for started/completed v1
+  transactions. HAL now uses receipt time, not a charger-provided timestamp,
+  for credential/command expiry and duration enforcement; it retains protocol
+  timestamps only as bounded evidence.
+- Enforced positive OCPP/connector identities, nonnegative start meters,
+  monotonic meter/completion evidence, conflicting-completion rejection, and
+  mapping validation before connector runtime persistence. A persistence
+  failure now makes the OCPP StopTransaction handler return an error instead
+  of acknowledging data that HAL did not store.
+- Added bounded periodic/startup dispatch for only proven pre-network stop
+  workflows. DELIVERY_ATTEMPTED and AMBIGUOUS workflows remain non-replayable.
+  The authenticated HTTP boundary now uses canonical nonzero UUID parsing and
+  rejects trailing JSON values. OpenAPI documents the expanded v1 response
+  schemas and state vocabulary.
+
+Verification: focused store, HTTP, and OCPP tests, full `go test ./...`,
+`go vet ./...`, and `scripts/build-all.ps1` passed. `regression-local.ps1
+-SkipBuild` correctly stopped before running because `DATABASE_URL` is unset;
+PostgreSQL lifecycle checks remain unrun without an explicitly selected
+disposable database. No migration, runtime database, deployment, or physical
+charger was used.
+
 ## 2026-08-20 - Explicit HAL v1 response boundary
 
 - Replaced direct HTTP serialization of v1 store records with explicit response

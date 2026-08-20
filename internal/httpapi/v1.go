@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
+	"github.com/google/uuid"
 )
 
 const v1PathPrefix = "/v1/"
@@ -324,8 +325,8 @@ func (s *Server) v1ConnectorRuntime(w http.ResponseWriter, r *http.Request) {
 func v1MutationHeaders(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	idempotency := strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 	correlation := strings.TrimSpace(r.Header.Get("X-Correlation-ID"))
-	if idempotency == "" || correlation == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Idempotency-Key and X-Correlation-ID are required"})
+	if !validUUID(idempotency) || !validUUID(correlation) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "Idempotency-Key and X-Correlation-ID must be canonical UUIDs"})
 		return "", "", false
 	}
 	return correlation, idempotency, true
@@ -336,21 +337,8 @@ func digestJSON(v any, idempotency string) string {
 	return hex.EncodeToString(sum[:])
 }
 func validUUID(value string) bool {
-	if len(value) != 36 {
-		return false
-	}
-	for i, c := range value {
-		if i == 8 || i == 13 || i == 18 || i == 23 {
-			if c != '-' {
-				return false
-			}
-			continue
-		}
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')) {
-			return false
-		}
-	}
-	return true
+	parsed, err := uuid.Parse(value)
+	return err == nil && parsed != uuid.Nil && parsed.String() == value
 }
 func (s *Server) writeV1StoreError(w http.ResponseWriter, err error) {
 	switch {
@@ -360,6 +348,8 @@ func (s *Server) writeV1StoreError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "v1 idempotency or mapping conflict"})
 	case errors.Is(err, store.ErrV1CredentialRejected):
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "v1 request is not permitted by current mapping state"})
+	case errors.Is(err, store.ErrV1InvalidEvidence):
+		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid v1 transaction evidence"})
 	default:
 		s.logger.Error("v1 persistence operation failed", "error", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "v1 persistence operation failed"})

@@ -205,8 +205,8 @@ func (s *PostgresStore) UpdateV1MeterForOCPP(ctx context.Context, identity strin
 	var halID string
 	var meterStart int64
 	var latest sql.NullInt64
-	var completed sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT hal_transaction_id::text,meter_start_wh,latest_meter_wh,completed_at FROM v1_transactions WHERE charger_ocpp_identity=$1 AND ocpp_transaction_id=$2 FOR UPDATE`, identity, ocppID).Scan(&halID, &meterStart, &latest, &completed)
+	var completed, previousObserved sql.NullTime
+	err = tx.QueryRowContext(ctx, `SELECT hal_transaction_id::text,meter_start_wh,latest_meter_wh,completed_at,meter_observed_at FROM v1_transactions WHERE charger_ocpp_identity=$1 AND ocpp_transaction_id=$2 FOR UPDATE`, identity, ocppID).Scan(&halID, &meterStart, &latest, &completed, &previousObserved)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, false, ErrV1TransactionNotFound
 	}
@@ -219,6 +219,9 @@ func (s *PostgresStore) UpdateV1MeterForOCPP(ctx context.Context, identity strin
 		}
 		current, getErr := s.GetV1Transaction(ctx, halID)
 		return current, false, getErr
+	}
+	if previousObserved.Valid && observedAt.Before(previousObserved.Time) {
+		observedAt = previousObserved.Time
 	}
 	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET latest_meter_wh=$2,meter_observed_at=$3,meter_sequence=meter_sequence+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID, meterWh, observedAt)
 	if err != nil {
@@ -418,6 +421,32 @@ func (s *PostgresStore) RecoverV1StopDelivery(ctx context.Context) error {
 	return err
 }
 
+// ListV1DispatchableStops returns only durable workflows whose delivery is
+// proven not to have crossed the OCPP network boundary.
+func (s *PostgresStore) ListV1DispatchableStops(ctx context.Context, limit int) ([]*V1StopWorkflow, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT w.hal_transaction_id::text,w.requested_stop_initiator,w.requested_stop_reason,w.state,w.delivery_attempts,COALESCE(w.last_ocpp_result,''),COALESCE(w.last_error_category,''),COALESCE(w.last_error_detail,''),w.created_at,w.updated_at,w.completed_at FROM v1_stop_workflows w JOIN v1_transactions t ON t.hal_transaction_id=w.hal_transaction_id WHERE w.state='PERSISTED' AND t.completed_at IS NULL ORDER BY w.created_at,w.hal_transaction_id LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	workflows := make([]*V1StopWorkflow, 0)
+	for rows.Next() {
+		workflow := &V1StopWorkflow{}
+		var completed sql.NullTime
+		if err := rows.Scan(&workflow.HALTransactionID, &workflow.RequestedStopInitiator, &workflow.RequestedStopReason, &workflow.State, &workflow.DeliveryAttempts, &workflow.LastOCPPResult, &workflow.LastErrorCategory, &workflow.LastErrorDetail, &workflow.CreatedAt, &workflow.UpdatedAt, &completed); err != nil {
+			return nil, err
+		}
+		if completed.Valid {
+			workflow.CompletedAt = &completed.Time
+		}
+		workflows = append(workflows, workflow)
+	}
+	return workflows, rows.Err()
+}
+
 func (s *PostgresStore) ListV1OverdueTransactions(ctx context.Context, now time.Time, limit int) ([]*V1Transaction, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT hal_transaction_id::text FROM v1_transactions WHERE completed_at IS NULL AND stop_deadline_at IS NOT NULL AND stop_deadline_at <= $1 ORDER BY stop_deadline_at LIMIT $2`, now, limit)
 	if err != nil {
@@ -439,7 +468,7 @@ func (s *PostgresStore) ListV1OverdueTransactions(ctx context.Context, now time.
 	return out, rows.Err()
 }
 
-func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string, meterStopWh int64, ocppReason string, completedAt time.Time) (*V1Transaction, error) {
+func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string, meterStopWh int64, ocppReason string, completedAt, observedAt time.Time) (*V1Transaction, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, err
@@ -450,12 +479,22 @@ func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string,
 		return nil, err
 	}
 	if t.CompletedAt != nil {
+		if t.MeterStopWh == nil || *t.MeterStopWh != meterStopWh || t.OCPPStopReason != ocppReason || !t.CompletedAt.Equal(completedAt) {
+			return nil, ErrV1InvalidEvidence
+		}
 		if err := tx.Commit(); err != nil {
 			return nil, err
 		}
 		return t, nil
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_stop_wh=$2,latest_meter_wh=$2,meter_observed_at=$3,ocpp_stop_reason=$4,completed_at=$3,stop_state='COMPLETED',updated_at=NOW() WHERE hal_transaction_id=$1`, halID, meterStopWh, completedAt, nullString(ocppReason))
+	if meterStopWh < t.MeterStartWh || (t.LatestMeterWh != nil && meterStopWh < *t.LatestMeterWh) || completedAt.Before(t.ActualStartedAt) || observedAt.Before(t.ObservedStartedAt) || !plausibleV1ProtocolTime(completedAt, observedAt) {
+		return nil, ErrV1InvalidEvidence
+	}
+	meterObservedAt := completedAt
+	if t.MeterObservedAt != nil && meterObservedAt.Before(*t.MeterObservedAt) {
+		meterObservedAt = *t.MeterObservedAt
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_stop_wh=$2,latest_meter_wh=$2,meter_observed_at=$3,ocpp_stop_reason=$4,completed_at=$5,observed_completed_at=$6,stop_state='COMPLETED',updated_at=NOW() WHERE hal_transaction_id=$1`, halID, meterStopWh, meterObservedAt, nullString(ocppReason), completedAt, observedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -475,7 +514,7 @@ func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string,
 	if err != nil {
 		return nil, err
 	}
-	if err := s.insertV1FactTx(ctx, tx, "transaction.completed", halID, nil, completedAt, v1CompletedFact(completed, command)); err != nil {
+	if err := s.insertV1FactTx(ctx, tx, "transaction.completed", halID, nil, observedAt, v1CompletedFact(completed, command)); err != nil {
 		return nil, err
 	}
 	if err := tx.Commit(); err != nil {

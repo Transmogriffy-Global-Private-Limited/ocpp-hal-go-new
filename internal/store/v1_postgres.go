@@ -326,6 +326,9 @@ func (s *PostgresStore) AuthorizeV1Credential(ctx context.Context, chargerID, id
 }
 
 func (s *PostgresStore) MaterializeV1Start(ctx context.Context, input V1StartMaterialization) (*V1Transaction, bool, error) {
+	if input.MeterStartWh < 0 || input.OCPPTransactionID <= 0 || input.OCPPConnectorNumber <= 0 || !plausibleV1ProtocolTime(input.ActualStartedAt, input.ObservedAt) {
+		return nil, false, ErrV1InvalidEvidence
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return nil, false, err
@@ -351,7 +354,7 @@ func (s *PostgresStore) MaterializeV1Start(ctx context.Context, input V1StartMat
 		}
 		return nil, false, ErrV1CredentialRejected
 	}
-	if !c.ExpiresAt.After(input.ActualStartedAt) || c.ChargerOCPPIdentity != input.ChargerOCPPIdentity || c.OCPPConnectorNumber != input.OCPPConnectorNumber {
+	if !c.ExpiresAt.After(input.ObservedAt) || c.ChargerOCPPIdentity != input.ChargerOCPPIdentity || c.OCPPConnectorNumber != input.OCPPConnectorNumber {
 		return nil, false, ErrV1CredentialRejected
 	}
 	var command V1RemoteCommand
@@ -370,22 +373,22 @@ func (s *PostgresStore) MaterializeV1Start(ctx context.Context, input V1StartMat
 		command.MaxDurationSeconds = &value
 	}
 	command.CustomerID = customer.String
-	if !command.CommandExpiresAt.After(input.ActualStartedAt) {
+	if !command.CommandExpiresAt.After(input.ObservedAt) {
 		return nil, false, ErrV1CredentialRejected
 	}
 	halID := NewUUIDString()
 	var deadline any = nil
 	if command.MaxDurationSeconds != nil {
-		deadline = input.ActualStartedAt.Add(time.Duration(*command.MaxDurationSeconds) * time.Second)
+		deadline = input.ObservedAt.Add(time.Duration(*command.MaxDurationSeconds) * time.Second)
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO v1_transactions (hal_transaction_id,cms_start_intent_id,cms_command_id,cpo_id,customer_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,id_tag,ocpp_transaction_id,actual_started_at,meter_start_wh,energy_limit_wh,max_duration_seconds,stop_deadline_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, halID, c.CMSStartIntentID, command.CMSCommandID, c.CPOID, nullString(command.CustomerID), c.CMSChargerID, c.CMSConnectorID, c.ChargerOCPPIdentity, c.OCPPConnectorNumber, c.IDTag, input.OCPPTransactionID, input.ActualStartedAt, input.MeterStartWh, command.EnergyLimitWh, command.MaxDurationSeconds, deadline)
+	_, err = tx.ExecContext(ctx, `INSERT INTO v1_transactions (hal_transaction_id,cms_start_intent_id,cms_command_id,cpo_id,customer_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,id_tag,ocpp_transaction_id,actual_started_at,observed_started_at,meter_start_wh,energy_limit_wh,max_duration_seconds,stop_deadline_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)`, halID, c.CMSStartIntentID, command.CMSCommandID, c.CPOID, nullString(command.CustomerID), c.CMSChargerID, c.CMSConnectorID, c.ChargerOCPPIdentity, c.OCPPConnectorNumber, c.IDTag, input.OCPPTransactionID, input.ActualStartedAt, input.ObservedAt, input.MeterStartWh, command.EnergyLimitWh, command.MaxDurationSeconds, deadline)
 	if err != nil {
 		if isDuplicate(err) {
 			return nil, false, ErrV1CredentialRejected
 		}
 		return nil, false, err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE v1_start_credentials SET consumed_at=$2,hal_transaction_id=$3 WHERE id_tag=$1`, input.IDTag, input.ActualStartedAt, halID)
+	_, err = tx.ExecContext(ctx, `UPDATE v1_start_credentials SET consumed_at=$2,hal_transaction_id=$3 WHERE id_tag=$1`, input.IDTag, input.ObservedAt, halID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -393,15 +396,15 @@ func (s *PostgresStore) MaterializeV1Start(ctx context.Context, input V1StartMat
 	if err != nil {
 		return nil, false, err
 	}
-	materialized := &V1Transaction{HALTransactionID: halID, CMSStartIntentID: c.CMSStartIntentID, CMSCommandID: command.CMSCommandID, CPOID: c.CPOID, CustomerID: command.CustomerID, CMSChargerID: c.CMSChargerID, CMSConnectorID: c.CMSConnectorID, ChargerOCPPIdentity: c.ChargerOCPPIdentity, OCPPConnectorNumber: c.OCPPConnectorNumber, IDTag: c.IDTag, OCPPTransactionID: input.OCPPTransactionID, ActualStartedAt: input.ActualStartedAt, MeterStartWh: input.MeterStartWh, EnergyLimitWh: command.EnergyLimitWh, MaxDurationSeconds: command.MaxDurationSeconds}
+	materialized := &V1Transaction{HALTransactionID: halID, CMSStartIntentID: c.CMSStartIntentID, CMSCommandID: command.CMSCommandID, CPOID: c.CPOID, CustomerID: command.CustomerID, CMSChargerID: c.CMSChargerID, CMSConnectorID: c.CMSConnectorID, ChargerOCPPIdentity: c.ChargerOCPPIdentity, OCPPConnectorNumber: c.OCPPConnectorNumber, IDTag: c.IDTag, OCPPTransactionID: input.OCPPTransactionID, ActualStartedAt: input.ActualStartedAt, ObservedStartedAt: input.ObservedAt, MeterStartWh: input.MeterStartWh, EnergyLimitWh: command.EnergyLimitWh, MaxDurationSeconds: command.MaxDurationSeconds}
 	if deadlineTime, ok := deadline.(time.Time); ok {
 		materialized.StopDeadlineAt = &deadlineTime
 	}
-	if err := s.insertV1FactTx(ctx, tx, "transaction.started", halID, nil, input.ActualStartedAt, v1StartedFact(materialized, command.HALCommandID)); err != nil {
+	if err := s.insertV1FactTx(ctx, tx, "transaction.started", halID, nil, input.ObservedAt, v1StartedFact(materialized, command.HALCommandID)); err != nil {
 		return nil, false, err
 	}
-	materializedCommand := &V1RemoteCommand{HALCommandID: command.HALCommandID, CMSCommandID: command.CMSCommandID, Kind: "START", ChargerOCPPIdentity: c.ChargerOCPPIdentity, OCPPConnectorNumber: c.OCPPConnectorNumber, HALTransactionID: halID, OCPPTransactionID: &input.OCPPTransactionID, State: "MATERIALIZED", UpdatedAt: input.ActualStartedAt}
-	if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, input.ActualStartedAt, v1CommandFact(materializedCommand)); err != nil {
+	materializedCommand := &V1RemoteCommand{HALCommandID: command.HALCommandID, CMSCommandID: command.CMSCommandID, Kind: "START", ChargerOCPPIdentity: c.ChargerOCPPIdentity, OCPPConnectorNumber: c.OCPPConnectorNumber, HALTransactionID: halID, OCPPTransactionID: &input.OCPPTransactionID, State: "MATERIALIZED", UpdatedAt: input.ObservedAt}
+	if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, input.ObservedAt, v1CommandFact(materializedCommand)); err != nil {
 		return nil, false, err
 	}
 	if err = tx.Commit(); err != nil {
@@ -440,9 +443,9 @@ func (s *PostgresStore) getV1TransactionByID(ctx context.Context, q v1Transactio
 func (s *PostgresStore) getV1TransactionBy(ctx context.Context, q v1TransactionQueryer, condition, arg string) (*V1Transaction, error) {
 	t := &V1Transaction{}
 	var customer, initiator, reason, ocppReason sql.NullString
-	var latest, meterObs, deadline, completed, meterStop sql.NullTime
+	var latest, meterObs, deadline, completed, meterStop, observedStarted, observedCompleted sql.NullTime
 	var latestVal, meterStopVal, energy, duration sql.NullInt64
-	err := q.QueryRowContext(ctx, `SELECT hal_transaction_id::text,cms_start_intent_id::text,cms_command_id::text,cpo_id::text,customer_id::text,cms_charger_id::text,cms_connector_id::text,charger_ocpp_identity,ocpp_connector_number,id_tag,ocpp_transaction_id,actual_started_at,meter_start_wh,latest_meter_wh,meter_observed_at,meter_sequence,energy_limit_wh,max_duration_seconds,stop_deadline_at,stop_state,requested_stop_initiator,requested_stop_reason,ocpp_stop_reason,completed_at,meter_stop_wh FROM v1_transactions WHERE `+condition, arg).Scan(&t.HALTransactionID, &t.CMSStartIntentID, &t.CMSCommandID, &t.CPOID, &customer, &t.CMSChargerID, &t.CMSConnectorID, &t.ChargerOCPPIdentity, &t.OCPPConnectorNumber, &t.IDTag, &t.OCPPTransactionID, &t.ActualStartedAt, &t.MeterStartWh, &latestVal, &meterObs, &t.MeterSequence, &energy, &duration, &deadline, &t.StopState, &initiator, &reason, &ocppReason, &completed, &meterStopVal)
+	err := q.QueryRowContext(ctx, `SELECT hal_transaction_id::text,cms_start_intent_id::text,cms_command_id::text,cpo_id::text,customer_id::text,cms_charger_id::text,cms_connector_id::text,charger_ocpp_identity,ocpp_connector_number,id_tag,ocpp_transaction_id,actual_started_at,observed_started_at,meter_start_wh,latest_meter_wh,meter_observed_at,meter_sequence,energy_limit_wh,max_duration_seconds,stop_deadline_at,stop_state,requested_stop_initiator,requested_stop_reason,ocpp_stop_reason,completed_at,observed_completed_at,meter_stop_wh FROM v1_transactions WHERE `+condition, arg).Scan(&t.HALTransactionID, &t.CMSStartIntentID, &t.CMSCommandID, &t.CPOID, &customer, &t.CMSChargerID, &t.CMSConnectorID, &t.ChargerOCPPIdentity, &t.OCPPConnectorNumber, &t.IDTag, &t.OCPPTransactionID, &t.ActualStartedAt, &observedStarted, &t.MeterStartWh, &latestVal, &meterObs, &t.MeterSequence, &energy, &duration, &deadline, &t.StopState, &initiator, &reason, &ocppReason, &completed, &observedCompleted, &meterStopVal)
 	_ = latest
 	_ = meterStop
 	if errors.Is(err, sql.ErrNoRows) {
@@ -455,6 +458,9 @@ func (s *PostgresStore) getV1TransactionBy(ctx context.Context, q v1TransactionQ
 	t.RequestedStopInitiator = initiator.String
 	t.RequestedStopReason = reason.String
 	t.OCPPStopReason = ocppReason.String
+	if observedStarted.Valid {
+		t.ObservedStartedAt = observedStarted.Time
+	}
 	if latestVal.Valid {
 		v := latestVal.Int64
 		t.LatestMeterWh = &v
@@ -479,6 +485,9 @@ func (s *PostgresStore) getV1TransactionBy(ctx context.Context, q v1TransactionQ
 	}
 	if completed.Valid {
 		t.CompletedAt = &completed.Time
+	}
+	if observedCompleted.Valid {
+		t.ObservedCompletedAt = &observedCompleted.Time
 	}
 	if meterStopVal.Valid {
 		v := meterStopVal.Int64
@@ -634,14 +643,22 @@ func (s *PostgresStore) RecordV1ConnectorStatus(ctx context.Context, r V1Connect
 		return err
 	}
 	defer tx.Rollback()
+	var enabled bool
+	err = tx.QueryRowContext(ctx, `SELECT m.enabled FROM v1_charger_mappings m JOIN v1_connector_mappings c ON c.cms_charger_id=m.cms_charger_id WHERE c.charger_ocpp_identity=$1 AND c.ocpp_connector_number=$2 AND m.charger_ocpp_identity=$1`, r.ChargerOCPPIdentity, r.OCPPConnectorNumber).Scan(&enabled)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrV1MappingNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !enabled {
+		return ErrV1CredentialRejected
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO v1_connector_runtime (charger_ocpp_identity,ocpp_connector_number,status,error_code,info,vendor_id,vendor_error_code,observed_at,status_sequence,updated_at) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,1,NOW()) ON CONFLICT (charger_ocpp_identity,ocpp_connector_number) DO UPDATE SET status=EXCLUDED.status,error_code=EXCLUDED.error_code,info=EXCLUDED.info,vendor_id=EXCLUDED.vendor_id,vendor_error_code=EXCLUDED.vendor_error_code,observed_at=EXCLUDED.observed_at,status_sequence=v1_connector_runtime.status_sequence+1,updated_at=NOW()`, r.ChargerOCPPIdentity, r.OCPPConnectorNumber, r.Status, nullString(r.ErrorCode), nullString(r.Info), nullString(r.VendorID), nullString(r.VendorErrorCode), r.ObservedAt)
 	if err != nil {
 		return err
 	}
 	err = tx.QueryRowContext(ctx, `SELECT cpo_id::text,cms_charger_id::text,cms_connector_id::text FROM v1_connector_mappings WHERE charger_ocpp_identity=$1 AND ocpp_connector_number=$2`, r.ChargerOCPPIdentity, r.OCPPConnectorNumber).Scan(&r.CPOID, &r.CMSChargerID, &r.CMSConnectorID)
-	if errors.Is(err, sql.ErrNoRows) {
-		return tx.Commit()
-	}
 	if err != nil {
 		return err
 	}

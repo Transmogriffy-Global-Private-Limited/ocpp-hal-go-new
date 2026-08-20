@@ -543,9 +543,6 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 	)
 	if h.v1Store != nil {
 		observedAt := time.Now().UTC()
-		if request.Timestamp != nil && !request.Timestamp.IsZero() {
-			observedAt = request.Timestamp.UTC()
-		}
 		err := h.v1Store.RecordV1ConnectorStatus(context.Background(), store.V1ConnectorRuntime{
 			ChargerOCPPIdentity: chargePointID,
 			OCPPConnectorNumber: request.ConnectorId,
@@ -569,7 +566,8 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 	if h.v1Store == nil || !strings.HasPrefix(request.IdTag, "appv1_") {
 		return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid), 0), nil
 	}
-	startedAt := time.Now().UTC()
+	receivedAt := time.Now().UTC()
+	startedAt := receivedAt
 	if request.Timestamp != nil && !request.Timestamp.IsZero() {
 		startedAt = request.Timestamp.UTC()
 	}
@@ -579,6 +577,7 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 		IDTag:               request.IdTag,
 		MeterStartWh:        int64(request.MeterStart),
 		ActualStartedAt:     startedAt,
+		ObservedAt:          receivedAt,
 		OCPPTransactionID:   store.RandomTransactionID(),
 	})
 	if err != nil {
@@ -600,7 +599,9 @@ func (h *HAL) OnMeterValues(chargePointID string, request *core.MeterValuesReque
 
 func (h *HAL) OnStopTransaction(chargePointID string, request *core.StopTransactionRequest) (*core.StopTransactionConfirmation, error) {
 	h.registry.Touch(chargePointID)
-	_ = h.HandleV1StopTransaction(chargePointID, request)
+	if !h.HandleV1StopTransaction(chargePointID, request) {
+		return nil, errors.New("StopTransaction was not durably persisted")
+	}
 	return core.NewStopTransactionConfirmation(), nil
 }
 

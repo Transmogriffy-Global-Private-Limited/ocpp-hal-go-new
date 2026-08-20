@@ -50,7 +50,7 @@ func main() {
 				return
 			case <-ticker.C:
 				if err := hal.EnforceV1Deadlines(workerCtx); err != nil {
-					logger.Warn("v1 deadline pass failed", "error", err)
+					logger.Warn("v1 stop recovery pass failed", "error", err)
 				}
 			}
 		}

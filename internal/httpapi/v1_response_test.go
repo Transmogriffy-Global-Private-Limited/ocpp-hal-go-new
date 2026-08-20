@@ -88,7 +88,7 @@ func TestV1CommandHTTPResponsesUseCanonicalSnakeCase(t *testing.T) {
 			if request.body != nil {
 				httpRequest.Header.Set("Content-Type", "application/json")
 				httpRequest.Header.Set("Idempotency-Key", map[string]any(request.body.(map[string]any))["cms_command_id"].(string))
-				httpRequest.Header.Set("X-Correlation-ID", "test-correlation")
+				httpRequest.Header.Set("X-Correlation-ID", store.NewUUIDString())
 			}
 			handler.ServeHTTP(recorder, httpRequest)
 			if recorder.Code != http.StatusAccepted && recorder.Code != http.StatusOK {

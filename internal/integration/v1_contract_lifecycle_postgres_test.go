@@ -210,7 +210,7 @@ func contractRequest(t *testing.T, method, url, token, idempotency string, body 
 	request.Header.Set("Authorization", "Bearer "+token)
 	if idempotency != "" {
 		request.Header.Set("Idempotency-Key", idempotency)
-		request.Header.Set("X-Correlation-ID", "contract-lifecycle")
+		request.Header.Set("X-Correlation-ID", store.NewUUIDString())
 		request.Header.Set("Content-Type", "application/json")
 	}
 	response, err := http.DefaultClient.Do(request)

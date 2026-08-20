@@ -13,8 +13,8 @@ retirement is approved.
 | OCPP central-system handlers | RETAINED | `ocpp-go` still owns protocol framing; boot, status, authorize, start, meter, and stop handlers preserve charger-originated transaction truth. |
 | Charger authorization | ADAPTED | Every authorization now validates a durable v1 credential; unknown and ambiguous idTags fail closed. |
 | Charger connection generation guard | RETAINED | The connection tracker still ignores stale disconnects, while durable v1 runtime records the generation and sequence. |
-| Transaction persistence | ADAPTED | V1 PostgreSQL commands, credentials, transactions, stop workflows, and facts own new-runtime truth. Exact OCPP IDs remain durable and only StopTransaction completes them. |
-| MeterValues handling | ADAPTED | V1 accepts exact integer Wh only, rejects non-integral/regressive samples, preserves sequence/observation time, and never fabricates samples. |
+| Transaction persistence | ADAPTED | V1 PostgreSQL commands, credentials, transactions, stop workflows, and facts own new-runtime truth. Exact OCPP IDs remain durable and only validated StopTransaction evidence completes them. |
+| MeterValues handling | ADAPTED | V1 accepts exact integer Wh only, rejects non-integral/regressive samples, preserves a nondecreasing observation time and HAL-owned sequence, and never fabricates samples. |
 | Legacy `max_kwh` callback policy | RETIRED | Callback-derived kWh limits and their retry loop were removed. Persisted `energy_limit_wh` and the unified v1 stop workflow are the sole HAL enforcement path. |
 | Callback/outbox machinery | RETIRED | Legacy start/completion callback worker, payloads, auth, and routes were removed. Immutable v1 fact outbox delivery preserves durable retry, idempotency, terminal reconciliation, and lease recovery. |
 | Boot/reconnect recovery | ADAPTED | V1 recovery reconstructs only durable command/stop/deadline state; it never turns a RemoteStop acknowledgement into completion. |

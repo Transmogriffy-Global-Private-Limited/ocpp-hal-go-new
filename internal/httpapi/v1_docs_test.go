@@ -83,6 +83,11 @@ func TestV1OpenAPIRequiresCanonicalCommandResponse(t *testing.T) {
 			t.Fatalf("Command schema does not require %q", field)
 		}
 	}
+	for _, schemaName := range []string{"Mapping", "Transaction", "StopWorkflow", "ChargerRuntime", "ConnectorRuntime", "Error"} {
+		if _, ok := document.Components.Schemas[schemaName]; !ok {
+			t.Fatalf("OpenAPI is missing %s schema", schemaName)
+		}
+	}
 }
 
 type testWriter struct{ t *testing.T }

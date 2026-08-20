@@ -6,6 +6,22 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- HAL v1 now treats charger timestamps as bounded protocol evidence while
+  persisting trusted HAL receipt times for start expiry, duration limits, and
+  completion ordering. Start requires a positive connector, OCPP transaction
+  ID, and nonnegative meter. Completion rejects meter rollback, pre-start or
+  implausible timestamps, and conflicting duplicate evidence before a durable
+  completed state or fact can exist. Stop workflows in `PERSISTED` state are
+  drained at startup and periodically; attempted/ambiguous workflows are never
+  replayed. This source change requires migration `008` and has not been
+  deployed or applied to a database.
+
+- The v1 HTTP boundary now requires canonical nonzero UUIDs for mutation
+  headers and identities, rejects trailing JSON values, validates mappings
+  before runtime persistence, and returns an OCPP CALLERROR when a
+  StopTransaction cannot be durably persisted. OpenAPI now exposes mapping,
+  transaction, and stop-workflow response schemas and state vocabularies.
+
 - HAL v1 HTTP responses now use explicit transport views rather than directly
   serializing store records. Command start, stop, and exact lookup emit the
   canonical snake_case command object with required identity/state/timestamp

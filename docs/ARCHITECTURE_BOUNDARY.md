@@ -32,6 +32,14 @@ outside this work.
 - HAL/Central System allocates the exact OCPP transaction ID only when accepting
   charger-originated StartTransaction. CMS never generates, substitutes, or
   guesses that ID.
+- Charger timestamps are protocol evidence, not the authority for credential
+  expiry or time-limit enforcement. HAL retains the protocol timestamp and a
+  trusted receipt timestamp, accepts only bounded clock skew, and bases
+  security/deadline decisions on the trusted receipt.
+- HAL accepts a completion only when its exact OCPP transaction identity,
+  connector, nondecreasing cumulative meter, protocol ordering, and receipt
+  ordering validate. A conflicting duplicate completion is rejected and does
+  not create a completed fact.
 - CMS charger UUID, public charger ID, OCPP identity, CMS connector UUID, OCPP
   connector number, CPO/customer/group IDs, CMS start intent/session/command,
   app credential/idTag, HAL command/transaction IDs, and OCPP transaction ID
