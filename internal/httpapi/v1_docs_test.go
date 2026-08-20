@@ -59,6 +59,32 @@ func TestV1OpenAPICoversRegisteredRoutes(t *testing.T) {
 	}
 }
 
+func TestV1OpenAPIRequiresCanonicalCommandResponse(t *testing.T) {
+	var document struct {
+		Components struct {
+			Schemas map[string]struct {
+				Required []string `json:"required"`
+			} `json:"schemas"`
+		} `json:"components"`
+	}
+	if err := json.Unmarshal(v1OpenAPI, &document); err != nil {
+		t.Fatal(err)
+	}
+	command, ok := document.Components.Schemas["Command"]
+	if !ok {
+		t.Fatal("OpenAPI is missing Command response schema")
+	}
+	required := make(map[string]bool, len(command.Required))
+	for _, field := range command.Required {
+		required[field] = true
+	}
+	for _, field := range []string{"hal_command_id", "cms_command_id", "kind", "state", "hal_transaction_id", "ocpp_transaction_id", "updated_at"} {
+		if !required[field] {
+			t.Fatalf("Command schema does not require %q", field)
+		}
+	}
+}
+
 type testWriter struct{ t *testing.T }
 
 func (w testWriter) Write(data []byte) (int, error) { w.t.Log(string(data)); return len(data), nil }

@@ -1,5 +1,19 @@
 # AI-assisted changelog
 
+## 2026-08-20 - Explicit HAL v1 response boundary
+
+- Replaced direct HTTP serialization of v1 store records with explicit response
+  views. Start, stop, and exact-command lookup now return the required
+  snake_case command contract, while mapping, transaction, stop-workflow, and
+  runtime responses no longer accidentally expose persistence-only fields.
+- Added endpoint-level JSON regression coverage for start, stop, and exact
+  command lookup plus OpenAPI required-field coverage. No database migration,
+  runtime data mutation, or deployment occurred.
+
+Verification: focused `go test ./internal/httpapi ./internal/store`, full
+`go test ./...`, `go vet ./...`, and `git diff --check` passed. No runtime
+service, database, or physical charger was used.
+
 ## 2026-08-19 - CMS fact-receiver diagnostics and exact lookup compatibility
 
 - Added explicit snake_case JSON field names to the existing exact transaction

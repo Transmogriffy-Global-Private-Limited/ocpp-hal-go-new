@@ -6,6 +6,14 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- HAL v1 HTTP responses now use explicit transport views rather than directly
+  serializing store records. Command start, stop, and exact lookup emit the
+  canonical snake_case command object with required identity/state/timestamp
+  fields; transaction IDs are explicit nullable fields. Mapping, transaction,
+  stop-workflow, and runtime views are also explicit, and credential/customer,
+  request-digest, correlation, and raw-error persistence fields are not
+  exposed. This source change has not been deployed.
+
 - Exact `GET /v1/transactions?cms_start_intent_id={uuid}` responses expose
   stable snake_case v1 JSON fields, allowing CMS to consume the existing
   recovery socket as authoritative transaction truth. HAL fact delivery records

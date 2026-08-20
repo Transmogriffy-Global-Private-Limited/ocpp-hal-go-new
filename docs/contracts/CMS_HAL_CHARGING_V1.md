@@ -257,26 +257,32 @@ whose exact transaction or mapping does not match durable OCPP state.
 
 ### 7.3 Command response and lookup
 
+Every start, stop, and exact-command response wraps this canonical object in
+`{"command": ...}`. These are the complete public command fields; store-only
+request digests, correlations, credentials, customer data, expiry policy,
+delivery internals, and raw error detail are not HTTP contract fields.
+
 ```json
 {
-  "hal_command_id": "e3010bb6-cc38-4df9-99d9-772d79d5ffab",
-  "cms_command_id": "1260f4e7-7981-4c20-8c5a-8b830718a004",
-  "kind": "START",
-  "state": "PENDING_DELIVERY",
-  "accepted_for_delivery_at": "2026-08-10T12:00:01Z",
-  "command_expires_at": "2026-08-10T12:06:00Z",
-  "delivery_attempts": 0,
-  "last_ocpp_result": null,
-  "last_error_category": null,
-  "hal_transaction_id": null,
-  "ocpp_transaction_id": null,
-  "updated_at": "2026-08-10T12:00:01Z"
+  "command": {
+    "hal_command_id": "e3010bb6-cc38-4df9-99d9-772d79d5ffab",
+    "cms_command_id": "1260f4e7-7981-4c20-8c5a-8b830718a004",
+    "kind": "START",
+    "state": "PENDING_DELIVERY",
+    "hal_transaction_id": null,
+    "ocpp_transaction_id": null,
+    "updated_at": "2026-08-10T12:00:01Z"
+  }
 }
 ```
 
-A successful command response only means durable HAL command acceptance. A
-lookup may show a later command state, OCPP result, or correlated exact
-transaction IDs.
+All seven fields are required and use exact snake_case names. The two
+transaction fields are nullable until HAL has authoritative transaction truth;
+every returned command identity is a nonzero UUID. CMS rejects a successful
+HTTP response that omits the wrapper, an identity, `updated_at`, a supported
+kind/state, or has mismatched `cms_command_id`. A successful command response
+only means durable HAL command acceptance. A lookup may show a later command
+state or correlated exact transaction IDs.
 
 ## 8. HAL Fact Model
 

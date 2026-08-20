@@ -125,7 +125,7 @@ func (s *Server) v1Mapping(w http.ResponseWriter, r *http.Request) {
 	if existed {
 		status = http.StatusOK
 	}
-	writeJSON(w, status, map[string]any{"mapping": mapping, "idempotency_key": idempotency, "correlation_id": correlation})
+	writeJSON(w, status, map[string]any{"mapping": v1MappingView(mapping), "idempotency_key": idempotency, "correlation_id": correlation})
 }
 
 func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
@@ -181,7 +181,7 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"command": command, "correlation_id": correlation, "duplicate": existed})
+	writeJSON(w, http.StatusAccepted, map[string]any{"command": v1CommandView(command), "correlation_id": correlation, "duplicate": existed})
 }
 
 func (s *Server) v1Stop(w http.ResponseWriter, r *http.Request) {
@@ -210,7 +210,7 @@ func (s *Server) v1Stop(w http.ResponseWriter, r *http.Request) {
 	if dispatchErr != nil {
 		s.logger.Warn("v1 stop dispatch did not produce a final command result", "hal_transaction_id", req.HALTransactionID, "error", dispatchErr)
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"command": command, "stop_workflow": workflow, "correlation_id": correlation, "duplicate": duplicate})
+	writeJSON(w, http.StatusAccepted, map[string]any{"command": v1CommandView(command), "stop_workflow": v1StopWorkflowView(workflow), "correlation_id": correlation, "duplicate": duplicate})
 }
 
 func validV1StopInitiator(value string) bool {
@@ -237,7 +237,7 @@ func (s *Server) v1Command(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"command": c})
+	writeJSON(w, http.StatusOK, map[string]any{"command": v1CommandView(c)})
 }
 func (s *Server) v1Transactions(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -254,9 +254,9 @@ func (s *Server) v1Transactions(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	response := map[string]any{"transaction": t}
+	response := map[string]any{"transaction": v1TransactionView(t)}
 	if workflow, err := s.v1Store.GetV1StopWorkflow(r.Context(), t.HALTransactionID); err == nil {
-		response["stop_workflow"] = workflow
+		response["stop_workflow"] = v1StopWorkflowView(workflow)
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -275,9 +275,9 @@ func (s *Server) v1Transaction(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	response := map[string]any{"transaction": t}
+	response := map[string]any{"transaction": v1TransactionView(t)}
 	if workflow, err := s.v1Store.GetV1StopWorkflow(r.Context(), t.HALTransactionID); err == nil {
-		response["stop_workflow"] = workflow
+		response["stop_workflow"] = v1StopWorkflowView(workflow)
 	}
 	writeJSON(w, http.StatusOK, response)
 }
@@ -296,7 +296,7 @@ func (s *Server) v1ChargerRuntime(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runtime": state, "fresh": state.ConnectionState == "ONLINE"})
+	writeJSON(w, http.StatusOK, map[string]any{"runtime": v1ChargerRuntimeView(state), "fresh": state.ConnectionState == "ONLINE"})
 }
 func (s *Server) v1ConnectorRuntime(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -318,7 +318,7 @@ func (s *Server) v1ConnectorRuntime(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"runtime": state, "fresh": charger.ConnectionState == "ONLINE"})
+	writeJSON(w, http.StatusOK, map[string]any{"runtime": v1ConnectorRuntimeView(*state), "fresh": charger.ConnectionState == "ONLINE"})
 }
 
 func v1MutationHeaders(w http.ResponseWriter, r *http.Request) (string, string, bool) {

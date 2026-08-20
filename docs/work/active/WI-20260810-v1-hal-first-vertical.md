@@ -4,7 +4,7 @@ Status: In Progress
 Owner: Codex
 Collaborators: None
 Started: 2026-08-10
-Last updated: 2026-08-19
+Last updated: 2026-08-20
 
 Development-plan reference: `docs/DEVELOPMENT_PLAN.md`
 Detailed-plan reference: `docs/plans/HAL_V1_CONSUMER_DEMAND_MATRIX.md`
@@ -39,6 +39,8 @@ durable fact delivery.
 - `internal/ocpp16hal/`
 - `internal/store/` and `migrations/`
 - `internal/httpapi/` and service-boundary documentation
+- explicit HTTP response DTOs and contract tests for every externally emitted
+  v1 store projection
 - `internal/v1facts/` receiver-error classification diagnostics for the active
   CMS fact-projection incident; the existing exact transaction lookup remains
   the recovery socket.
@@ -101,6 +103,11 @@ durable fact delivery.
   CMS session. HAL must retain durable retry semantics and add only safe,
   bounded receiver error-class diagnostics; it must not stop a physical
   transaction or change charger/OCPP truth because CMS projection failed.
+- 2026-08-20 confirmed a second joint-boundary defect: direct serialization of
+  `store.V1RemoteCommand` produced Go field names, so CMS decoded a 2xx
+  command response with zero UUID identities. This slice replaces accidental
+  store serialization with explicit snake_case HTTP views across the v1
+  response boundary; no storage migration is expected.
 - Remaining work is end-to-end verification expansion: real full lifecycle
   with a fact receiver, manual/energy/time/natural stop, concurrent stop races,
   and restart/crash scenarios. CMS consumer work is not in scope.
@@ -132,6 +139,11 @@ durable fact delivery.
   `go test ./...`, `go vet ./...`, and `scripts/build-all.ps1` pass. The
   PostgreSQL regression script and physical charger check remain unrun because
   no disposable database or deployment approval was supplied.
+- 2026-08-20 explicit response-boundary repair: endpoint-level command JSON
+  tests, OpenAPI required-field test, `go test ./internal/httpapi
+  ./internal/store`, full `go test ./...`, `go vet ./...`, and
+  `git diff --check` pass. PostgreSQL and dual-service deployment acceptance
+  remain unrun; this source-only slice did not mutate a database.
 
 ## Handoff
 

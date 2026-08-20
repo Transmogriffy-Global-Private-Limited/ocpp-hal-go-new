@@ -26,9 +26,11 @@ Completed in this slice:
 - Software-charger automation slice: `cpconsole` now models Boot-driven
   Heartbeats and an optional one-shot normal charging session without creating
   a second protocol or state-machine path.
-- Current cross-service hardening: exact transaction lookup responses have
-  stable snake_case fields for CMS recovery, while fact delivery exposes only
-  bounded receiver classifications and retains the same immutable retry body.
+- Current cross-service hardening: all v1 HTTP response projections now use
+  explicit snake_case transport views, command responses have a typed OpenAPI
+  schema, and fact delivery exposes only bounded receiver classifications while
+  retaining the same immutable retry body. Deployment and dual-service
+  acceptance remain required.
 
 ## Next Approved Work
 
