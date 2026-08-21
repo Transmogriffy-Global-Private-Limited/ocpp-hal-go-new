@@ -20,6 +20,7 @@ type v1MappingRequest struct {
 	CPOID               string `json:"cpo_id"`
 	CMSChargerID        string `json:"cms_charger_id"`
 	ChargerOCPPIdentity string `json:"charger_ocpp_identity"`
+	ExpectedSerial      string `json:"expected_serial,omitempty"`
 	Enabled             bool   `json:"enabled"`
 	Connectors          []struct {
 		CMSConnectorID      string `json:"cms_connector_id"`
@@ -103,7 +104,7 @@ func (s *Server) v1Mapping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	pathID := strings.TrimPrefix(r.URL.Path, "/v1/mappings/chargers/")
-	if pathID == "" || pathID != req.CMSChargerID || !validUUID(req.CPOID) || !validUUID(req.CMSChargerID) || strings.TrimSpace(req.ChargerOCPPIdentity) == "" || len(req.Connectors) == 0 {
+	if pathID == "" || pathID != req.CMSChargerID || !validUUID(req.CPOID) || !validUUID(req.CMSChargerID) || strings.TrimSpace(req.ChargerOCPPIdentity) == "" || len(req.ChargerOCPPIdentity) > 255 || !validIdentityEvidence(req.ExpectedSerial) || len(req.Connectors) == 0 {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid immutable charger mapping"})
 		return
 	}
@@ -118,7 +119,7 @@ func (s *Server) v1Mapping(w http.ResponseWriter, r *http.Request) {
 		connectors = append(connectors, store.V1ConnectorMappingInput{CMSConnectorID: c.CMSConnectorID, OCPPConnectorNumber: c.OCPPConnectorNumber})
 	}
 	digest := digestJSON(req, idempotency)
-	mapping, existed, err := s.v1Store.SyncV1Mapping(r.Context(), store.V1MappingInput{CPOID: req.CPOID, CMSChargerID: req.CMSChargerID, ChargerOCPPIdentity: req.ChargerOCPPIdentity, Enabled: req.Enabled, Connectors: connectors, CorrelationID: correlation, RequestDigest: digest})
+	mapping, existed, err := s.v1Store.SyncV1Mapping(r.Context(), store.V1MappingInput{CPOID: req.CPOID, CMSChargerID: req.CMSChargerID, ChargerOCPPIdentity: req.ChargerOCPPIdentity, ExpectedSerial: strings.TrimSpace(req.ExpectedSerial), Enabled: req.Enabled, Connectors: connectors, CorrelationID: correlation, RequestDigest: digest})
 	if err != nil {
 		s.writeV1StoreError(w, err)
 		return
@@ -128,6 +129,19 @@ func (s *Server) v1Mapping(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	writeJSON(w, status, map[string]any{"mapping": v1MappingView(mapping), "idempotency_key": idempotency, "correlation_id": correlation})
+}
+
+func validIdentityEvidence(value string) bool {
+	value = strings.TrimSpace(value)
+	if len(value) > 100 {
+		return false
+	}
+	for _, runeValue := range value {
+		if runeValue < 0x21 || runeValue > 0x7e || runeValue == '/' {
+			return false
+		}
+	}
+	return true
 }
 
 func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {

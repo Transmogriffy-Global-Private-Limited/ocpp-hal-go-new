@@ -47,6 +47,7 @@ type v1MappingResponse struct {
 	CPOID               string                       `json:"cpo_id"`
 	CMSChargerID        string                       `json:"cms_charger_id"`
 	ChargerOCPPIdentity string                       `json:"charger_ocpp_identity"`
+	ExpectedSerial      string                       `json:"expected_serial,omitempty"`
 	Enabled             bool                         `json:"enabled"`
 	Connectors          []v1ConnectorMappingResponse `json:"connectors"`
 }
@@ -62,7 +63,7 @@ func v1MappingView(mapping *store.V1ChargerMapping) v1MappingResponse {
 			OCPPConnectorNumber: connector.OCPPConnectorNumber,
 		})
 	}
-	return v1MappingResponse{CPOID: mapping.CPOID, CMSChargerID: mapping.CMSChargerID, ChargerOCPPIdentity: mapping.ChargerOCPPIdentity, Enabled: mapping.Enabled, Connectors: connectors}
+	return v1MappingResponse{CPOID: mapping.CPOID, CMSChargerID: mapping.CMSChargerID, ChargerOCPPIdentity: mapping.ChargerOCPPIdentity, ExpectedSerial: mapping.ExpectedSerial, Enabled: mapping.Enabled, Connectors: connectors}
 }
 
 type v1StopWorkflowResponse struct {

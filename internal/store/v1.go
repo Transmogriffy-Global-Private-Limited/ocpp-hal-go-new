@@ -13,6 +13,7 @@ var (
 	ErrV1IdempotencyConflict  = errors.New("v1 command idempotency conflict")
 	ErrV1MappingNotFound      = errors.New("v1 mapping not found")
 	ErrV1MappingConflict      = errors.New("v1 mapping conflict")
+	ErrV1IdentityConflict     = errors.New("v1 charger identity evidence conflicts with mapping")
 	ErrV1DeliveryNotReady     = errors.New("v1 delivery is not ready")
 	ErrV1InvalidEvidence      = errors.New("v1 transaction evidence is invalid")
 	ErrV1FactNotFound         = errors.New("v1 fact not found")
@@ -42,6 +43,7 @@ type V1MappingInput struct {
 	CPOID               string
 	CMSChargerID        string
 	ChargerOCPPIdentity string
+	ExpectedSerial      string
 	Enabled             bool
 	Connectors          []V1ConnectorMappingInput
 	CorrelationID       string
@@ -57,6 +59,7 @@ type V1ChargerMapping struct {
 	CPOID               string
 	CMSChargerID        string
 	ChargerOCPPIdentity string
+	ExpectedSerial      string
 	Enabled             bool
 	Connectors          []V1ConnectorMapping
 }
@@ -227,6 +230,18 @@ type V1ConnectorRuntime struct {
 	UpdatedAt           time.Time
 }
 
+// V1BootEvidence is observed hardware metadata. It is never CMS inventory and
+// cannot overwrite the canonical mapping identity or expected serial.
+type V1BootEvidence struct {
+	PathSerial              string
+	ChargeBoxSerialNumber   string
+	ChargePointSerialNumber string
+	ChargePointVendor       string
+	ChargePointModel        string
+	FirmwareVersion         string
+	ObservedAt              time.Time
+}
+
 type V1StartMaterialization struct {
 	ChargerOCPPIdentity string
 	OCPPConnectorNumber int
@@ -240,7 +255,7 @@ type V1StartMaterialization struct {
 type V1Store interface {
 	SyncV1Mapping(context.Context, V1MappingInput) (*V1ChargerMapping, bool, error)
 	ValidateV1Mapping(context.Context, string, string, string, string, int) error
-	ValidateV1ChargerAdmission(context.Context, string) error
+	ValidateV1ChargerAdmission(context.Context, string, string) error
 	CreateV1StartCommand(context.Context, V1StartCommandInput) (*V1RemoteCommand, bool, error)
 	CreateV1StopCommand(context.Context, V1StopCommandInput) (*V1RemoteCommand, bool, error)
 	GetV1Command(context.Context, string) (*V1RemoteCommand, error)
@@ -272,6 +287,7 @@ type V1Store interface {
 	RecordV1ChargerConnection(context.Context, string, int64, bool, time.Time) error
 	RenewCurrentV1ChargerConnection(context.Context, string, int64, time.Time) error
 	RecordV1ConnectorStatus(context.Context, V1ConnectorRuntime) error
+	RecordV1BootEvidence(context.Context, string, V1BootEvidence) error
 	GetV1ChargerRuntime(context.Context, string) (*V1ChargerRuntime, error)
 	GetV1ConnectorRuntime(context.Context, string) (*V1ConnectorRuntime, error)
 	ResetV1ConnectionRuntime(context.Context) error

@@ -6,6 +6,15 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- Source now supports strict mapped charger admission for both `/{identity}`
+  and `/{identity}/{serial}`. OCPP identity remains canonical; optional serial
+  and Boot metadata are stored only as physical evidence. Migrations 012 and
+  013 are additive and have not been applied to a database in this slice.
+- Every accepted BootNotification schedules a bounded, asynchronous,
+  generation-fenced configuration reconciliation. Standard heartbeat/meter
+  sampling keys are configured by default; the legacy vendor-only profile is
+  explicit and disabled by default. No live charger or deployment was changed.
+
 - Fact delivery leases are now fenced by a durable secure claim token. A
   delayed worker can no longer transition a fact after an expired lease was
   reclaimed; only the current `fact_id` plus token owner may record delivery.

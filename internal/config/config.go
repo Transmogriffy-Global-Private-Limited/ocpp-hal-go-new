@@ -12,37 +12,45 @@ import (
 )
 
 const (
-	defaultEnvironment              = "development"
-	defaultRESTHost                 = "127.0.0.1"
-	defaultRESTPort                 = "18080"
-	defaultOCPPListenPort           = 18081
-	defaultOCPPListenPath           = "/{ws}"
-	defaultHeartbeatIntervalSeconds = 300
-	defaultDBHost                   = "127.0.0.1"
-	defaultDBPort                   = 5432
-	defaultDBSSLMode                = "disable"
+	defaultEnvironment    = "development"
+	defaultRESTHost       = "127.0.0.1"
+	defaultRESTPort       = "18080"
+	defaultOCPPListenPort = 18081
+	// ocpp-go passes only the final path segment to protocol handlers. The
+	// catch-all lets HAL validate both supported physical URL forms itself.
+	defaultOCPPListenPath                       = "/{ws:.*}"
+	defaultHeartbeatIntervalSeconds             = 300
+	defaultMeterSampleIntervalSeconds           = 15
+	defaultConfigurationReconcileTimeoutSeconds = 20
+	defaultDBHost                               = "127.0.0.1"
+	defaultDBPort                               = 5432
+	defaultDBSSLMode                            = "disable"
 )
 
 type Config struct {
-	Environment                  string
-	RESTHost                     string
-	RESTPort                     string
-	OCPPListenPort               int
-	OCPPListenPath               string
-	OCPPHeartbeatIntervalSeconds int
-	LogLevel                     slog.Level
-	DatabaseURL                  string
-	DBName                       string
-	DBUser                       string
-	DBPassword                   string
-	DBHost                       string
-	DBPort                       int
-	DBSSLMode                    string
-	V1CMSBearerToken             string
-	V1FactDeliveryEnabled        bool
-	V1CMSFactsURL                string
-	V1CMSFactsBearerToken        string
-	APIDocsEnabled               bool
+	Environment                              string
+	RESTHost                                 string
+	RESTPort                                 string
+	OCPPListenPort                           int
+	OCPPListenPath                           string
+	OCPPHeartbeatIntervalSeconds             int
+	OCPPMeterSampleIntervalSeconds           int
+	OCPPConfigurationReconcileTimeoutSeconds int
+	OCPPVendorConfigurationProfile           string
+	OCPPVendorConfigurationVendor            string
+	LogLevel                                 slog.Level
+	DatabaseURL                              string
+	DBName                                   string
+	DBUser                                   string
+	DBPassword                               string
+	DBHost                                   string
+	DBPort                                   int
+	DBSSLMode                                string
+	V1CMSBearerToken                         string
+	V1FactDeliveryEnabled                    bool
+	V1CMSFactsURL                            string
+	V1CMSFactsBearerToken                    string
+	APIDocsEnabled                           bool
 }
 
 // Load returns only a fully validated runtime configuration. Defaults apply
@@ -136,6 +144,22 @@ func parse(values map[string]string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	meterSampleInterval, err := parseBoundedInt("OCPP_METER_VALUE_SAMPLE_INTERVAL_SECONDS", value(values, "OCPP_METER_VALUE_SAMPLE_INTERVAL_SECONDS", strconv.Itoa(defaultMeterSampleIntervalSeconds)), 1, 3600)
+	if err != nil {
+		return Config{}, err
+	}
+	reconcileTimeout, err := parseBoundedInt("OCPP_CONFIGURATION_RECONCILE_TIMEOUT_SECONDS", value(values, "OCPP_CONFIGURATION_RECONCILE_TIMEOUT_SECONDS", strconv.Itoa(defaultConfigurationReconcileTimeoutSeconds)), 1, 120)
+	if err != nil {
+		return Config{}, err
+	}
+	vendorProfile := strings.TrimSpace(value(values, "OCPP_VENDOR_CONFIGURATION_PROFILE", ""))
+	if vendorProfile != "" && vendorProfile != "legacy-remote-only" {
+		return Config{}, fmt.Errorf("invalid OCPP_VENDOR_CONFIGURATION_PROFILE: %q", vendorProfile)
+	}
+	vendorProfileVendor := strings.TrimSpace(value(values, "OCPP_VENDOR_CONFIGURATION_VENDOR", ""))
+	if vendorProfile != "" && vendorProfileVendor == "" {
+		return Config{}, fmt.Errorf("OCPP_VENDOR_CONFIGURATION_VENDOR is required when OCPP_VENDOR_CONFIGURATION_PROFILE is set")
+	}
 	dbPortString, err := parsePort("DB_PORT", value(values, "DB_PORT", strconv.Itoa(defaultDBPort)))
 	if err != nil {
 		return Config{}, err
@@ -155,7 +179,7 @@ func parse(values map[string]string) (Config, error) {
 	}
 	cfg := Config{
 		Environment: environment, RESTHost: value(values, "F_SERVER_HOST", defaultRESTHost), RESTPort: restPort,
-		OCPPListenPort: ocppPort, OCPPListenPath: value(values, "OCPP_LISTEN_PATH", defaultOCPPListenPath), OCPPHeartbeatIntervalSeconds: heartbeat,
+		OCPPListenPort: ocppPort, OCPPListenPath: value(values, "OCPP_LISTEN_PATH", defaultOCPPListenPath), OCPPHeartbeatIntervalSeconds: heartbeat, OCPPMeterSampleIntervalSeconds: meterSampleInterval, OCPPConfigurationReconcileTimeoutSeconds: reconcileTimeout, OCPPVendorConfigurationProfile: vendorProfile, OCPPVendorConfigurationVendor: vendorProfileVendor,
 		LogLevel:    level,
 		DatabaseURL: value(values, "DATABASE_URL", ""), DBName: value(values, "DB_NAME", ""), DBUser: value(values, "DB_USER", ""), DBPassword: value(values, "DB_PASSWORD", ""), DBHost: value(values, "DB_HOST", defaultDBHost), DBPort: dbPort, DBSSLMode: value(values, "DB_SSLMODE", defaultDBSSLMode),
 		V1CMSBearerToken: value(values, "HAL_V1_CMS_BEARER_TOKEN", ""), V1FactDeliveryEnabled: factDelivery, V1CMSFactsURL: value(values, "HAL_V1_CMS_FACTS_URL", ""), V1CMSFactsBearerToken: value(values, "HAL_V1_CMS_FACT_BEARER_TOKEN", ""), APIDocsEnabled: docsEnabled,

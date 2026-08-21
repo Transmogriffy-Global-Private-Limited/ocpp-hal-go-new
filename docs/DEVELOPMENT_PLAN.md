@@ -44,10 +44,14 @@ Completed in this slice:
   011 preserves raw stop readings while an effective nondecreasing stop meter
   may normalize only a coherent one-Wh register discrepancy. `cpconsole` now
   uses one rounded OCPP meter conversion at every transaction boundary.
+- Real-hardware identity and operating-profile hardening is implemented in
+  source: strict optional serial admission, durable Boot metadata evidence, and
+  per-boot generation-fenced standard configuration reconciliation. Migrations
+  012 and 013 plus physical-device acceptance remain pending.
 
 ## Next Approved Work
 
-1. Apply and verify additive migrations 010 and 011 against a
+1. Apply and verify additive migrations 010 through 013 against a
    clearly disposable PostgreSQL database, including stop-worker crash and
    recovery behavior.
 2. Expand real-device acceptance coverage for energy/time stop races and

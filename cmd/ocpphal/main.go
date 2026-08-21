@@ -39,6 +39,12 @@ func main() {
 	registry := state.NewRegistry()
 	hal := ocpp16hal.New(registry, v1Store, logger)
 	hal.SetHeartbeatIntervalSeconds(cfg.OCPPHeartbeatIntervalSeconds)
+	hal.SetConfigurationReconciliation(ocpp16hal.ConfigurationReconciliationConfig{
+		MeterValueSampleIntervalSeconds: cfg.OCPPMeterSampleIntervalSeconds,
+		Timeout:                         time.Duration(cfg.OCPPConfigurationReconcileTimeoutSeconds) * time.Second,
+		VendorProfile:                   cfg.OCPPVendorConfigurationProfile,
+		Vendor:                          cfg.OCPPVendorConfigurationVendor,
+	})
 	workerCtx, cancelWorkers := context.WithCancel(context.Background())
 	defer cancelWorkers()
 	if err := hal.RecoverV1Lifecycle(workerCtx); err != nil {

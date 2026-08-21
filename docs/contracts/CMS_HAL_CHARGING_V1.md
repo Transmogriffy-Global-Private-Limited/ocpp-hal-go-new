@@ -60,6 +60,7 @@ never generates, substitutes, or guesses this ID.
 | `cms_charger_id` | CMS | Durable CMS charger UUID. |
 | `public_charger_id` | CMS | Customer-facing charger identifier; it is not an OCPP identity. |
 | `charger_ocpp_identity` | CMS mapping / HAL connection | Charge-point protocol identity. HAL validates it against the approved mapping. |
+| `expected_serial` | CMS inventory evidence | Optional physical serial. It supplements but never replaces the canonical OCPP identity. |
 | `cms_connector_id` | CMS | Durable CMS connector UUID. |
 | `ocpp_connector_number` | Charger/HAL | OCPP connector address; CMS owns its approved mapping to `cms_connector_id`. |
 | `cpo_id`, `customer_id`, `customer_group_id` | CMS | Trusted commercial scope; group is optional. |
@@ -178,7 +179,7 @@ cross-system audit and lookup.
 | Method and path | Semantics | Retry safety |
 | --- | --- | --- |
 | `POST /v1/remote-commands/start` | Persist and schedule one RemoteStart command. `202` only after durable HAL command creation/recovery; it is not OCPP acceptance or actual start. | Safe with the same idempotency key and immutable body. |
-| `PUT /v1/mappings/chargers/{cms_charger_id}` | Enroll the durable CMS CPO/charger/connector to OCPP mapping used for command and runtime validation. Conflicting identity changes fail. | Safe with the same immutable mapping. |
+| `PUT /v1/mappings/chargers/{cms_charger_id}` | Enroll the durable CMS CPO/charger/connector to OCPP mapping used for command and runtime validation. `expected_serial` is optional physical evidence; it does not replace or mutate the OCPP identity. | Safe with the same immutable mapping. |
 | `POST /v1/remote-commands/stop` | Persist and schedule one RemoteStop command. `202` only after durable HAL command creation/recovery; it is not completion. | Safe with the same idempotency key and immutable body. |
 | `GET /v1/remote-commands?cms_command_id={uuid}` | Reconcile a CMS command after a lost response or delayed fact. `200` returns one durable command; `404` means HAL never accepted it. | Safe read. |
 | `GET /v1/transactions?cms_start_intent_id={uuid}` | Reconcile a start intent without a "latest" lookup. `200` returns the one authoritative transaction snapshot; `404` means HAL has no materialized transaction for that exact intent and must never be treated as a session. The `transaction` object uses snake_case v1 field names. | Safe read. |
@@ -868,7 +869,29 @@ after state advances; stale disconnect generation; connector status while
 offline; delayed/out-of-order meter fact; and no fabricated meter interpolation.
 A happy-path-only proof is insufficient.
 
-## 16. Open Decisions
+## 16. Physical Identity and Boot Configuration
+
+HAL accepts exactly two WebSocket URL forms: `/{identity}` and
+`/{identity}/{serial}`. The first segment is always the canonical OCPP mapping
+identity. The optional second segment is physical evidence only. Unknown,
+disabled, empty, malformed, or more-than-two-segment paths are rejected. When a
+mapping supplies `expected_serial`, a conflicting suffix is rejected; absence
+of a suffix remains compatible for existing installations.
+
+BootNotification metadata is retained in HAL as observed evidence and is never
+written back to CMS inventory. A serial mismatch remains observable in HAL's
+durable boot-evidence projection without rewriting `charger_ocpp_identity`.
+
+After each accepted BootNotification from the current connection generation,
+HAL asynchronously reads the configured standard OCPP keys and changes only
+mismatches. `HeartbeatInterval` and `MeterValueSampleInterval` are standard
+keys. Unsupported, readonly, rejected, and timed-out keys are logged as
+individual outcomes and do not prevent other keys from being considered. The
+legacy remote-only keys are vendor extensions; they apply only when an explicit
+vendor profile and exact vendor gate are configured. A reconnect supersedes the
+older generation before later configuration writes.
+
+## 17. Open Decisions
 
 The following remain deliberately not fixed or not yet implemented:
 

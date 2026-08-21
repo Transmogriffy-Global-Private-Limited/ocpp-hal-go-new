@@ -17,6 +17,33 @@ import (
 
 type failingV1CompletionStore struct{ store.V1Store }
 
+type bootEvidenceStore struct {
+	store.V1Store
+	identity string
+	evidence store.V1BootEvidence
+	calls    int
+}
+
+func (s *bootEvidenceStore) RecordV1BootEvidence(_ context.Context, identity string, evidence store.V1BootEvidence) error {
+	s.identity, s.evidence, s.calls = identity, evidence, s.calls+1
+	return nil
+}
+
+func TestBootMetadataIsRecordedAsEvidenceWithoutChangingCanonicalIdentity(t *testing.T) {
+	s := &bootEvidenceStore{}
+	h := New(state.NewRegistry(), s, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if !h.rememberWireIdentity("SN-1", "CP-1") {
+		t.Fatal("could not establish test identity alias")
+	}
+	confirmation, err := h.OnBootNotification("SN-1", &core.BootNotificationRequest{ChargePointVendor: "Vendor", ChargePointModel: "Model", ChargePointSerialNumber: "Boot-SN"})
+	if err != nil || confirmation == nil || s.calls != 1 {
+		t.Fatalf("confirmation=%#v err=%v calls=%d", confirmation, err, s.calls)
+	}
+	if s.identity != "CP-1" || s.evidence.PathSerial != "SN-1" || s.evidence.ChargePointSerialNumber != "Boot-SN" {
+		t.Fatalf("identity=%q evidence=%#v", s.identity, s.evidence)
+	}
+}
+
 type failingV1ObservationStore struct {
 	store.V1Store
 	statusErr error

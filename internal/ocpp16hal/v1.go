@@ -108,6 +108,7 @@ const (
 )
 
 func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValuesRequest) meterPersistenceResult {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	if h.v1Store == nil || request.TransactionId == nil || *request.TransactionId <= 0 {
 		return meterIgnored
 	}
@@ -139,6 +140,7 @@ func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValue
 }
 
 func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTransactionRequest) bool {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	if h.v1Store == nil || request.TransactionId <= 0 {
 		return false
 	}

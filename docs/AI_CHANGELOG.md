@@ -1,5 +1,23 @@
 # AI-assisted changelog
 
+## 2026-08-21 - Real-hardware identity and boot-configuration hardening
+
+- Mapping enrollment now carries optional expected serial evidence. HAL admits
+  only mapped enabled chargers through exactly `/{identity}` or
+  `/{identity}/{serial}` and preserves canonical OCPP identity behind the
+  ocpp-go final-path-segment transport detail.
+- Added migrations 012 and 013 for expected serial and observed Boot metadata.
+  Boot evidence is HAL-only and can expose a serial conflict without mutating
+  CMS inventory.
+- Every accepted Boot starts bounded generation-fenced reconciliation of the
+  standard heartbeat/meter sample keys. Unsupported, readonly, rejected, and
+  failed values are isolated; vendor-only legacy keys require an explicit
+  exact-vendor profile and are disabled by default.
+
+Verification: focused config, OCPP, HTTP, and store tests pass. PostgreSQL
+migration and physical-charger acceptance remain unrun without an explicitly
+disposable database and hardware session; no deployment or live mutation ran.
+
 ## 2026-08-21 - Meter quantization evidence and coherent simulator register
 
 - Added migration 011 and explicit raw/effective stop-meter evidence. The HAL

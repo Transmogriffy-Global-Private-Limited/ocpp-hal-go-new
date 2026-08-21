@@ -18,16 +18,23 @@ import (
 )
 
 const defaultHeartbeatIntervalSeconds = 300
+const defaultMeterValueSampleIntervalSeconds = 15
 
 type HAL struct {
-	cs                       ocpp16.CentralSystem
-	registry                 *state.Registry
-	connections              *connectionTracker
-	logger                   *slog.Logger
-	v1Store                  store.V1Store
-	heartbeatIntervalSeconds int
-	runtimeMu                sync.Mutex
-	pendingRuntime           map[string]pendingRuntimeProjection
+	cs                                      ocpp16.CentralSystem
+	registry                                *state.Registry
+	connections                             *connectionTracker
+	logger                                  *slog.Logger
+	v1Store                                 store.V1Store
+	heartbeatIntervalSeconds                int
+	configurationMeterSampleIntervalSeconds int
+	configurationReconcileTimeout           time.Duration
+	vendorConfigurationProfile              string
+	vendorConfigurationVendor               string
+	runtimeMu                               sync.Mutex
+	pendingRuntime                          map[string]pendingRuntimeProjection
+	identityMu                              sync.RWMutex
+	wiredIdentity                           map[string]string
 }
 
 type pendingRuntimeProjection struct {
@@ -39,19 +46,22 @@ type pendingRuntimeProjection struct {
 
 func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *HAL {
 	h := &HAL{
-		cs:                       ocpp16.NewCentralSystem(nil, nil),
-		registry:                 registry,
-		connections:              newConnectionTracker(),
-		logger:                   logger,
-		v1Store:                  v1Store,
-		heartbeatIntervalSeconds: defaultHeartbeatIntervalSeconds,
-		pendingRuntime:           make(map[string]pendingRuntimeProjection),
+		cs:                                      ocpp16.NewCentralSystem(nil, nil),
+		registry:                                registry,
+		connections:                             newConnectionTracker(),
+		logger:                                  logger,
+		v1Store:                                 v1Store,
+		heartbeatIntervalSeconds:                defaultHeartbeatIntervalSeconds,
+		configurationMeterSampleIntervalSeconds: defaultMeterValueSampleIntervalSeconds,
+		configurationReconcileTimeout:           20 * time.Second,
+		pendingRuntime:                          make(map[string]pendingRuntimeProjection),
+		wiredIdentity:                           make(map[string]string),
 	}
 
 	h.cs.SetNewChargingStationValidationHandler(h.validateIncomingCharger)
 
 	h.cs.SetNewChargePointHandler(func(chargePoint ocpp16.ChargePointConnection) {
-		chargePointID := chargePoint.ID()
+		chargePointID := h.canonicalIdentity(chargePoint.ID())
 		connKey := connectionKey(chargePoint)
 
 		current, previous := h.connections.register(chargePointID, connKey, fmt.Sprint(chargePoint.RemoteAddr()))
@@ -79,7 +89,8 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 	})
 
 	h.cs.SetChargePointDisconnectedHandler(func(chargePoint ocpp16.ChargePointConnection) {
-		chargePointID := chargePoint.ID()
+		wireIdentity := chargePoint.ID()
+		chargePointID := h.canonicalIdentity(wireIdentity)
 		connKey := connectionKey(chargePoint)
 
 		isCurrent, current := h.connections.unregisterIfCurrent(chargePointID, connKey)
@@ -111,6 +122,7 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 
 		h.registry.MarkOffline(chargePointID)
 		h.persistRuntimeProjection(context.Background(), pendingRuntimeProjection{identity: chargePointID, generation: int64(current.Generation), online: false, observedAt: time.Now().UTC()})
+		h.forgetWireIdentity(wireIdentity)
 	})
 
 	h.cs.SetCoreHandler(h)
@@ -141,6 +153,7 @@ func (h *HAL) Errors() <-chan error {
 }
 
 func (h *HAL) RemoteStartTransaction(ctx context.Context, chargerID string, idTag string, connectorID int) (string, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	resultCh := make(chan struct {
 		status string
 		err    error
@@ -194,6 +207,7 @@ func (h *HAL) RemoteStartTransaction(ctx context.Context, chargerID string, idTa
 }
 
 func (h *HAL) RemoteStopTransaction(ctx context.Context, chargerID string, transactionID int) (string, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	resultCh := make(chan struct {
 		status string
 		err    error
@@ -238,6 +252,7 @@ func (h *HAL) RemoteStopTransaction(ctx context.Context, chargerID string, trans
 }
 
 func (h *HAL) ChangeAvailability(ctx context.Context, chargerID string, connectorID int, availabilityType string) (string, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	var t core.AvailabilityType
 	switch strings.ToLower(strings.TrimSpace(availabilityType)) {
 	case "operative":
@@ -291,6 +306,7 @@ func (h *HAL) ChangeAvailability(ctx context.Context, chargerID string, connecto
 }
 
 func (h *HAL) ChangeConfiguration(ctx context.Context, chargerID string, key string, value string) (string, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	resultCh := make(chan struct {
 		status string
 		err    error
@@ -334,6 +350,7 @@ func (h *HAL) ChangeConfiguration(ctx context.Context, chargerID string, key str
 }
 
 func (h *HAL) ClearCache(ctx context.Context, chargerID string) (string, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	resultCh := make(chan struct {
 		status string
 		err    error
@@ -375,6 +392,7 @@ func (h *HAL) ClearCache(ctx context.Context, chargerID string) (string, error) 
 }
 
 func (h *HAL) UnlockConnector(ctx context.Context, chargerID string, connectorID int) (string, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	resultCh := make(chan struct {
 		status string
 		err    error
@@ -417,6 +435,7 @@ func (h *HAL) UnlockConnector(ctx context.Context, chargerID string, connectorID
 }
 
 func (h *HAL) Reset(ctx context.Context, chargerID string, resetType string) (string, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	var t core.ResetType
 	switch strings.ToLower(strings.TrimSpace(resetType)) {
 	case "soft":
@@ -469,6 +488,7 @@ func (h *HAL) Reset(ctx context.Context, chargerID string, resetType string) (st
 }
 
 func (h *HAL) GetConfiguration(ctx context.Context, chargerID string, keys []string) (*core.GetConfigurationConfirmation, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	resultCh := make(chan struct {
 		conf *core.GetConfigurationConfirmation
 		err  error
@@ -503,6 +523,7 @@ func (h *HAL) GetConfiguration(ctx context.Context, chargerID string, keys []str
 }
 
 func (h *HAL) OnAuthorize(chargePointID string, request *core.AuthorizeRequest) (*core.AuthorizeConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
 	if h.v1Store == nil || h.v1Store.AuthorizeV1Credential(context.Background(), chargePointID, request.IdTag, time.Now().UTC()) != nil {
 		return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid)), nil
@@ -511,7 +532,20 @@ func (h *HAL) OnAuthorize(chargePointID string, request *core.AuthorizeRequest) 
 }
 
 func (h *HAL) OnBootNotification(chargePointID string, request *core.BootNotificationRequest) (*core.BootNotificationConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
+	if h.v1Store != nil && request != nil {
+		evidence := store.V1BootEvidence{ChargeBoxSerialNumber: request.ChargeBoxSerialNumber, ChargePointSerialNumber: request.ChargePointSerialNumber, ChargePointVendor: request.ChargePointVendor, ChargePointModel: request.ChargePointModel, FirmwareVersion: request.FirmwareVersion, ObservedAt: time.Now().UTC()}
+		if wireIdentity := h.wireIdentityFor(chargePointID); wireIdentity != chargePointID {
+			evidence.PathSerial = wireIdentity
+		}
+		if err := h.v1Store.RecordV1BootEvidence(context.Background(), chargePointID, evidence); err != nil && !errors.Is(err, store.ErrV1MappingNotFound) {
+			h.logger.Warn("failed to persist charger boot identity evidence", "charge_point_id", chargePointID, "serial_present", evidence.PathSerial != "" || evidence.ChargePointSerialNumber != "" || evidence.ChargeBoxSerialNumber != "", "error", err)
+		}
+	}
+	if current, ok := h.connections.current(chargePointID); ok {
+		h.scheduleConfigurationReconciliation(chargePointID, int64(current.Generation), request)
+	}
 
 	return core.NewBootNotificationConfirmation(
 		types.NewDateTime(time.Now().UTC()),
@@ -521,11 +555,13 @@ func (h *HAL) OnBootNotification(chargePointID string, request *core.BootNotific
 }
 
 func (h *HAL) OnDataTransfer(chargePointID string, request *core.DataTransferRequest) (*core.DataTransferConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
 	return core.NewDataTransferConfirmation(core.DataTransferStatusAccepted), nil
 }
 
 func (h *HAL) OnHeartbeat(chargePointID string, request *core.HeartbeatRequest) (*core.HeartbeatConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
 	if h.v1Store != nil {
 		if current, ok := h.connections.current(chargePointID); ok {
@@ -538,6 +574,7 @@ func (h *HAL) OnHeartbeat(chargePointID string, request *core.HeartbeatRequest) 
 }
 
 func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNotificationRequest) (*core.StatusNotificationConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	if h.v1Store == nil {
 		return nil, errors.New("StatusNotification requires durable v1 storage")
 	}
@@ -561,6 +598,7 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 }
 
 func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransactionRequest) (*core.StartTransactionConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
 	if h.v1Store == nil || !strings.HasPrefix(request.IdTag, "appv1_") {
 		return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid), 0), nil
@@ -591,6 +629,7 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 }
 
 func (h *HAL) OnMeterValues(chargePointID string, request *core.MeterValuesRequest) (*core.MeterValuesConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
 	if h.HandleV1MeterValues(chargePointID, request) == meterPersistenceFailed {
 		return nil, errors.New("MeterValues was not durably persisted")
@@ -632,6 +671,7 @@ func (h *HAL) retryRuntimeProjections(ctx context.Context) {
 }
 
 func (h *HAL) OnStopTransaction(chargePointID string, request *core.StopTransactionRequest) (*core.StopTransactionConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
 	if !h.HandleV1StopTransaction(chargePointID, request) {
 		return nil, errors.New("StopTransaction was not durably persisted")

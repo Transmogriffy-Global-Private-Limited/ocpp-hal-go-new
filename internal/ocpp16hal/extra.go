@@ -21,6 +21,7 @@ func (h *HAL) GetDiagnostics(
 	retries *int,
 	retryInterval *int,
 ) (*firmware.GetDiagnosticsConfirmation, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	props := []func(*firmware.GetDiagnosticsRequest){}
 
 	if retries != nil {
@@ -100,6 +101,7 @@ func (h *HAL) UpdateFirmware(
 	retries *int,
 	retryInterval *int,
 ) error {
+	chargerID = h.wireIdentityFor(chargerID)
 	retrieveDate, err := parseRequiredDateTime(retrieveDateRaw)
 	if err != nil {
 		return fmt.Errorf("invalid retrieve_date: %w", err)
@@ -154,6 +156,7 @@ func (h *HAL) UpdateFirmware(
 }
 
 func (h *HAL) TriggerMessage(ctx context.Context, chargerID string, requestedMessage string, connectorID int) (string, error) {
+	chargerID = h.wireIdentityFor(chargerID)
 	props := []func(*remotetrigger.TriggerMessageRequest){}
 
 	if connectorID > 0 {
@@ -207,12 +210,14 @@ func (h *HAL) TriggerMessage(ctx context.Context, chargerID string, requestedMes
 }
 
 func (h *HAL) OnDiagnosticsStatusNotification(chargePointID string, request *firmware.DiagnosticsStatusNotificationRequest) (*firmware.DiagnosticsStatusNotificationConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
 	h.logger.Info("diagnostics status notification", "charge_point_id", chargePointID, "status", request.Status)
 	return firmware.NewDiagnosticsStatusNotificationConfirmation(), nil
 }
 
 func (h *HAL) OnFirmwareStatusNotification(chargePointID string, request *firmware.FirmwareStatusNotificationRequest) (*firmware.FirmwareStatusNotificationConfirmation, error) {
+	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
 	h.logger.Info("firmware status notification", "charge_point_id", chargePointID, "status", request.Status)
 	return firmware.NewFirmwareStatusNotificationConfirmation(), nil

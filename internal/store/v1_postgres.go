@@ -30,7 +30,7 @@ func (s *PostgresStore) SyncV1Mapping(ctx context.Context, input V1MappingInput)
 		return nil, false, ErrV1MappingConflict
 	}
 	if created {
-		_, err = tx.ExecContext(ctx, `INSERT INTO v1_charger_mappings (cms_charger_id, cpo_id, charger_ocpp_identity, enabled) VALUES ($1,$2,$3,$4)`, input.CMSChargerID, input.CPOID, input.ChargerOCPPIdentity, input.Enabled)
+		_, err = tx.ExecContext(ctx, `INSERT INTO v1_charger_mappings (cms_charger_id, cpo_id, charger_ocpp_identity, expected_serial, enabled) VALUES ($1,$2,$3,NULLIF($4,''),$5)`, input.CMSChargerID, input.CPOID, input.ChargerOCPPIdentity, input.ExpectedSerial, input.Enabled)
 		if err != nil {
 			if isDuplicate(err) {
 				return nil, false, ErrV1MappingConflict
@@ -61,8 +61,8 @@ func (s *PostgresStore) SyncV1Mapping(ctx context.Context, input V1MappingInput)
 		}
 	}
 
-	if !created && existingEnabled != input.Enabled {
-		_, err = tx.ExecContext(ctx, `UPDATE v1_charger_mappings SET enabled=$2, updated_at=NOW() WHERE cms_charger_id=$1`, input.CMSChargerID, input.Enabled)
+	if !created {
+		_, err = tx.ExecContext(ctx, `UPDATE v1_charger_mappings SET enabled=$2, expected_serial=NULLIF($3,''), updated_at=NOW() WHERE cms_charger_id=$1`, input.CMSChargerID, input.Enabled, input.ExpectedSerial)
 		if err != nil {
 			return nil, false, err
 		}
@@ -99,7 +99,7 @@ func (s *PostgresStore) SyncV1Mapping(ctx context.Context, input V1MappingInput)
 
 func (s *PostgresStore) loadV1Mapping(ctx context.Context, cmsChargerID string) (*V1ChargerMapping, error) {
 	m := &V1ChargerMapping{}
-	err := s.db.QueryRowContext(ctx, `SELECT cpo_id::text,cms_charger_id::text,charger_ocpp_identity,enabled FROM v1_charger_mappings WHERE cms_charger_id=$1`, cmsChargerID).Scan(&m.CPOID, &m.CMSChargerID, &m.ChargerOCPPIdentity, &m.Enabled)
+	err := s.db.QueryRowContext(ctx, `SELECT cpo_id::text,cms_charger_id::text,charger_ocpp_identity,COALESCE(expected_serial,''),enabled FROM v1_charger_mappings WHERE cms_charger_id=$1`, cmsChargerID).Scan(&m.CPOID, &m.CMSChargerID, &m.ChargerOCPPIdentity, &m.ExpectedSerial, &m.Enabled)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrV1MappingNotFound
 	}
@@ -138,9 +138,10 @@ func (s *PostgresStore) ValidateV1Mapping(ctx context.Context, cpoID, cmsCharger
 
 // ValidateV1ChargerAdmission is the connection-time guard. A mapped identity
 // must also be enabled before it may create any runtime observation.
-func (s *PostgresStore) ValidateV1ChargerAdmission(ctx context.Context, identity string) error {
+func (s *PostgresStore) ValidateV1ChargerAdmission(ctx context.Context, identity, presentedSerial string) error {
 	var enabled bool
-	err := s.db.QueryRowContext(ctx, `SELECT enabled FROM v1_charger_mappings WHERE charger_ocpp_identity=$1`, identity).Scan(&enabled)
+	var expectedSerial string
+	err := s.db.QueryRowContext(ctx, `SELECT enabled,COALESCE(expected_serial,'') FROM v1_charger_mappings WHERE charger_ocpp_identity=$1`, identity).Scan(&enabled, &expectedSerial)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrV1MappingNotFound
 	}
@@ -150,7 +151,30 @@ func (s *PostgresStore) ValidateV1ChargerAdmission(ctx context.Context, identity
 	if !enabled {
 		return ErrV1CredentialRejected
 	}
+	if expectedSerial != "" && presentedSerial != "" && expectedSerial != presentedSerial {
+		return ErrV1IdentityConflict
+	}
 	return nil
+}
+
+func (s *PostgresStore) RecordV1BootEvidence(ctx context.Context, identity string, evidence V1BootEvidence) error {
+	var expectedSerial string
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(expected_serial,'') FROM v1_charger_mappings WHERE charger_ocpp_identity=$1`, identity).Scan(&expectedSerial)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrV1MappingNotFound
+	}
+	if err != nil {
+		return err
+	}
+	serialConflict := expectedSerial != "" && evidence.PathSerial != "" && evidence.PathSerial != expectedSerial
+	if !serialConflict && expectedSerial != "" && evidence.ChargePointSerialNumber != "" && evidence.ChargePointSerialNumber != expectedSerial {
+		serialConflict = true
+	}
+	if !serialConflict && expectedSerial != "" && evidence.ChargeBoxSerialNumber != "" && evidence.ChargeBoxSerialNumber != expectedSerial {
+		serialConflict = true
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO v1_charger_boot_evidence (charger_ocpp_identity,path_serial,charge_box_serial_number,charge_point_serial_number,charge_point_vendor,charge_point_model,firmware_version,serial_conflict,observed_at) VALUES ($1,NULLIF($2,''),NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),NULLIF($7,''),$8,$9) ON CONFLICT (charger_ocpp_identity) DO UPDATE SET path_serial=EXCLUDED.path_serial,charge_box_serial_number=EXCLUDED.charge_box_serial_number,charge_point_serial_number=EXCLUDED.charge_point_serial_number,charge_point_vendor=EXCLUDED.charge_point_vendor,charge_point_model=EXCLUDED.charge_point_model,firmware_version=EXCLUDED.firmware_version,serial_conflict=EXCLUDED.serial_conflict,observed_at=EXCLUDED.observed_at`, identity, evidence.PathSerial, evidence.ChargeBoxSerialNumber, evidence.ChargePointSerialNumber, evidence.ChargePointVendor, evidence.ChargePointModel, evidence.FirmwareVersion, serialConflict, evidence.ObservedAt)
+	return err
 }
 
 func (s *PostgresStore) CreateV1StartCommand(ctx context.Context, input V1StartCommandInput) (*V1RemoteCommand, bool, error) {

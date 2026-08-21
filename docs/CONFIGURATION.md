@@ -19,7 +19,16 @@ development.
 ## Validated settings
 
 - `F_SERVER_PORT`, `OCPP_LISTEN_PORT`, and `DB_PORT`: `1..65535`.
-- `OCPP_HEARTBEAT_INTERVAL_SECONDS`: `1..86400`, default `300`.
+- `OCPP_HEARTBEAT_INTERVAL_SECONDS`: `1..86400`, default `300`; this is both
+  the BootNotification interval and the standard configuration target.
+- `OCPP_METER_VALUE_SAMPLE_INTERVAL_SECONDS`: `1..3600`, default `15`; HAL
+  requests this standard OCPP key after Boot. CMS's default `30s` meter-display
+  freshness window remains compatible with the requested cadence.
+- `OCPP_CONFIGURATION_RECONCILE_TIMEOUT_SECONDS`: `1..120`, default `20`;
+  bounded asynchronous per-boot configuration reconciliation.
+- `OCPP_VENDOR_CONFIGURATION_PROFILE`: empty (default) or `legacy-remote-only`.
+  A non-empty profile also requires the exact `OCPP_VENDOR_CONFIGURATION_VENDOR`.
+  Vendor keys are never applied to another vendor or inferred from a URL.
 - `LOG_LEVEL`: `debug`, `info`, `warn`/`warning`, or `error`; default `info`.
 - `HAL_V1_FACT_DELIVERY_ENABLED` and `API_DOCS_ENABLED`: strict Go boolean
   syntax; both default to `false` only when absent.
