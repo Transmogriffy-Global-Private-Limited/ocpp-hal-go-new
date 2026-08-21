@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"testing"
 	"time"
@@ -10,9 +11,9 @@ import (
 )
 
 func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
-	dsn := os.Getenv("DATABASE_URL")
+	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {
-		t.Skip("DATABASE_URL is required for PostgreSQL v1 integration test")
+		t.Skip("TEST_DATABASE_URL is required for PostgreSQL v1 integration test")
 	}
 	ctx := context.Background()
 	s, err := NewPostgresStore(config.Config{DatabaseURL: dsn})
@@ -108,6 +109,10 @@ func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 	if err != nil || accepted || regressive.MeterSequence != 1 || *regressive.LatestMeterWh != 21345 {
 		t.Fatalf("regressive meter=%#v accepted=%v err=%v", regressive, accepted, err)
 	}
+	quantized, accepted, err := s.UpdateV1MeterForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, 21344, now.Add(2*time.Second))
+	if err != nil || accepted || quantized.MeterSequence != 1 || quantized.LatestMeterWh == nil || *quantized.LatestMeterWh != 21345 || quantized.MeterQuantizationAnomalyCount != 1 {
+		t.Fatalf("one Wh periodic rollback=%#v accepted=%v err=%v", quantized, accepted, err)
+	}
 	workflow, err := s.GetV1StopWorkflow(ctx, tx.HALTransactionID)
 	if err != nil || workflow.RequestedStopInitiator != "ENERGY_LIMIT" || workflow.State != "PERSISTED" {
 		t.Fatalf("energy workflow=%#v err=%v", workflow, err)
@@ -123,13 +128,25 @@ func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 	if stop, duplicate, err := s.CreateV1StopCommand(ctx, stopInput); err != nil || !duplicate || stop.HALTransactionID != tx.HALTransactionID {
 		t.Fatalf("duplicate stop command=%#v duplicate=%v err=%v", stop, duplicate, err)
 	}
-	completed, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 22400, "Remote", now.Add(3*time.Second), now.Add(3*time.Second))
-	if err != nil || completed.CompletedAt == nil || completed.MeterStopWh == nil || *completed.MeterStopWh != 22400 || completed.OCPPStopReason != "Remote" || completed.RequestedStopInitiator != "ENERGY_LIMIT" {
+	completed, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 21344, "Remote", now.Add(3*time.Second), now.Add(3*time.Second))
+	if err != nil || completed.CompletedAt == nil || completed.MeterStopWh == nil || *completed.MeterStopWh != 21345 || completed.RawMeterStopWh == nil || *completed.RawMeterStopWh != 21344 || completed.MeterStopAdjustmentWh == nil || *completed.MeterStopAdjustmentWh != 1 || completed.MeterStopEvidence != string(v1MeterEvidenceQuantizationNormalized) || completed.OCPPStopReason != "Remote" || completed.RequestedStopInitiator != "ENERGY_LIMIT" {
 		t.Fatalf("completion=%#v err=%v", completed, err)
 	}
 	facts, err := s.ClaimV1Facts(ctx, now.Add(time.Minute), 20)
 	if err != nil || len(facts) < 3 {
 		t.Fatalf("facts=%d err=%v", len(facts), err)
+	}
+	var completionPayload map[string]any
+	for _, fact := range facts {
+		if fact.FactType == "transaction.completed" {
+			if err := json.Unmarshal(fact.Payload, &completionPayload); err != nil {
+				t.Fatal(err)
+			}
+			break
+		}
+	}
+	if completionPayload["meter_stop_wh"] != float64(21345) || completionPayload["raw_meter_stop_wh"] != float64(21344) || completionPayload["meter_stop_adjustment_wh"] != float64(1) || completionPayload["meter_stop_evidence"] != string(v1MeterEvidenceQuantizationNormalized) {
+		t.Fatalf("completion fact payload=%#v", completionPayload)
 	}
 	command, err = s.GetV1Command(ctx, commandInput.CMSCommandID)
 	if err != nil || command.State != "MATERIALIZED" {

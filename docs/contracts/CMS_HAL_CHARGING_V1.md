@@ -390,6 +390,9 @@ backdate authorization.
     "ocpp_connector_number": 1,
     "meter_start_wh": 102345,
     "meter_stop_wh": 119840,
+    "raw_meter_stop_wh": 119839,
+    "meter_stop_adjustment_wh": 1,
+    "meter_stop_evidence": "QUANTIZATION_NORMALIZED",
     "stopped_at": "2026-08-10T12:31:08Z",
     "ocpp_stop_reason": "Local",
     "requested_stop_initiator": "customer",
@@ -400,7 +403,14 @@ backdate authorization.
 
 `hal_command_id`, `cms_command_id`, and requested-stop fields are nullable when
 the charger stopped locally or no stop command correlates. HAL transaction ID,
-exact OCPP transaction ID, mapping, meters, and OCPP timestamp remain required.
+exact OCPP transaction ID, mapping, effective `meter_stop_wh`, and OCPP
+timestamp remain required. New completion facts optionally retain
+`raw_meter_stop_wh`, `meter_stop_adjustment_wh`, and `meter_stop_evidence`.
+They are present only when HAL has raw evidence from this version; historical
+facts remain valid without them and retain `schema_version: 1`. A one-Wh
+`QUANTIZATION_NORMALIZED` value means the raw stop was one Wh below the latest
+temporally eligible meter sample, so `meter_stop_wh` remains the authoritative
+nondecreasing/billable cumulative value.
 
 ### 8.4 `command.updated`
 
@@ -757,8 +767,11 @@ without creating a local or durable projection because it cannot be correlated.
 For `MeterValues`, a supported integer-Wh energy register correlated to an
 active v1 transaction is persisted before acknowledgement. Store failure is a
 protocol error so a valid observation cannot silently vanish. Unsupported
-samples, unknown transactions, duplicate values, and rejected stale/regressive
-evidence are acknowledged without advancing durable meter state.
+samples, unknown transactions, duplicate values, and stale/regressive evidence
+are acknowledged without advancing durable meter state. A one-Wh periodic
+rollback is counted as a bounded quantization anomaly; it does not replace the
+latest meter or emit a regressive fact. A material rollback remains ignored and
+acknowledged.
 
 Heartbeat is repeatable liveness evidence, not a non-reconstructable lifecycle
 event. HAL logs a failed renewal but returns the normal confirmation; a later

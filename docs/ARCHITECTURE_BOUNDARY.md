@@ -37,9 +37,12 @@ outside this work.
   trusted receipt timestamp, accepts only bounded clock skew, and bases
   security/deadline decisions on the trusted receipt.
 - HAL accepts a completion only when its exact OCPP transaction identity,
-  connector, nondecreasing cumulative meter, protocol ordering, and receipt
-  ordering validate. A conflicting duplicate completion is rejected and does
-  not create a completed fact.
+  connector, protocol ordering, and receipt ordering validate. Its effective
+  cumulative meter remains nondecreasing: a raw stop one Wh below the latest
+  eligible meter sample may be recorded and normalized solely as a documented
+  register-quantization discrepancy; all other rollbacks are rejected. A
+  conflicting duplicate completion is rejected and does not create a completed
+  fact.
 - CMS charger UUID, public charger ID, OCPP identity, CMS connector UUID, OCPP
   connector number, CPO/customer/group IDs, CMS start intent/session/command,
   app credential/idTag, HAL command/transaction IDs, and OCPP transaction ID

@@ -132,4 +132,37 @@ func TestV1MemoryStoreUsesReceiptTimeAndRejectsInvalidCompletionEvidence(t *test
 	if _, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 110, "Remote", now.Add(-time.Second), now.Add(time.Second)); !errors.Is(err, ErrV1InvalidEvidence) {
 		t.Fatalf("completion before start err=%v", err)
 	}
+	if _, err := s.UpdateV1Meter(ctx, tx.HALTransactionID, 1, 110, now.Add(3*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 109, "Remote", now.Add(2*time.Second), now.Add(2*time.Second)); !errors.Is(err, ErrV1InvalidEvidence) {
+		t.Fatalf("post-stop meter timestamp must not justify normalization, err=%v", err)
+	}
+}
+
+func TestV1MemoryStoreNormalizesOnlyOneWhCompletionRollback(t *testing.T) {
+	ctx := context.Background()
+	s := NewV1MemoryStore()
+	now := time.Now().UTC().Truncate(time.Second)
+	_, _, err := s.CreateV1StartCommand(ctx, V1StartCommandInput{CMSCommandID: MustNewUUIDString(), RequestDigest: "quantized", CPOID: MustNewUUIDString(), CMSStartIntentID: MustNewUUIDString(), CMSChargerID: MustNewUUIDString(), CMSConnectorID: MustNewUUIDString(), ChargerOCPPIdentity: "CP-QUANTIZED", OCPPConnectorNumber: 1, IDTag: "appv1_quantized", CredentialExpiresAt: now.Add(time.Minute), CommandExpiresAt: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx, _, err := s.MaterializeV1Start(ctx, V1StartMaterialization{ChargerOCPPIdentity: "CP-QUANTIZED", OCPPConnectorNumber: 1, IDTag: "appv1_quantized", MeterStartWh: 100000, ActualStartedAt: now, ObservedAt: now, OCPPTransactionID: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.UpdateV1Meter(ctx, tx.HALTransactionID, 1, 100185, now.Add(time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	completed, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 100184, "Local", now.Add(2*time.Second), now.Add(2*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if completed.MeterStopWh == nil || *completed.MeterStopWh != 100185 || completed.RawMeterStopWh == nil || *completed.RawMeterStopWh != 100184 || completed.MeterStopAdjustmentWh == nil || *completed.MeterStopAdjustmentWh != 1 || completed.MeterStopEvidence != string(v1MeterEvidenceQuantizationNormalized) {
+		t.Fatalf("normalized completion = %#v", completed)
+	}
+	if _, err := s.CompleteV1Transaction(ctx, tx.HALTransactionID, 100183, "Local", now.Add(2*time.Second), now.Add(2*time.Second)); !errors.Is(err, ErrV1InvalidEvidence) {
+		t.Fatalf("different duplicate must reject, err=%v", err)
+	}
 }

@@ -40,10 +40,14 @@ Completed in this slice:
   implemented in source. Migration 010 adds the nullable claim token; a
   delayed former lease owner is rejected instead of overwriting a reclaimed
   fact. PostgreSQL confirmation remains pending a disposable database.
+- Meter quantization evidence hardening is implemented in source. Migration
+  011 preserves raw stop readings while an effective nondecreasing stop meter
+  may normalize only a coherent one-Wh register discrepancy. `cpconsole` now
+  uses one rounded OCPP meter conversion at every transaction boundary.
 
 ## Next Approved Work
 
-1. Apply and verify the additive v1 transaction-evidence migration against a
+1. Apply and verify additive migrations 010 and 011 against a
    clearly disposable PostgreSQL database, including stop-worker crash and
    recovery behavior.
 2. Expand real-device acceptance coverage for energy/time stop races and

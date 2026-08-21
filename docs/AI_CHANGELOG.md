@@ -1,5 +1,24 @@
 # AI-assisted changelog
 
+## 2026-08-21 - Meter quantization evidence and coherent simulator register
+
+- Added migration 011 and explicit raw/effective stop-meter evidence. The HAL
+  retains a raw stop reading, adjustment, and classification while preserving
+  `meter_stop_wh` as the nondecreasing authoritative meter. Only a one-Wh
+  StopTransaction rollback with eligible temporal evidence normalizes; larger
+  rollbacks still reject completion. Periodic one-Wh rollbacks are durably
+  counted without moving the meter or emitting a regressive fact.
+- Completion facts keep schema version 1 and add the raw/adjustment/evidence
+  fields only when available. CMS remains compatible because its receiver uses
+  `meter_stop_wh` as the billing/session value and ignores additive fields.
+- `cpconsole` now uses one checked rounded conversion for StartTransaction,
+  MeterValues, and StopTransaction, removing its former rounded-versus-
+  truncated register disagreement.
+
+Verification: focused store, OCPP, and simulator tests pass. PostgreSQL
+lifecycle verification requires `TEST_DATABASE_URL` and was not run without a
+clearly disposable database; no database or deployment was changed.
+
 ## 2026-08-20 - Fact-delivery claim fencing and explicit config presence
 
 - Added migration 010 and a secure fact-delivery claim token. Delivery state

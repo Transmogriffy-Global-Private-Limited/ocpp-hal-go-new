@@ -160,7 +160,14 @@ func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTr
 		h.logger.Error("failed to complete v1 transaction", "hal_transaction_id", transaction.HALTransactionID, "error", err)
 		return false
 	}
-	h.registry.ApplyStopTransaction(chargePointID, completed.OCPPConnectorNumber, float64(request.MeterStop))
+	if completed.MeterStopWh == nil {
+		h.logger.Error("completed v1 transaction has no effective stop meter", "hal_transaction_id", completed.HALTransactionID)
+		return false
+	}
+	if completed.RawMeterStopWh != nil && completed.MeterStopAdjustmentWh != nil && *completed.RawMeterStopWh != *completed.MeterStopWh {
+		h.logger.Info("normalized v1 stop meter quantization evidence", "hal_transaction_id", completed.HALTransactionID, "charge_point_id", chargePointID, "raw_meter_stop_wh", *completed.RawMeterStopWh, "effective_meter_stop_wh", *completed.MeterStopWh, "meter_stop_adjustment_wh", *completed.MeterStopAdjustmentWh, "meter_stop_evidence", completed.MeterStopEvidence)
+	}
+	h.registry.ApplyStopTransaction(chargePointID, completed.OCPPConnectorNumber, float64(*completed.MeterStopWh))
 	return true
 }
 

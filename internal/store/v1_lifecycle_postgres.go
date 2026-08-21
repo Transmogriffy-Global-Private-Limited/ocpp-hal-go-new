@@ -164,6 +164,11 @@ func v1CompletedFact(t *V1Transaction, command *V1RemoteCommand) map[string]any 
 	if t.RequestedStopReason != "" {
 		payload["requested_stop_reason"] = t.RequestedStopReason
 	}
+	if t.RawMeterStopWh != nil && t.MeterStopAdjustmentWh != nil && t.MeterStopEvidence != "" {
+		payload["raw_meter_stop_wh"] = *t.RawMeterStopWh
+		payload["meter_stop_adjustment_wh"] = *t.MeterStopAdjustmentWh
+		payload["meter_stop_evidence"] = t.MeterStopEvidence
+	}
 	return payload
 }
 
@@ -217,7 +222,25 @@ func (s *PostgresStore) UpdateV1MeterForOCPP(ctx context.Context, identity strin
 	if err != nil {
 		return nil, false, err
 	}
-	if completed.Valid || meterWh < meterStart || (latest.Valid && meterWh < latest.Int64) {
+	if completed.Valid || meterWh < meterStart {
+		if err := tx.Commit(); err != nil {
+			return nil, false, err
+		}
+		current, getErr := s.GetV1Transaction(ctx, halID)
+		return current, false, getErr
+	}
+	if latest.Valid && meterWh < latest.Int64 {
+		classification, classifyErr := classifyV1MeterEvidence(meterStart, &latest.Int64, meterWh)
+		if classifyErr != nil || classification.Class != v1MeterEvidenceQuantizationNormalized {
+			if err := tx.Commit(); err != nil {
+				return nil, false, err
+			}
+			current, getErr := s.GetV1Transaction(ctx, halID)
+			return current, false, getErr
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_quantization_anomaly_count=meter_quantization_anomaly_count+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID); err != nil {
+			return nil, false, err
+		}
 		if err := tx.Commit(); err != nil {
 			return nil, false, err
 		}
@@ -483,7 +506,11 @@ func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string,
 		return nil, err
 	}
 	if t.CompletedAt != nil {
-		if t.MeterStopWh == nil || *t.MeterStopWh != meterStopWh || t.OCPPStopReason != ocppReason || !t.CompletedAt.Equal(completedAt) {
+		expectedRaw := t.MeterStopWh
+		if t.RawMeterStopWh != nil {
+			expectedRaw = t.RawMeterStopWh
+		}
+		if expectedRaw == nil || *expectedRaw != meterStopWh || t.OCPPStopReason != ocppReason || !t.CompletedAt.Equal(completedAt) {
 			return nil, ErrV1InvalidEvidence
 		}
 		if err := tx.Commit(); err != nil {
@@ -491,14 +518,25 @@ func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string,
 		}
 		return t, nil
 	}
-	if meterStopWh < t.MeterStartWh || (t.LatestMeterWh != nil && meterStopWh < *t.LatestMeterWh) || completedAt.Before(t.ActualStartedAt) || observedAt.Before(t.ObservedStartedAt) || !plausibleV1ProtocolTime(completedAt, observedAt) {
+	if completedAt.Before(t.ActualStartedAt) || observedAt.Before(t.ObservedStartedAt) || !plausibleV1ProtocolTime(completedAt, observedAt) {
 		return nil, ErrV1InvalidEvidence
 	}
+	if t.MeterObservedAt != nil && t.MeterObservedAt.After(completedAt) && t.LatestMeterWh != nil && meterStopWh < *t.LatestMeterWh {
+		// A protocol sample timestamped after the supplied stop cannot explain
+		// rounding normalization. Do not let charger clock ordering hide a
+		// non-monotonic authoritative projection.
+		return nil, ErrV1InvalidEvidence
+	}
+	classification, classifyErr := classifyV1MeterEvidence(t.MeterStartWh, t.LatestMeterWh, meterStopWh)
+	if classifyErr != nil {
+		return nil, ErrV1InvalidEvidence
+	}
+	effectiveStopWh := classification.EffectiveWh
 	meterObservedAt := completedAt
 	if t.MeterObservedAt != nil && meterObservedAt.Before(*t.MeterObservedAt) {
 		meterObservedAt = *t.MeterObservedAt
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_stop_wh=$2,latest_meter_wh=$2,meter_observed_at=$3,ocpp_stop_reason=$4,completed_at=$5,observed_completed_at=$6,stop_state='COMPLETED',updated_at=NOW() WHERE hal_transaction_id=$1`, halID, meterStopWh, meterObservedAt, nullString(ocppReason), completedAt, observedAt)
+	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_stop_wh=$2,raw_meter_stop_wh=$3,meter_stop_adjustment_wh=$4,meter_stop_evidence=$5,latest_meter_wh=$2,meter_observed_at=$6,ocpp_stop_reason=$7,completed_at=$8,observed_completed_at=$9,stop_state='COMPLETED',updated_at=NOW() WHERE hal_transaction_id=$1`, halID, effectiveStopWh, meterStopWh, classification.AdjustmentWh, classification.Class, meterObservedAt, nullString(ocppReason), completedAt, observedAt)
 	if err != nil {
 		return nil, err
 	}

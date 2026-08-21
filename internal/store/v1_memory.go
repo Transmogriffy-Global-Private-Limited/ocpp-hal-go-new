@@ -134,7 +134,12 @@ func (s *V1MemoryStore) UpdateV1Meter(_ context.Context, halTransactionID string
 		return nil, ErrV1TransactionNotFound
 	}
 	if tx.LatestMeterWh != nil && meterWh < *tx.LatestMeterWh {
-		return cloneV1Transaction(tx), ErrV1InvalidEvidence
+		classification, err := classifyV1MeterEvidence(tx.MeterStartWh, tx.LatestMeterWh, meterWh)
+		if err != nil || classification.Class != v1MeterEvidenceQuantizationNormalized {
+			return cloneV1Transaction(tx), ErrV1InvalidEvidence
+		}
+		tx.MeterQuantizationAnomalyCount++
+		return cloneV1Transaction(tx), nil
 	}
 	tx.LatestMeterWh = &meterWh
 	consumed := meterWh - tx.MeterStartWh
@@ -168,22 +173,34 @@ func (s *V1MemoryStore) CompleteV1Transaction(_ context.Context, halTransactionI
 		return nil, ErrV1TransactionNotFound
 	}
 	if tx.CompletedAt != nil {
-		if tx.MeterStopWh == nil || *tx.MeterStopWh != meterStopWh || tx.OCPPStopReason != ocppReason || !tx.CompletedAt.Equal(completedAt) {
+		expectedRaw := tx.MeterStopWh
+		if tx.RawMeterStopWh != nil {
+			expectedRaw = tx.RawMeterStopWh
+		}
+		if expectedRaw == nil || *expectedRaw != meterStopWh || tx.OCPPStopReason != ocppReason || !tx.CompletedAt.Equal(completedAt) {
 			return nil, ErrV1InvalidEvidence
 		}
 		return cloneV1Transaction(tx), nil
 	}
-	if meterStopWh < tx.MeterStartWh || (tx.LatestMeterWh != nil && meterStopWh < *tx.LatestMeterWh) || completedAt.Before(tx.ActualStartedAt) || observedAt.Before(tx.ObservedStartedAt) || !plausibleV1ProtocolTime(completedAt, observedAt) {
+	if completedAt.Before(tx.ActualStartedAt) || observedAt.Before(tx.ObservedStartedAt) || !plausibleV1ProtocolTime(completedAt, observedAt) {
 		return nil, ErrV1InvalidEvidence
 	}
-	tx.MeterStopWh = &meterStopWh
-	tx.LatestMeterWh = &meterStopWh
-	if meterStopWh >= tx.MeterStartWh {
-		consumed := meterStopWh - tx.MeterStartWh
-		tx.ConsumedWh = &consumed
-	} else {
-		tx.ConsumedWh = nil
+	if tx.MeterObservedAt != nil && tx.MeterObservedAt.After(completedAt) && tx.LatestMeterWh != nil && meterStopWh < *tx.LatestMeterWh {
+		return nil, ErrV1InvalidEvidence
 	}
+	classification, err := classifyV1MeterEvidence(tx.MeterStartWh, tx.LatestMeterWh, meterStopWh)
+	if err != nil {
+		return nil, ErrV1InvalidEvidence
+	}
+	effectiveStopWh := classification.EffectiveWh
+	tx.MeterStopWh = &effectiveStopWh
+	tx.RawMeterStopWh = &meterStopWh
+	adjustment := classification.AdjustmentWh
+	tx.MeterStopAdjustmentWh = &adjustment
+	tx.MeterStopEvidence = string(classification.Class)
+	tx.LatestMeterWh = &effectiveStopWh
+	consumed := effectiveStopWh - tx.MeterStartWh
+	tx.ConsumedWh = &consumed
 	if tx.MeterObservedAt == nil || completedAt.After(*tx.MeterObservedAt) {
 		tx.MeterObservedAt = &completedAt
 	}
@@ -251,6 +268,8 @@ func cloneV1Transaction(transaction *V1Transaction) *V1Transaction {
 	copy.LatestMeterWh = cloneInt64(transaction.LatestMeterWh)
 	copy.ConsumedWh = cloneInt64(transaction.ConsumedWh)
 	copy.MeterStopWh = cloneInt64(transaction.MeterStopWh)
+	copy.RawMeterStopWh = cloneInt64(transaction.RawMeterStopWh)
+	copy.MeterStopAdjustmentWh = cloneInt64(transaction.MeterStopAdjustmentWh)
 	copy.EnergyLimitWh = cloneInt64(transaction.EnergyLimitWh)
 	copy.MaxDurationSeconds = cloneInt64(transaction.MaxDurationSeconds)
 	if transaction.MeterObservedAt != nil {

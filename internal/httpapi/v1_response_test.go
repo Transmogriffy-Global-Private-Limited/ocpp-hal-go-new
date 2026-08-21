@@ -51,7 +51,7 @@ func (s *v1ResponseTestStore) ClaimV1StopDelivery(context.Context, string) (*sto
 }
 
 func TestV1CommandHTTPResponsesUseCanonicalSnakeCase(t *testing.T) {
-	now := time.Date(2026, time.August, 20, 12, 0, 0, 0, time.UTC)
+	now := time.Now().UTC().Truncate(time.Second)
 	transactionID := store.NewUUIDString()
 	transactionNumber := int64(42)
 	startID, stopID := store.NewUUIDString(), store.NewUUIDString()

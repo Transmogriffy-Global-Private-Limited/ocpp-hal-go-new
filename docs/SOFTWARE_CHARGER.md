@@ -162,6 +162,12 @@ unplug
 → StatusNotification Available
 ```
 
+The simulator retains a fractional internal register for energy accumulation,
+but `StartTransaction`, every `MeterValues` sample, and `StopTransaction` all
+use the same finite, non-negative, rounded integer-Wh conversion. The same
+physical register therefore cannot be rounded for a periodic sample and
+truncated for StopTransaction.
+
 `tick` never invents unrelated readings. The simulator calculates:
 
 - energy delta from power multiplied by elapsed time;

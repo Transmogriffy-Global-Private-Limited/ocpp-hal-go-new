@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/url"
 	"os"
 	"strconv"
@@ -58,6 +59,8 @@ Fault codes: ConnectorLockFailure, EVCommunicationError, GroundFailure,
 HighTemperature, InternalError, LocalListConflict, OtherError,
 OverCurrentFailure, OverVoltage, PowerMeterFailure, PowerSwitchFailure,
 ReaderFailure, ResetFailure, UnderVoltage, WeakSignal.`
+
+const maxOCPPMeterWh int64 = 2147483647
 
 var (
 	errWorkerStopped        = errors.New("automatic worker stopped")
@@ -676,7 +679,11 @@ func (s *simulator) startTransaction(idTag string, remote bool) error {
 			return err
 		}
 	}
-	conf, err := s.cp.StartTransaction(s.connectorID, idTag, int(meter), types.Now())
+	ocppMeter, err := ocppMeterWh(meter)
+	if err != nil {
+		return fmt.Errorf("start meter: %w", err)
+	}
+	conf, err := s.cp.StartTransaction(s.connectorID, idTag, ocppMeter, types.Now())
 	if err != nil {
 		return fmt.Errorf("StartTransaction: %w", err)
 	}
@@ -748,6 +755,10 @@ func (s *simulator) sendMeterLocked(elapsed time.Duration, powerKW float64) erro
 	soc := s.soc
 	connector := s.connectorID
 	s.mu.Unlock()
+	ocppMeter, err := ocppMeterWh(meterWh)
+	if err != nil {
+		return fmt.Errorf("meter value: %w", err)
+	}
 
 	current := 0.0
 	if voltage > 0 {
@@ -756,20 +767,20 @@ func (s *simulator) sendMeterLocked(elapsed time.Duration, powerKW float64) erro
 	values := []types.MeterValue{{
 		Timestamp: types.Now(),
 		SampledValue: []types.SampledValue{
-			{Value: fmt.Sprintf("%.0f", meterWh), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandEnergyActiveImportRegister, Unit: types.UnitOfMeasureWh},
+			{Value: strconv.Itoa(ocppMeter), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandEnergyActiveImportRegister, Unit: types.UnitOfMeasureWh},
 			{Value: fmt.Sprintf("%.3f", powerKW), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandPowerActiveImport, Unit: types.UnitOfMeasureKW},
 			{Value: fmt.Sprintf("%.2f", current), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandCurrentImport, Unit: types.UnitOfMeasureA},
 			{Value: fmt.Sprintf("%.1f", voltage), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandVoltage, Unit: types.UnitOfMeasureV},
 			{Value: fmt.Sprintf("%.1f", soc), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandSoC, Unit: types.UnitOfMeasurePercent},
 		},
 	}}
-	_, err := s.cp.MeterValues(connector, values, func(request *core.MeterValuesRequest) {
+	_, err = s.cp.MeterValues(connector, values, func(request *core.MeterValuesRequest) {
 		request.TransactionId = &transaction
 	})
 	if err != nil {
 		return fmt.Errorf("MeterValues: %w", err)
 	}
-	fmt.Printf("[OCPP] MeterValues transactionId=%d meter=%.0fWh (+%.1fWh) power=%.3fkW current=%.2fA voltage=%.1fV soc=%.1f%%\n", transaction, meterWh, deltaWh, powerKW, current, voltage, soc)
+	fmt.Printf("[OCPP] MeterValues transactionId=%d meter=%dWh (+%.1fWh) power=%.3fkW current=%.2fA voltage=%.1fV soc=%.1f%%\n", transaction, ocppMeter, deltaWh, powerKW, current, voltage, soc)
 	return nil
 }
 
@@ -785,7 +796,11 @@ func (s *simulator) stopTransaction(reason core.Reason) error {
 	if transaction == 0 {
 		return errors.New("no active transaction")
 	}
-	conf, err := s.cp.StopTransaction(int(meter), types.Now(), transaction, func(request *core.StopTransactionRequest) {
+	ocppMeter, err := ocppMeterWh(meter)
+	if err != nil {
+		return fmt.Errorf("stop meter: %w", err)
+	}
+	conf, err := s.cp.StopTransaction(ocppMeter, types.Now(), transaction, func(request *core.StopTransactionRequest) {
 		request.IdTag = idTag
 		request.Reason = reason
 	})
@@ -814,6 +829,20 @@ func (s *simulator) stopTransaction(reason core.Reason) error {
 	}
 	fmt.Printf("[OCPP] StopTransaction status=%s transactionId=%d meterStop=%.0fWh reason=%s\n", status, transaction, meter, reason)
 	return nil
+}
+
+// ocppMeterWh is the only conversion from the simulator's fractional internal
+// register to OCPP's integer Wh payload. Every transaction boundary therefore
+// emits the same cumulative value for the same physical register state.
+func ocppMeterWh(value float64) (int, error) {
+	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
+		return 0, errors.New("meter must be a finite non-negative value")
+	}
+	rounded := math.Round(value)
+	if rounded > float64(maxOCPPMeterWh) {
+		return 0, fmt.Errorf("meter exceeds OCPP integer range (%d Wh)", maxOCPPMeterWh)
+	}
+	return int(rounded), nil
 }
 
 func (s *simulator) setStatus(status core.ChargePointStatus, code core.ChargePointErrorCode) error {

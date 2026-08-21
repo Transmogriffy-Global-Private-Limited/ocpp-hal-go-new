@@ -457,8 +457,8 @@ func (s *PostgresStore) getV1TransactionBy(ctx context.Context, q v1TransactionQ
 	t := &V1Transaction{}
 	var customer, initiator, reason, ocppReason sql.NullString
 	var latest, meterObs, deadline, completed, meterStop, observedStarted, observedCompleted sql.NullTime
-	var latestVal, meterStopVal, energy, duration sql.NullInt64
-	err := q.QueryRowContext(ctx, `SELECT hal_transaction_id::text,cms_start_intent_id::text,cms_command_id::text,cpo_id::text,customer_id::text,cms_charger_id::text,cms_connector_id::text,charger_ocpp_identity,ocpp_connector_number,id_tag,ocpp_transaction_id,actual_started_at,observed_started_at,meter_start_wh,latest_meter_wh,meter_observed_at,meter_sequence,energy_limit_wh,max_duration_seconds,stop_deadline_at,stop_state,requested_stop_initiator,requested_stop_reason,ocpp_stop_reason,completed_at,observed_completed_at,meter_stop_wh FROM v1_transactions WHERE `+condition, arg).Scan(&t.HALTransactionID, &t.CMSStartIntentID, &t.CMSCommandID, &t.CPOID, &customer, &t.CMSChargerID, &t.CMSConnectorID, &t.ChargerOCPPIdentity, &t.OCPPConnectorNumber, &t.IDTag, &t.OCPPTransactionID, &t.ActualStartedAt, &observedStarted, &t.MeterStartWh, &latestVal, &meterObs, &t.MeterSequence, &energy, &duration, &deadline, &t.StopState, &initiator, &reason, &ocppReason, &completed, &observedCompleted, &meterStopVal)
+	var latestVal, meterStopVal, rawMeterStopVal, adjustment, energy, duration sql.NullInt64
+	err := q.QueryRowContext(ctx, `SELECT hal_transaction_id::text,cms_start_intent_id::text,cms_command_id::text,cpo_id::text,customer_id::text,cms_charger_id::text,cms_connector_id::text,charger_ocpp_identity,ocpp_connector_number,id_tag,ocpp_transaction_id,actual_started_at,observed_started_at,meter_start_wh,latest_meter_wh,meter_observed_at,meter_sequence,energy_limit_wh,max_duration_seconds,stop_deadline_at,stop_state,requested_stop_initiator,requested_stop_reason,ocpp_stop_reason,completed_at,observed_completed_at,meter_stop_wh,raw_meter_stop_wh,meter_stop_adjustment_wh,COALESCE(meter_stop_evidence,''),meter_quantization_anomaly_count FROM v1_transactions WHERE `+condition, arg).Scan(&t.HALTransactionID, &t.CMSStartIntentID, &t.CMSCommandID, &t.CPOID, &customer, &t.CMSChargerID, &t.CMSConnectorID, &t.ChargerOCPPIdentity, &t.OCPPConnectorNumber, &t.IDTag, &t.OCPPTransactionID, &t.ActualStartedAt, &observedStarted, &t.MeterStartWh, &latestVal, &meterObs, &t.MeterSequence, &energy, &duration, &deadline, &t.StopState, &initiator, &reason, &ocppReason, &completed, &observedCompleted, &meterStopVal, &rawMeterStopVal, &adjustment, &t.MeterStopEvidence, &t.MeterQuantizationAnomalyCount)
 	_ = latest
 	_ = meterStop
 	if errors.Is(err, sql.ErrNoRows) {
@@ -505,6 +505,14 @@ func (s *PostgresStore) getV1TransactionBy(ctx context.Context, q v1TransactionQ
 	if meterStopVal.Valid {
 		v := meterStopVal.Int64
 		t.MeterStopWh = &v
+	}
+	if rawMeterStopVal.Valid {
+		v := rawMeterStopVal.Int64
+		t.RawMeterStopWh = &v
+	}
+	if adjustment.Valid {
+		v := adjustment.Int64
+		t.MeterStopAdjustmentWh = &v
 	}
 	return t, nil
 }

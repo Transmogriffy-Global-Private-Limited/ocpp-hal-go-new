@@ -30,6 +30,19 @@ func TestParseStopReason(t *testing.T) {
 	}
 }
 
+func TestOCPPMeterWhUsesOneCanonicalRoundedRegister(t *testing.T) {
+	// 6 × 15 s at 7.4 kW adds exactly 185 Wh. Start, MeterValues, and Stop
+	// must therefore encode the same integer register value.
+	value := 100000.0 + 6*15*7.4*1000/3600
+	got, err := ocppMeterWh(value)
+	if err != nil || got != 100185 {
+		t.Fatalf("ocppMeterWh(%f) = %d, %v", value, got, err)
+	}
+	if _, err := ocppMeterWh(-1); err == nil {
+		t.Fatal("negative meter was accepted")
+	}
+}
+
 func TestParseBoolPolicy(t *testing.T) {
 	if value, ok := parseBoolPolicy("ACCEPT", "accept", "reject"); !ok || !value {
 		t.Fatalf("parseBoolPolicy accept = %t, %t", value, ok)
