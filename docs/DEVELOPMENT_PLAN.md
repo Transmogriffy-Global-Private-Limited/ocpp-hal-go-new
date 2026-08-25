@@ -48,6 +48,10 @@ Completed in this slice:
   source: strict optional serial admission, durable Boot metadata evidence, and
   per-boot generation-fenced standard configuration reconciliation. Migrations
   012 and 013 plus physical-device acceptance remain pending.
+- Optional charger SoC telemetry is implemented in source: MeterValues now
+  independently accepts valid percentage SoC, persists first/latest evidence
+  with a separate sequence, and delivers additive `transaction.soc` facts.
+  Migration 014 and cross-service/cpconsole acceptance remain pending.
 
 ## Next Approved Work
 

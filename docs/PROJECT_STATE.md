@@ -6,6 +6,13 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- Optional OCPP 1.6 SoC is now retained as charger-observed telemetry when
+  supplied. HAL accepts only `SoC` in Percent (or its omitted standard-unit
+  form), persists nullable first/latest percentage, observation time, and a
+  separate accepted SoC sequence, and emits immutable `transaction.soc` facts.
+  Missing evidence remains unknown and never affects energy, limits, billing,
+  or completion. Additive migration 014 is source-only and unrun.
+
 - Source now supports strict mapped charger admission for both `/{identity}`
   and `/{identity}/{serial}`. OCPP identity remains canonical; optional serial
   and Boot metadata are stored only as physical evidence. Migrations 012 and

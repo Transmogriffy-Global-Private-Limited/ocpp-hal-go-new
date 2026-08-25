@@ -93,6 +93,19 @@ go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -conne
 go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connector 1 -heartbeat-interval 60 -auto-start-id-tag USER001 -auto-power-kw 7.2 -auto-meter-interval 10
 ```
 
+## Optional SoC acceptance
+
+`cpconsole` already puts the configured `-soc` value in each MeterValues
+sample as OCPP `SoC` with `Percent`. For a disposable CMS/HAL topology, start
+with `-soc 35`, begin a CMS-controlled session, and send `tick 60 7.2`.
+Verify HAL transaction `initial_soc_percent`, `latest_soc_percent`,
+`soc_observed_at`, and `soc_sequence`; then verify the durable
+`transaction.soc` fact, CMS charging-session projection, customer session
+detail, and history. After another tick, latest SoC may advance while initial
+SoC remains unchanged. After `stop`, final/history SoC must remain the last
+actual SoC timestamp, never the stop timestamp. A charger that sends no `SoC`
+remains supported and exposes unknown/absent SoC rather than `0`.
+
 ## Build for Linux VPS2 from Windows
 
 For the usual x86-64 VPS:

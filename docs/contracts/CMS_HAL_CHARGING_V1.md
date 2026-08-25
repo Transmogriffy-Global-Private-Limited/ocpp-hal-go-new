@@ -473,6 +473,25 @@ value is not silently projected as valid consumption. CMS stores every accepted
 fact receipt, but updates its current operational projection only when the
 sequence advances. A delayed older fact must not regress the displayed meter.
 
+### 8.6 `transaction.soc`
+
+`transaction.soc` is an additive immutable fact emitted only when HAL accepts
+valid charger-provided OCPP 1.6 `SoC` MeterValues evidence. It is separate from
+`transaction.meter`: energy and SoC have independent timestamps, acceptance
+rules, and sequences. A SoC-only request creates this fact without inventing an
+energy reading; an energy-only request does not repeat cached SoC.
+
+```json
+{"fact_type":"transaction.soc","schema_version":1,"payload":{"hal_transaction_id":"uuid","ocpp_transaction_id":493829,"cms_start_intent_id":"uuid","cms_charger_id":"uuid","cms_connector_id":"uuid","charger_ocpp_identity":"ocpp_chargepoint_17","ocpp_connector_number":1,"soc_percent":"63.5","soc_observed_at":"2026-08-10T12:08:18Z","soc_sequence":4}}
+```
+
+`soc_percent` is a canonical decimal string in `[0,100]`, retaining up to
+three observed decimal places without float equality. HAL accepts `Percent`,
+`%`, or a missing unit for standard `SoC`; arbitrary units are rejected.
+Missing SoC is unknown, never zero or an estimate. `soc_sequence` increments
+only for accepted SoC. Older timestamps cannot regress it; equal timestamps
+never create unstable regression.
+
 ## 9. Live Operational Projection
 
 ### 9.1 Authoritative dimensions
@@ -485,6 +504,7 @@ CMS must retain these dimensions separately:
 | Charger connection state | HAL | `ONLINE`, `OFFLINE`, or `UNKNOWN`; observation/change time and sequence; CPO and CMS charger identity; OCPP identity | A stale disconnect must not overwrite a newer connection generation. |
 | Connector OCPP status | HAL | Exact OCPP `StatusNotification` status, observation time and sequence, CMS connector ID, connector number, freshness | Do not collapse this into CMS administrative state. |
 | Active-session meter progression | HAL | Latest cumulative Wh, consumed Wh, meter observation time, meter sequence, freshness | No fabricated/interpolated sample. |
+| Active-session SoC | HAL | First/latest observed percentage, SoC observation time, independent SoC sequence, freshness | Optional; never inferred from energy, capacity, or completion. |
 
 `UNKNOWN` means HAL has no reliable current connection observation. `ONLINE`
 means the current registered connection exists. `OFFLINE` means the current

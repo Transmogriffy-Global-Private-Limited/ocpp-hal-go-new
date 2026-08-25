@@ -73,6 +73,21 @@ func TestV1FactPayloadsConformToApprovedFieldNames(t *testing.T) {
 	}
 }
 
+func TestV1SoCFactCarriesOnlyAcceptedSoCEvidence(t *testing.T) {
+	now := time.Date(2026, 8, 25, 12, 0, 0, 0, time.UTC)
+	soc, ok := ParseV1SoCPercent("63.5")
+	if !ok {
+		t.Fatal("parse SoC")
+	}
+	payload := decodedFactPayload(t, v1SoCFact(&V1Transaction{HALTransactionID: "hal", CMSStartIntentID: "intent", CMSChargerID: "charger", CMSConnectorID: "connector", ChargerOCPPIdentity: "CP", OCPPConnectorNumber: 1, OCPPTransactionID: 7, LatestSoCPercent: &soc, SoCObservedAt: &now, SoCSequence: 3}))
+	if payload["soc_percent"] != "63.5" || payload["soc_sequence"] != float64(3) || payload["soc_observed_at"] == nil {
+		t.Fatalf("payload=%#v", payload)
+	}
+	if _, exists := payload["meter_value_wh"]; exists {
+		t.Fatalf("SoC fact carried stale meter: %#v", payload)
+	}
+}
+
 func decodedFactPayload(t *testing.T, payload map[string]any) map[string]any {
 	t.Helper()
 	raw, err := json.Marshal(payload)

@@ -150,6 +150,47 @@ func (s *V1MemoryStore) UpdateV1Meter(_ context.Context, halTransactionID string
 	tx.MeterSequence++
 	return cloneV1Transaction(tx), nil
 }
+
+func (s *V1MemoryStore) UpdateV1TelemetryForOCPP(_ context.Context, identity string, ocppTransactionID int64, telemetry V1MeterTelemetry) (*V1Transaction, V1TelemetryUpdateResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	result := V1TelemetryUpdateResult{}
+	for _, transaction := range s.transactions {
+		if transaction.ChargerOCPPIdentity != identity || transaction.OCPPTransactionID != ocppTransactionID {
+			continue
+		}
+		if transaction.CompletedAt != nil {
+			return cloneV1Transaction(transaction), result, nil
+		}
+		if telemetry.EnergyWh != nil && telemetry.EnergyObservedAt != nil && *telemetry.EnergyWh >= transaction.MeterStartWh && (transaction.LatestMeterWh == nil || *telemetry.EnergyWh >= *transaction.LatestMeterWh) {
+			meter := *telemetry.EnergyWh
+			transaction.LatestMeterWh = &meter
+			consumed := meter - transaction.MeterStartWh
+			transaction.ConsumedWh = &consumed
+			observed := *telemetry.EnergyObservedAt
+			if transaction.MeterObservedAt != nil && observed.Before(*transaction.MeterObservedAt) {
+				observed = *transaction.MeterObservedAt
+			}
+			transaction.MeterObservedAt = &observed
+			transaction.MeterSequence++
+			result.EnergyAccepted = true
+		}
+		if telemetry.SoCPercent != nil && telemetry.SoCObservedAt != nil {
+			observed, soc := *telemetry.SoCObservedAt, *telemetry.SoCPercent
+			if transaction.SoCObservedAt == nil || observed.After(*transaction.SoCObservedAt) {
+				if transaction.InitialSoCPercent == nil {
+					initial := soc
+					transaction.InitialSoCPercent = &initial
+				}
+				transaction.LatestSoCPercent, transaction.SoCObservedAt = &soc, &observed
+				transaction.SoCSequence++
+				result.SoCAccepted = true
+			}
+		}
+		return cloneV1Transaction(transaction), result, nil
+	}
+	return nil, result, ErrV1TransactionNotFound
+}
 func (s *V1MemoryStore) RequestV1Stop(_ context.Context, halTransactionID, initiator, reason string) (*V1Transaction, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -270,11 +311,17 @@ func cloneV1Transaction(transaction *V1Transaction) *V1Transaction {
 	copy.MeterStopWh = cloneInt64(transaction.MeterStopWh)
 	copy.RawMeterStopWh = cloneInt64(transaction.RawMeterStopWh)
 	copy.MeterStopAdjustmentWh = cloneInt64(transaction.MeterStopAdjustmentWh)
+	copy.InitialSoCPercent = cloneV1SoCPercent(transaction.InitialSoCPercent)
+	copy.LatestSoCPercent = cloneV1SoCPercent(transaction.LatestSoCPercent)
 	copy.EnergyLimitWh = cloneInt64(transaction.EnergyLimitWh)
 	copy.MaxDurationSeconds = cloneInt64(transaction.MaxDurationSeconds)
 	if transaction.MeterObservedAt != nil {
 		value := *transaction.MeterObservedAt
 		copy.MeterObservedAt = &value
+	}
+	if transaction.SoCObservedAt != nil {
+		value := *transaction.SoCObservedAt
+		copy.SoCObservedAt = &value
 	}
 	if transaction.StopDeadlineAt != nil {
 		value := *transaction.StopDeadlineAt
@@ -288,5 +335,13 @@ func cloneV1Transaction(transaction *V1Transaction) *V1Transaction {
 		value := *transaction.ObservedCompletedAt
 		copy.ObservedCompletedAt = &value
 	}
+	return &copy
+}
+
+func cloneV1SoCPercent(value *V1SoCPercent) *V1SoCPercent {
+	if value == nil {
+		return nil
+	}
+	copy := *value
 	return &copy
 }

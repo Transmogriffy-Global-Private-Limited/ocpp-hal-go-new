@@ -120,12 +120,12 @@ The contract fixes these logical, service-only paths and payload semantics:
   reconciliation lookups.
 - HAL to CMS: `POST /v1/hal-facts` for immutable, versioned
   `charger.connection.updated`, `connector.status.updated`,
-  `transaction.started`, `transaction.meter`, `transaction.completed`, and
+  `transaction.started`, `transaction.meter`, `transaction.soc`, `transaction.completed`, and
   required `command.updated` facts.
 - Fact identity is a durable HAL `fact_id` plus a canonical immutable-content
   SHA-256. CMS treats repeated identical facts as success and same-ID/different-
   content as a durable integrity violation.
-- `transaction.meter`, connection, and connector status are first-vertical-
+- `transaction.meter`, optional `transaction.soc`, connection, and connector status are first-vertical-
   slice facts. CMS User App polling is the resulting read model; no customer
   WebSocket/SSE is introduced for v1.
 

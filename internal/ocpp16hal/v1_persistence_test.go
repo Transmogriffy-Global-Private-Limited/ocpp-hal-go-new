@@ -54,8 +54,8 @@ func (s failingV1ObservationStore) RecordV1ConnectorStatus(context.Context, stor
 	return s.statusErr
 }
 
-func (s failingV1ObservationStore) UpdateV1MeterForOCPP(context.Context, string, int64, int64, time.Time) (*store.V1Transaction, bool, error) {
-	return nil, false, s.meterErr
+func (s failingV1ObservationStore) UpdateV1TelemetryForOCPP(context.Context, string, int64, store.V1MeterTelemetry) (*store.V1Transaction, store.V1TelemetryUpdateResult, error) {
+	return nil, store.V1TelemetryUpdateResult{}, s.meterErr
 }
 
 func (failingV1CompletionStore) GetV1TransactionByOCPP(context.Context, string, int64) (*store.V1Transaction, error) {

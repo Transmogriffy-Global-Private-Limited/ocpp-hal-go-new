@@ -101,16 +101,21 @@ func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 	if tx.StopDeadlineAt == nil || !tx.StopDeadlineAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("deadline=%v", tx.StopDeadlineAt)
 	}
-	updated, accepted, err := s.UpdateV1MeterForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, 21345, now.Add(time.Second))
-	if err != nil || !accepted || updated.MeterSequence != 1 || updated.LatestMeterWh == nil || *updated.LatestMeterWh != 21345 {
+	meter := int64(21345)
+	observed := now.Add(time.Second)
+	updated, accepted, err := s.UpdateV1TelemetryForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, V1MeterTelemetry{EnergyWh: &meter, EnergyObservedAt: &observed})
+	if err != nil || !accepted.EnergyAccepted || updated.MeterSequence != 1 || updated.LatestMeterWh == nil || *updated.LatestMeterWh != 21345 {
 		t.Fatalf("accepted meter=%#v accepted=%v err=%v", updated, accepted, err)
 	}
-	regressive, accepted, err := s.UpdateV1MeterForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, 20000, now.Add(2*time.Second))
-	if err != nil || accepted || regressive.MeterSequence != 1 || *regressive.LatestMeterWh != 21345 {
+	meter = 20000
+	observed = now.Add(2 * time.Second)
+	regressive, accepted, err := s.UpdateV1TelemetryForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, V1MeterTelemetry{EnergyWh: &meter, EnergyObservedAt: &observed})
+	if err != nil || accepted.EnergyAccepted || regressive.MeterSequence != 1 || *regressive.LatestMeterWh != 21345 {
 		t.Fatalf("regressive meter=%#v accepted=%v err=%v", regressive, accepted, err)
 	}
-	quantized, accepted, err := s.UpdateV1MeterForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, 21344, now.Add(2*time.Second))
-	if err != nil || accepted || quantized.MeterSequence != 1 || quantized.LatestMeterWh == nil || *quantized.LatestMeterWh != 21345 || quantized.MeterQuantizationAnomalyCount != 1 {
+	meter = 21344
+	quantized, accepted, err := s.UpdateV1TelemetryForOCPP(ctx, input.ChargerOCPPIdentity, ocppTransactionID, V1MeterTelemetry{EnergyWh: &meter, EnergyObservedAt: &observed})
+	if err != nil || accepted.EnergyAccepted || quantized.MeterSequence != 1 || quantized.LatestMeterWh == nil || *quantized.LatestMeterWh != 21345 || quantized.MeterQuantizationAnomalyCount != 1 {
 		t.Fatalf("one Wh periodic rollback=%#v accepted=%v err=%v", quantized, accepted, err)
 	}
 	workflow, err := s.GetV1StopWorkflow(ctx, tx.HALTransactionID)

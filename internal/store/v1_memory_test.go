@@ -77,6 +77,47 @@ func TestV1MemoryStoreMaterializesOneCredentialBoundTransaction(t *testing.T) {
 	if !errors.Is(err, ErrV1CredentialRejected) {
 		t.Fatalf("wrong charger start error = %v, want credential rejection", err)
 	}
+
+	initialSoC, ok := ParseV1SoCPercent("63.5")
+	if !ok {
+		t.Fatal("parse initial SoC")
+	}
+	observedSoC := now.Add(time.Minute)
+	updated, result, err := s.UpdateV1TelemetryForOCPP(ctx, "CP-V1-001", 44, V1MeterTelemetry{SoCPercent: &initialSoC, SoCObservedAt: &observedSoC})
+	if err != nil || !result.SoCAccepted || result.EnergyAccepted {
+		t.Fatalf("SoC-only telemetry = %#v, %#v, %v", updated, result, err)
+	}
+	if updated.InitialSoCPercent == nil || updated.LatestSoCPercent == nil || *updated.InitialSoCPercent != initialSoC || *updated.LatestSoCPercent != initialSoC || updated.SoCSequence != 1 || updated.MeterSequence != 0 {
+		t.Fatalf("SoC-only state = %#v", updated)
+	}
+
+	energy := int64(1250)
+	energyObserved := now.Add(2 * time.Minute)
+	updated, result, err = s.UpdateV1TelemetryForOCPP(ctx, "CP-V1-001", 44, V1MeterTelemetry{EnergyWh: &energy, EnergyObservedAt: &energyObserved})
+	if err != nil || !result.EnergyAccepted || result.SoCAccepted || updated.LatestSoCPercent == nil || *updated.LatestSoCPercent != initialSoC || updated.SoCSequence != 1 {
+		t.Fatalf("energy-only telemetry must preserve SoC: %#v, %#v, %v", updated, result, err)
+	}
+
+	equalTimeSoC, ok := ParseV1SoCPercent("64")
+	if !ok {
+		t.Fatal("parse equal-time SoC")
+	}
+	updated, result, err = s.UpdateV1TelemetryForOCPP(ctx, "CP-V1-001", 44, V1MeterTelemetry{SoCPercent: &equalTimeSoC, SoCObservedAt: &observedSoC})
+	if err != nil || result.SoCAccepted || *updated.LatestSoCPercent != initialSoC || updated.SoCSequence != 1 {
+		t.Fatalf("equal-time SoC must not overwrite accepted value: %#v, %#v, %v", updated, result, err)
+	}
+
+	updated, result, err = s.UpdateV1TelemetryForOCPP(ctx, "CP-V1-001", 44, V1MeterTelemetry{SoCPercent: &equalTimeSoC, SoCObservedAt: &now})
+	if err != nil || result.SoCAccepted || *updated.LatestSoCPercent != initialSoC || updated.SoCSequence != 1 {
+		t.Fatalf("older SoC must not regress accepted value: %#v, %#v, %v", updated, result, err)
+	}
+
+	laterSoC := equalTimeSoC
+	laterObserved := observedSoC.Add(time.Minute)
+	updated, result, err = s.UpdateV1TelemetryForOCPP(ctx, "CP-V1-001", 44, V1MeterTelemetry{SoCPercent: &laterSoC, SoCObservedAt: &laterObserved})
+	if err != nil || !result.SoCAccepted || *updated.InitialSoCPercent != initialSoC || *updated.LatestSoCPercent != laterSoC || updated.SoCSequence != 2 {
+		t.Fatalf("newer SoC must advance only latest state: %#v, %#v, %v", updated, result, err)
+	}
 }
 
 func TestV1MemoryStoreCommandsAreIdempotentAndStopIsUnified(t *testing.T) {

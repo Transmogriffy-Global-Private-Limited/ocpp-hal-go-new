@@ -1,5 +1,19 @@
 # AI-assisted changelog
 
+## 2026-08-25 - Optional charger SoC telemetry
+
+- MeterValues parsing now independently selects valid OCPP `SoC` percentage
+  observations alongside existing integer-Wh energy. SoC-only packets persist
+  and create a separate immutable `transaction.soc` fact; energy-only facts do
+  not replay stale SoC.
+- Added migration 014 for nullable initial/latest SoC, timestamp, and separate
+  sequence. Latest SoC cannot regress on older observation time; missing SoC is
+  unknown, never estimated, and does not affect lifecycle or billing.
+
+Verification: focused OCPP/store/HTTP tests pass. PostgreSQL migration and
+CMS-to-HAL-to-cpconsole acceptance require an explicitly disposable topology
+and were not run.
+
 ## 2026-08-21 - Real-hardware identity and boot-configuration hardening
 
 - Mapping enrollment now carries optional expected serial evidence. HAL admits

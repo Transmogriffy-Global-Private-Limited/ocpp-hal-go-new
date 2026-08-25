@@ -112,11 +112,11 @@ func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValue
 	if h.v1Store == nil || request.TransactionId == nil || *request.TransactionId <= 0 {
 		return meterIgnored
 	}
-	meterWh, observedAt, ok := extractV1MeterValueWh(request)
-	if !ok {
+	telemetry := extractV1MeterTelemetry(request)
+	if telemetry.Empty() {
 		return meterIgnored
 	}
-	transaction, accepted, err := h.v1Store.UpdateV1MeterForOCPP(context.Background(), chargePointID, int64(*request.TransactionId), meterWh, observedAt)
+	transaction, accepted, err := h.v1Store.UpdateV1TelemetryForOCPP(context.Background(), chargePointID, int64(*request.TransactionId), telemetry)
 	if errors.Is(err, store.ErrV1TransactionNotFound) {
 		return meterIgnored
 	}
@@ -127,8 +127,8 @@ func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValue
 		h.logger.Error("failed to durably persist v1 meter", "charge_point_id", chargePointID, "error", err)
 		return meterPersistenceFailed
 	}
-	if accepted {
-		h.registry.ApplyMeterValue(chargePointID, request.ConnectorId, ptrInt64(transaction.OCPPTransactionID), float64(meterWh))
+	if accepted.EnergyAccepted {
+		h.registry.ApplyMeterValue(chargePointID, request.ConnectorId, ptrInt64(transaction.OCPPTransactionID), float64(*telemetry.EnergyWh))
 		workflow, workflowErr := h.v1Store.GetV1StopWorkflow(context.Background(), transaction.HALTransactionID)
 		if workflowErr == nil && workflow.State == "PERSISTED" {
 			if _, err := h.DispatchV1Stop(context.Background(), transaction.HALTransactionID); err != nil {
@@ -136,7 +136,10 @@ func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValue
 			}
 		}
 	}
-	return meterPersisted
+	if accepted.EnergyAccepted || accepted.SoCAccepted {
+		return meterPersisted
+	}
+	return meterIgnored
 }
 
 func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTransactionRequest) bool {
@@ -175,31 +178,52 @@ func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTr
 
 func ptrInt64(value int64) *int64 { return &value }
 
-func extractV1MeterValueWh(request *core.MeterValuesRequest) (int64, time.Time, bool) {
-	for i := len(request.MeterValue) - 1; i >= 0; i-- {
-		meterValue := request.MeterValue[i]
+func extractV1MeterTelemetry(request *core.MeterValuesRequest) store.V1MeterTelemetry {
+	telemetry := store.V1MeterTelemetry{}
+	receivedAt := time.Now().UTC()
+	for _, meterValue := range request.MeterValue {
+		observedAt := receivedAt
+		if meterValue.Timestamp != nil && !meterValue.Timestamp.IsZero() {
+			observedAt = meterValue.Timestamp.UTC()
+		}
 		for _, sample := range meterValue.SampledValue {
 			measurand := strings.TrimSpace(string(sample.Measurand))
-			if !strings.EqualFold(measurand, "Energy.Active.Import.Register") && !strings.EqualFold(measurand, "Energy.Active.Import") {
+			if strings.EqualFold(measurand, "Energy.Active.Import.Register") || strings.EqualFold(measurand, "Energy.Active.Import") {
+				if value, ok := parseV1EnergyWh(sample.Value, string(sample.Unit)); ok && (telemetry.EnergyObservedAt == nil || !observedAt.Before(*telemetry.EnergyObservedAt)) {
+					telemetry.EnergyWh, telemetry.EnergyObservedAt = &value, timePtr(observedAt)
+				}
 				continue
 			}
-			rational, ok := new(big.Rat).SetString(strings.TrimSpace(sample.Value))
-			if !ok {
-				continue
+			if strings.EqualFold(measurand, "SoC") && validV1SoCUnit(string(sample.Unit)) {
+				if value, ok := store.ParseV1SoCPercent(sample.Value); ok && (telemetry.SoCObservedAt == nil || !observedAt.Before(*telemetry.SoCObservedAt)) {
+					telemetry.SoCPercent, telemetry.SoCObservedAt = &value, timePtr(observedAt)
+				}
 			}
-			unit := strings.ToLower(strings.TrimSpace(string(sample.Unit)))
-			if unit == "kwh" || unit == "kilowatthour" {
-				rational.Mul(rational, big.NewRat(1000, 1))
-			}
-			if !rational.IsInt() || !rational.Num().IsInt64() {
-				continue
-			}
-			observedAt := time.Now().UTC()
-			if meterValue.Timestamp != nil && !meterValue.Timestamp.IsZero() {
-				observedAt = meterValue.Timestamp.UTC()
-			}
-			return rational.Num().Int64(), observedAt, true
 		}
 	}
-	return 0, time.Time{}, false
+	return telemetry
 }
+
+func parseV1EnergyWh(raw, rawUnit string) (int64, bool) {
+	rational, ok := new(big.Rat).SetString(strings.TrimSpace(raw))
+	if !ok {
+		return 0, false
+	}
+	unit := strings.ToLower(strings.TrimSpace(rawUnit))
+	if unit == "kwh" || unit == "kilowatthour" {
+		rational.Mul(rational, big.NewRat(1000, 1))
+	}
+	if !rational.IsInt() || !rational.Num().IsInt64() {
+		return 0, false
+	}
+	return rational.Num().Int64(), true
+}
+
+// OCPP 1.6 allows a unit to be omitted; for the standard SoC measurand that
+// means its defined percentage default. Arbitrary units are never reinterpreted.
+func validV1SoCUnit(raw string) bool {
+	unit := strings.ToLower(strings.TrimSpace(raw))
+	return unit == "" || unit == "percent" || unit == "%"
+}
+
+func timePtr(value time.Time) *time.Time { return &value }

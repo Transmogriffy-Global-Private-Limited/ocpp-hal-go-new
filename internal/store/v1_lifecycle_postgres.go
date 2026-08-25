@@ -143,6 +143,19 @@ func v1MeterFact(t *V1Transaction) map[string]any {
 	}
 }
 
+// v1SoCFact contains only the newly accepted SoC observation. It deliberately
+// does not copy the current meter value, so a SoC-only reading cannot pretend
+// that energy was sampled at the same time.
+func v1SoCFact(t *V1Transaction) map[string]any {
+	return map[string]any{
+		"hal_transaction_id": t.HALTransactionID, "ocpp_transaction_id": t.OCPPTransactionID,
+		"cms_start_intent_id": t.CMSStartIntentID, "cms_charger_id": t.CMSChargerID,
+		"cms_connector_id": t.CMSConnectorID, "charger_ocpp_identity": t.ChargerOCPPIdentity,
+		"ocpp_connector_number": t.OCPPConnectorNumber, "soc_sequence": t.SoCSequence,
+		"soc_percent": t.LatestSoCPercent.String(), "soc_observed_at": *t.SoCObservedAt,
+	}
+}
+
 func v1CompletedFact(t *V1Transaction, command *V1RemoteCommand) map[string]any {
 	payload := map[string]any{
 		"hal_transaction_id": t.HALTransactionID, "ocpp_transaction_id": t.OCPPTransactionID,
@@ -205,72 +218,92 @@ func (s *PostgresStore) GetV1TransactionByOCPP(ctx context.Context, identity str
 	return s.GetV1Transaction(ctx, halID)
 }
 
-func (s *PostgresStore) UpdateV1MeterForOCPP(ctx context.Context, identity string, ocppID, meterWh int64, observedAt time.Time) (*V1Transaction, bool, error) {
+func (s *PostgresStore) UpdateV1TelemetryForOCPP(ctx context.Context, identity string, ocppID int64, telemetry V1MeterTelemetry) (*V1Transaction, V1TelemetryUpdateResult, error) {
+	result := V1TelemetryUpdateResult{}
+	if telemetry.Empty() {
+		return nil, result, ErrV1InvalidEvidence
+	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, false, err
+		return nil, result, err
 	}
 	defer tx.Rollback()
 	var halID string
 	var meterStart int64
 	var latest sql.NullInt64
-	var completed, previousObserved sql.NullTime
-	err = tx.QueryRowContext(ctx, `SELECT hal_transaction_id::text,meter_start_wh,latest_meter_wh,completed_at,meter_observed_at FROM v1_transactions WHERE charger_ocpp_identity=$1 AND ocpp_transaction_id=$2 FOR UPDATE`, identity, ocppID).Scan(&halID, &meterStart, &latest, &completed, &previousObserved)
+	var completed, previousObserved, previousSoCObserved sql.NullTime
+	var latestSoC, initialSoC sql.NullString
+	err = tx.QueryRowContext(ctx, `SELECT hal_transaction_id::text,meter_start_wh,latest_meter_wh,completed_at,meter_observed_at,initial_soc_percent::text,latest_soc_percent::text,soc_observed_at FROM v1_transactions WHERE charger_ocpp_identity=$1 AND ocpp_transaction_id=$2 FOR UPDATE`, identity, ocppID).Scan(&halID, &meterStart, &latest, &completed, &previousObserved, &initialSoC, &latestSoC, &previousSoCObserved)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil, false, ErrV1TransactionNotFound
+		return nil, result, ErrV1TransactionNotFound
 	}
 	if err != nil {
-		return nil, false, err
+		return nil, result, err
 	}
-	if completed.Valid || meterWh < meterStart {
-		if err := tx.Commit(); err != nil {
-			return nil, false, err
-		}
-		current, getErr := s.GetV1Transaction(ctx, halID)
-		return current, false, getErr
-	}
-	if latest.Valid && meterWh < latest.Int64 {
-		classification, classifyErr := classifyV1MeterEvidence(meterStart, &latest.Int64, meterWh)
-		if classifyErr != nil || classification.Class != v1MeterEvidenceQuantizationNormalized {
-			if err := tx.Commit(); err != nil {
-				return nil, false, err
+	if !completed.Valid && telemetry.EnergyWh != nil && telemetry.EnergyObservedAt != nil && *telemetry.EnergyWh >= meterStart {
+		meterWh, observedAt := *telemetry.EnergyWh, telemetry.EnergyObservedAt.UTC()
+		acceptEnergy := true
+		if latest.Valid && meterWh < latest.Int64 {
+			classification, classifyErr := classifyV1MeterEvidence(meterStart, &latest.Int64, meterWh)
+			if classifyErr != nil || classification.Class != v1MeterEvidenceQuantizationNormalized {
+				acceptEnergy = false
+			} else if _, err := tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_quantization_anomaly_count=meter_quantization_anomaly_count+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID); err != nil {
+				return nil, result, err
 			}
-			current, getErr := s.GetV1Transaction(ctx, halID)
-			return current, false, getErr
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_quantization_anomaly_count=meter_quantization_anomaly_count+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID); err != nil {
-			return nil, false, err
+		if acceptEnergy {
+			if previousObserved.Valid && observedAt.Before(previousObserved.Time) {
+				observedAt = previousObserved.Time
+			}
+			if _, err := tx.ExecContext(ctx, `UPDATE v1_transactions SET latest_meter_wh=$2,meter_observed_at=$3,meter_sequence=meter_sequence+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID, meterWh, observedAt); err != nil {
+				return nil, result, err
+			}
+			result.EnergyAccepted = true
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, false, err
-		}
-		current, getErr := s.GetV1Transaction(ctx, halID)
-		return current, false, getErr
 	}
-	if previousObserved.Valid && observedAt.Before(previousObserved.Time) {
-		observedAt = previousObserved.Time
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET latest_meter_wh=$2,meter_observed_at=$3,meter_sequence=meter_sequence+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID, meterWh, observedAt)
-	if err != nil {
-		return nil, false, err
+	if !completed.Valid && telemetry.SoCPercent != nil && telemetry.SoCObservedAt != nil {
+		soc, observedAt := *telemetry.SoCPercent, telemetry.SoCObservedAt.UTC()
+		// Equal timestamps are deliberately ignored. The charger does not provide
+		// a stable tie-breaker for different values at the same instant, so keeping
+		// the first accepted observation prevents arrival order from changing truth.
+		acceptSoC := !previousSoCObserved.Valid || observedAt.After(previousSoCObserved.Time)
+		if acceptSoC {
+			if initialSoC.Valid {
+				_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET latest_soc_percent=$2::numeric/$3,soc_observed_at=$4,soc_sequence=soc_sequence+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID, int64(soc), v1SoCScale, observedAt)
+			} else {
+				_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET initial_soc_percent=$2::numeric/$3,latest_soc_percent=$2::numeric/$3,soc_observed_at=$4,soc_sequence=soc_sequence+1,updated_at=NOW() WHERE hal_transaction_id=$1`, halID, int64(soc), v1SoCScale, observedAt)
+			}
+			if err != nil {
+				return nil, result, err
+			}
+			result.SoCAccepted = true
+		}
 	}
 	current, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
 	if err != nil {
-		return nil, false, err
+		return nil, result, err
 	}
-	seq := current.MeterSequence
-	if err := s.insertV1FactTx(ctx, tx, "transaction.meter", halID, &seq, observedAt, v1MeterFact(current)); err != nil {
-		return nil, false, err
+	if result.EnergyAccepted {
+		seq := current.MeterSequence
+		if err := s.insertV1FactTx(ctx, tx, "transaction.meter", halID, &seq, *current.MeterObservedAt, v1MeterFact(current)); err != nil {
+			return nil, result, err
+		}
+		if current.EnergyLimitWh != nil && *current.LatestMeterWh-current.MeterStartWh >= *current.EnergyLimitWh {
+			if _, _, err := s.ensureV1StopWorkflowTx(ctx, tx, current, "ENERGY_LIMIT", "energy_limit_reached"); err != nil {
+				return nil, result, err
+			}
+		}
 	}
-	if current.EnergyLimitWh != nil && meterWh-current.MeterStartWh >= *current.EnergyLimitWh {
-		if _, _, err := s.ensureV1StopWorkflowTx(ctx, tx, current, "ENERGY_LIMIT", "energy_limit_reached"); err != nil {
-			return nil, false, err
+	if result.SoCAccepted {
+		seq := current.SoCSequence
+		if err := s.insertV1FactTx(ctx, tx, "transaction.soc", halID, &seq, *current.SoCObservedAt, v1SoCFact(current)); err != nil {
+			return nil, result, err
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, false, err
+		return nil, result, err
 	}
-	return current, true, nil
+	return current, result, nil
 }
 
 func (s *PostgresStore) UpdateV1Meter(ctx context.Context, halID string, ocppID, meterWh int64, observedAt time.Time) (*V1Transaction, error) {
@@ -281,7 +314,7 @@ func (s *PostgresStore) UpdateV1Meter(ctx context.Context, halID string, ocppID,
 	if t.OCPPTransactionID != ocppID {
 		return nil, ErrV1TransactionNotFound
 	}
-	updated, _, err := s.UpdateV1MeterForOCPP(ctx, t.ChargerOCPPIdentity, ocppID, meterWh, observedAt)
+	updated, _, err := s.UpdateV1TelemetryForOCPP(ctx, t.ChargerOCPPIdentity, ocppID, V1MeterTelemetry{EnergyWh: &meterWh, EnergyObservedAt: &observedAt})
 	return updated, err
 }
 
