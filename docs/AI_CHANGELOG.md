@@ -1,5 +1,16 @@
 # AI-assisted changelog
 
+## 2026-08-26 - Preserve customer limit type through the V1 HAL path
+
+- Extended the existing V1 RemoteStart command, command/transaction store,
+  facts, and query response with durable `limit_type`. Energy and duration
+  limits are independently optional; zero means absent at the HTTP boundary.
+- The existing meter/deadline stop workflows now use `MONEY_LIMIT` for a
+  MONEY-derived threshold. No second command or stop worker was introduced.
+
+Verification: focused store, HTTP, and OCPP HAL tests pass. Migration 015 and
+real CMS/HAL/charger execution were not run.
+
 ## 2026-08-25 - Optional charger SoC telemetry
 
 - MeterValues parsing now independently selects valid OCPP `SoC` percentage

@@ -40,6 +40,7 @@ type V1StartCommandInput struct {
 	IDTag               string
 	CredentialExpiresAt time.Time
 	CommandExpiresAt    time.Time
+	LimitType           string
 	EnergyLimitWh       *int64
 	MaxDurationSeconds  *int64
 }
@@ -112,6 +113,7 @@ type V1RemoteCommand struct {
 	IDTag                  string
 	CredentialExpiresAt    *time.Time
 	CommandExpiresAt       time.Time
+	LimitType              string
 	EnergyLimitWh          *int64
 	MaxDurationSeconds     *int64
 	RequestedStopInitiator string
@@ -155,6 +157,7 @@ type V1Transaction struct {
 	ActualStartedAt               time.Time     `json:"actual_started_at"`
 	ObservedStartedAt             time.Time     `json:"observed_started_at"`
 	MeterStartWh                  int64         `json:"meter_start_wh"`
+	LimitType                     string        `json:"limit_type"`
 	LatestMeterWh                 *int64        `json:"latest_meter_wh,omitempty"`
 	ConsumedWh                    *int64        `json:"consumed_wh,omitempty"`
 	MeterObservedAt               *time.Time    `json:"meter_observed_at,omitempty"`

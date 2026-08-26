@@ -234,15 +234,20 @@ never sent to HAL.
   "id_tag": "appv1_7N9qK2mP",
   "credential_expires_at": "2026-08-10T12:05:00Z",
   "command_expires_at": "2026-08-10T12:06:00Z",
+  "limit_type": "MONEY",
   "energy_limit_wh": 18000,
-  "max_duration_seconds": 3600
+  "max_duration_seconds": 0
 }
 ```
 
-Every shown field is required. HAL validates CPO, CMS charger/connector, OCPP
+Every identity/delivery field is required. HAL validates CPO, CMS charger/connector, OCPP
 identity, and connector-number mapping before creating a deliverable command.
-`energy_limit_wh` and `max_duration_seconds` are positive protocol-enforcement
-instructions, not price or tariff inputs.
+`limit_type` is `AUTO`, `ENERGY`, `TIME`, or `MONEY`. `energy_limit_wh` and
+`max_duration_seconds` are independently optional non-negative
+protocol-enforcement instructions: zero means absent. They are not price or
+tariff inputs. A MONEY classification lets HAL preserve money-limit stop
+provenance while its existing meter/deadline workflow enforces the derived
+energy or time threshold.
 
 ### 7.2 Stop command
 

@@ -128,7 +128,7 @@ func v1StartedFact(t *V1Transaction, commandID string) map[string]any {
 		"cms_start_intent_id": t.CMSStartIntentID, "cpo_id": t.CPOID,
 		"cms_charger_id": t.CMSChargerID, "cms_connector_id": t.CMSConnectorID,
 		"charger_ocpp_identity": t.ChargerOCPPIdentity, "ocpp_connector_number": t.OCPPConnectorNumber,
-		"id_tag": t.IDTag, "meter_start_wh": t.MeterStartWh, "started_at": t.ActualStartedAt,
+		"id_tag": t.IDTag, "meter_start_wh": t.MeterStartWh, "started_at": t.ActualStartedAt, "limit_type": t.LimitType,
 	}
 }
 
@@ -163,7 +163,7 @@ func v1CompletedFact(t *V1Transaction, command *V1RemoteCommand) map[string]any 
 		"cms_start_intent_id": t.CMSStartIntentID, "cms_charger_id": t.CMSChargerID,
 		"cms_connector_id": t.CMSConnectorID, "charger_ocpp_identity": t.ChargerOCPPIdentity,
 		"ocpp_connector_number": t.OCPPConnectorNumber, "meter_start_wh": t.MeterStartWh,
-		"meter_stop_wh": *t.MeterStopWh, "stopped_at": *t.CompletedAt,
+		"meter_stop_wh": *t.MeterStopWh, "stopped_at": *t.CompletedAt, "limit_type": t.LimitType,
 		"ocpp_stop_reason":         nullString(t.OCPPStopReason),
 		"requested_stop_initiator": nil, "requested_stop_reason": nil,
 	}
@@ -289,7 +289,8 @@ func (s *PostgresStore) UpdateV1TelemetryForOCPP(ctx context.Context, identity s
 			return nil, result, err
 		}
 		if current.EnergyLimitWh != nil && *current.LatestMeterWh-current.MeterStartWh >= *current.EnergyLimitWh {
-			if _, _, err := s.ensureV1StopWorkflowTx(ctx, tx, current, "ENERGY_LIMIT", "energy_limit_reached"); err != nil {
+			initiator, reason := v1EnergyStopCause(current.LimitType)
+			if _, _, err := s.ensureV1StopWorkflowTx(ctx, tx, current, initiator, reason); err != nil {
 				return nil, result, err
 			}
 		}
@@ -304,6 +305,13 @@ func (s *PostgresStore) UpdateV1TelemetryForOCPP(ctx context.Context, identity s
 		return nil, result, err
 	}
 	return current, result, nil
+}
+
+func v1EnergyStopCause(limitType string) (string, string) {
+	if limitType == "MONEY" {
+		return "MONEY_LIMIT", "money_limit_reached"
+	}
+	return "ENERGY_LIMIT", "energy_limit_reached"
 }
 
 func (s *PostgresStore) UpdateV1Meter(ctx context.Context, halID string, ocppID, meterWh int64, observedAt time.Time) (*V1Transaction, error) {

@@ -89,7 +89,8 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 		return err
 	}
 	for _, transaction := range transactions {
-		if _, _, err := h.v1Store.EnsureV1StopWorkflow(ctx, transaction.HALTransactionID, "TIME_LIMIT", "time_limit_reached"); err != nil {
+		initiator, reason := v1DeadlineStopCause(transaction.LimitType)
+		if _, _, err := h.v1Store.EnsureV1StopWorkflow(ctx, transaction.HALTransactionID, initiator, reason); err != nil {
 			return err
 		}
 		if _, err := h.DispatchV1Stop(ctx, transaction.HALTransactionID); err != nil && !errors.Is(err, store.ErrV1DeliveryNotReady) {
@@ -97,6 +98,13 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 		}
 	}
 	return h.DispatchPendingV1Stops(ctx)
+}
+
+func v1DeadlineStopCause(limitType string) (string, string) {
+	if limitType == "MONEY" {
+		return "MONEY_LIMIT", "money_limit_reached"
+	}
+	return "TIME_LIMIT", "time_limit_reached"
 }
 
 type meterPersistenceResult uint8

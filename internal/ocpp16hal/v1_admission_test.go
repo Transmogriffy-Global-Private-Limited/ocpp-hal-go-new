@@ -5,6 +5,15 @@ import (
 	"testing"
 )
 
+func TestV1DeadlineStopCausePreservesMoneySelection(t *testing.T) {
+	if initiator, reason := v1DeadlineStopCause("MONEY"); initiator != "MONEY_LIMIT" || reason != "money_limit_reached" {
+		t.Fatalf("money deadline cause=%q/%q", initiator, reason)
+	}
+	if initiator, reason := v1DeadlineStopCause("TIME"); initiator != "TIME_LIMIT" || reason != "time_limit_reached" {
+		t.Fatalf("time deadline cause=%q/%q", initiator, reason)
+	}
+}
+
 func TestParseChargerIdentityPathAcceptsOnlySupportedForms(t *testing.T) {
 	for _, test := range []struct {
 		name, path, wire, identity, serial string

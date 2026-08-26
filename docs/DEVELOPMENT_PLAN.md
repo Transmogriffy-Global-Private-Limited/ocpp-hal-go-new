@@ -11,6 +11,10 @@ Current phase: v1 consumer-boundary verification and legacy retirement.
 
 Completed in this slice:
 
+- customer-selected/wallet-derived limit contract: existing V1 start,
+  transaction, fact, and automatic-stop paths retain optional limits and the
+  original `limit_type`; no parallel command or worker was added;
+
 - v1-only process startup, mapping-based charger admission, authenticated HTTP
   command/query boundary, durable OCPP truth, facts, and reconciliation;
 - generic contract-receiver test covering real PostgreSQL, HAL HTTP, OCPP

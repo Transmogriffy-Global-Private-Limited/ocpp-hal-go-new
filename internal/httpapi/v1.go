@@ -16,6 +16,15 @@ import (
 
 const v1PathPrefix = "/v1/"
 
+func validV1LimitType(value string) bool {
+	switch value {
+	case "AUTO", "ENERGY", "TIME", "MONEY":
+		return true
+	default:
+		return false
+	}
+}
+
 type v1MappingRequest struct {
 	CPOID               string `json:"cpo_id"`
 	CMSChargerID        string `json:"cms_charger_id"`
@@ -40,6 +49,7 @@ type v1StartRequest struct {
 	IDTag               string    `json:"id_tag"`
 	CredentialExpiresAt time.Time `json:"credential_expires_at"`
 	CommandExpiresAt    time.Time `json:"command_expires_at"`
+	LimitType           string    `json:"limit_type"`
 	EnergyLimitWh       int64     `json:"energy_limit_wh"`
 	MaxDurationSeconds  int64     `json:"max_duration_seconds"`
 }
@@ -157,7 +167,12 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSStartIntentID) || !validUUID(req.CPOID) || !validUUID(req.CustomerID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || req.OCPPConnectorNumber <= 0 || !strings.HasPrefix(req.IDTag, "appv1_") || len(req.IDTag) > 20 || req.EnergyLimitWh <= 0 || req.MaxDurationSeconds <= 0 || !req.CredentialExpiresAt.After(time.Now().UTC()) || !req.CommandExpiresAt.After(req.CredentialExpiresAt) {
+	// CMS versions released before customer-selected limits did not send this
+	// field. Their former two-limit shape is semantically AUTO.
+	if req.LimitType == "" {
+		req.LimitType = "AUTO"
+	}
+	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSStartIntentID) || !validUUID(req.CPOID) || !validUUID(req.CustomerID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || req.OCPPConnectorNumber <= 0 || !strings.HasPrefix(req.IDTag, "appv1_") || len(req.IDTag) > 20 || !validV1LimitType(req.LimitType) || req.EnergyLimitWh < 0 || req.MaxDurationSeconds < 0 || !req.CredentialExpiresAt.After(time.Now().UTC()) || !req.CommandExpiresAt.After(req.CredentialExpiresAt) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid start command"})
 		return
 	}
@@ -165,8 +180,14 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	energy, duration := req.EnergyLimitWh, req.MaxDurationSeconds
-	command, existed, err := s.v1Store.CreateV1StartCommand(r.Context(), store.V1StartCommandInput{CMSCommandID: req.CMSCommandID, RequestDigest: digestJSON(req, idempotency), CPOID: req.CPOID, CustomerID: req.CustomerID, CorrelationID: correlation, CMSStartIntentID: req.CMSStartIntentID, CMSChargerID: req.CMSChargerID, CMSConnectorID: req.CMSConnectorID, ChargerOCPPIdentity: req.ChargerOCPPIdentity, OCPPConnectorNumber: req.OCPPConnectorNumber, IDTag: req.IDTag, CredentialExpiresAt: req.CredentialExpiresAt, CommandExpiresAt: req.CommandExpiresAt, EnergyLimitWh: &energy, MaxDurationSeconds: &duration})
+	var energy, duration *int64
+	if req.EnergyLimitWh > 0 {
+		energy = &req.EnergyLimitWh
+	}
+	if req.MaxDurationSeconds > 0 {
+		duration = &req.MaxDurationSeconds
+	}
+	command, existed, err := s.v1Store.CreateV1StartCommand(r.Context(), store.V1StartCommandInput{CMSCommandID: req.CMSCommandID, RequestDigest: digestJSON(req, idempotency), CPOID: req.CPOID, CustomerID: req.CustomerID, CorrelationID: correlation, CMSStartIntentID: req.CMSStartIntentID, CMSChargerID: req.CMSChargerID, CMSConnectorID: req.CMSConnectorID, ChargerOCPPIdentity: req.ChargerOCPPIdentity, OCPPConnectorNumber: req.OCPPConnectorNumber, IDTag: req.IDTag, CredentialExpiresAt: req.CredentialExpiresAt, CommandExpiresAt: req.CommandExpiresAt, LimitType: req.LimitType, EnergyLimitWh: energy, MaxDurationSeconds: duration})
 	if err != nil {
 		s.writeV1StoreError(w, err)
 		return

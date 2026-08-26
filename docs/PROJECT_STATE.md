@@ -6,6 +6,13 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- V1 start commands now persist an immutable CMS limit classification (`AUTO`,
+  `ENERGY`, `TIME`, `MONEY`) with independently optional energy and duration
+  thresholds. The existing meter/deadline stop workers remain the only
+  enforcement path; a MONEY-derived threshold records `MONEY_LIMIT` rather
+  than falsely presenting an energy/time customer selection. Migration 015 is
+  additive and has not been applied in this source-only slice.
+
 - Optional OCPP 1.6 SoC is now retained as charger-observed telemetry when
   supplied. HAL accepts only `SoC` in Percent (or its omitted standard-unit
   form), persists nullable first/latest percentage, observation time, and a

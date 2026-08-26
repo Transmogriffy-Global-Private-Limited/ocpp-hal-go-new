@@ -6,6 +6,15 @@ import (
 	"time"
 )
 
+func TestV1EnergyStopCausePreservesMoneySelection(t *testing.T) {
+	if initiator, reason := v1EnergyStopCause("MONEY"); initiator != "MONEY_LIMIT" || reason != "money_limit_reached" {
+		t.Fatalf("money energy cause=%q/%q", initiator, reason)
+	}
+	if initiator, reason := v1EnergyStopCause("ENERGY"); initiator != "ENERGY_LIMIT" || reason != "energy_limit_reached" {
+		t.Fatalf("energy cause=%q/%q", initiator, reason)
+	}
+}
+
 func TestCanonicalV1JSONStableForFactValues(t *testing.T) {
 	first, err := canonicalV1JSON(map[string]any{"z": int64(7), "a": map[string]any{"observed_at": time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC), "value_wh": int64(42)}})
 	if err != nil {

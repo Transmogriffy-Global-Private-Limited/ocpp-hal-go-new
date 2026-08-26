@@ -69,9 +69,11 @@ outside this work.
 - HAL facts are protocol evidence, never tariff, wallet, GST, or final-billing
   conclusions. CMS performs final completion and settlement transactionally and
   idempotently from durable completion evidence and frozen commercial terms.
-- CMS owns commercial energy policy. HAL enforces the approved integer-Wh limit
-  after persisting it before RemoteStart, with controlled, idempotent,
-  observable stop delivery and explicit terminal/reconciliation semantics.
+- CMS owns commercial execution policy. HAL persists optional approved
+  energy/deadline thresholds and the immutable `AUTO`/`ENERGY`/`TIME`/`MONEY`
+  classification before RemoteStart, then uses its one existing controlled,
+  idempotent stop workflow. A MONEY-derived threshold is reported as
+  `MONEY_LIMIT`; HAL never interprets it as tariff or wallet truth.
 - Production HAL requires PostgreSQL and must fail safely when it is absent or
   unavailable. Memory storage is only for explicit tests and intentional local
   development.
