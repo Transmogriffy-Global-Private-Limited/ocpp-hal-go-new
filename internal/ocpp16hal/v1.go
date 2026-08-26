@@ -89,7 +89,7 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 		return err
 	}
 	for _, transaction := range transactions {
-		initiator, reason := v1DeadlineStopCause(transaction.LimitType)
+		initiator, reason := v1DeadlineStopCause(transaction.DurationLimitSource, transaction.LimitType)
 		if _, _, err := h.v1Store.EnsureV1StopWorkflow(ctx, transaction.HALTransactionID, initiator, reason); err != nil {
 			return err
 		}
@@ -100,9 +100,12 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 	return h.DispatchPendingV1Stops(ctx)
 }
 
-func v1DeadlineStopCause(limitType string) (string, string) {
-	if limitType == "MONEY" {
+func v1DeadlineStopCause(source, legacyLimitType string) (string, string) {
+	if source == "CUSTOMER_MONEY" || (source == "" && legacyLimitType == "MONEY") {
 		return "MONEY_LIMIT", "money_limit_reached"
+	}
+	if source == "WALLET" || (source == "" && legacyLimitType == "AUTO") {
+		return "WALLET_LIMIT", "wallet_limit_reached"
 	}
 	return "TIME_LIMIT", "time_limit_reached"
 }

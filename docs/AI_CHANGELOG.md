@@ -1,5 +1,18 @@
 # AI-assisted changelog
 
+## 2026-08-26 - Preserve independent limit provenance through HAL
+
+- Extended the existing V1 start command, durable command/transaction records,
+  facts, query response, and automatic stop paths with independent energy and
+  duration source fields. HAL can now distinguish `WALLET_LIMIT` from customer
+  energy, time, and money limits without interpreting tariff or wallet policy.
+- Added additive migration 016, backward inference for legacy omitted source
+  fields, OpenAPI/contract documentation, and focused source/stop regression
+  coverage. No additional command or stop worker exists.
+
+Verification: focused HTTP, store, and OCPP HAL tests pass. Migration 016 and
+live CMS/HAL/charger acceptance remain unrun.
+
 ## 2026-08-26 - Preserve customer limit type through the V1 HAL path
 
 - Extended the existing V1 RemoteStart command, command/transaction store,

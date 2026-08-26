@@ -9,8 +9,9 @@ Last updated: 2026-08-26
 ## Outcome
 
 Accept the CMS's existing start command with optional energy and/or duration
-limits, persist the requested limit classification, and retain that
-classification when HAL's existing meter/deadline stop workflows fire.
+limits, persist immutable customer intent separately from each threshold's
+provenance, and retain truthful source when HAL's existing meter/deadline stop
+workflows fire.
 
 ## Claimed surfaces
 
@@ -21,9 +22,10 @@ classification when HAL's existing meter/deadline stop workflows fire.
 
 ## Contract impact
 
-`energy_limit_wh` and `max_duration_seconds` become independently optional
-non-negative fields. `limit_type` is `AUTO`, `ENERGY`, `TIME`, or `MONEY`.
-No new command, worker, or delivery path is introduced.
+`energy_limit_wh` and `max_duration_seconds` remain independently optional
+non-negative fields. `limit_type` remains customer intent; `energy_limit_source`
+and `duration_limit_source` explain the physical boundary. No new command,
+worker, or delivery path is introduced.
 
 ## Verification
 

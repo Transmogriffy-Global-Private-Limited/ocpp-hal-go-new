@@ -70,10 +70,12 @@ outside this work.
   conclusions. CMS performs final completion and settlement transactionally and
   idempotently from durable completion evidence and frozen commercial terms.
 - CMS owns commercial execution policy. HAL persists optional approved
-  energy/deadline thresholds and the immutable `AUTO`/`ENERGY`/`TIME`/`MONEY`
-  classification before RemoteStart, then uses its one existing controlled,
-  idempotent stop workflow. A MONEY-derived threshold is reported as
-  `MONEY_LIMIT`; HAL never interprets it as tariff or wallet truth.
+  energy/deadline thresholds, immutable `AUTO`/`ENERGY`/`TIME`/`MONEY` customer
+  intent, and independent threshold provenance before RemoteStart, then uses
+  its one existing controlled, idempotent stop workflow. `CUSTOMER_ENERGY`,
+  `CUSTOMER_TIME`, `CUSTOMER_MONEY`, and `WALLET` produce truthful
+  `ENERGY_LIMIT`, `TIME_LIMIT`, `MONEY_LIMIT`, and `WALLET_LIMIT` stop facts;
+  HAL never interprets tariff, GST, or wallet policy.
 - Production HAL requires PostgreSQL and must fail safely when it is absent or
   unavailable. Memory storage is only for explicit tests and intentional local
   development.

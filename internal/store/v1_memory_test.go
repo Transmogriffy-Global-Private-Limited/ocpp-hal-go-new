@@ -27,7 +27,9 @@ func TestV1MemoryStoreMaterializesOneCredentialBoundTransaction(t *testing.T) {
 		CredentialExpiresAt: now.Add(5 * time.Minute),
 		CommandExpiresAt:    now.Add(6 * time.Minute),
 		EnergyLimitWh:       &energyLimit,
+		EnergyLimitSource:   "CUSTOMER_ENERGY",
 		MaxDurationSeconds:  &maxDuration,
+		DurationLimitSource: "WALLET",
 	})
 	if err != nil || existed {
 		t.Fatalf("create start command = %#v, existed=%v, err=%v", command, existed, err)
@@ -47,6 +49,9 @@ func TestV1MemoryStoreMaterializesOneCredentialBoundTransaction(t *testing.T) {
 	}
 	if tx.EnergyLimitWh == nil || *tx.EnergyLimitWh != energyLimit {
 		t.Fatalf("energy limit = %v, want %d", tx.EnergyLimitWh, energyLimit)
+	}
+	if tx.EnergyLimitSource != "CUSTOMER_ENERGY" || tx.DurationLimitSource != "WALLET" {
+		t.Fatalf("limit provenance=(%s,%s)", tx.EnergyLimitSource, tx.DurationLimitSource)
 	}
 	if tx.StopDeadlineAt == nil || !tx.StopDeadlineAt.Equal(now.Add(time.Hour)) {
 		t.Fatalf("stop deadline = %v, want %v", tx.StopDeadlineAt, now.Add(time.Hour))

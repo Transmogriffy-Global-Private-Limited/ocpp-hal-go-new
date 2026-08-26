@@ -5,11 +5,14 @@ import (
 	"testing"
 )
 
-func TestV1DeadlineStopCausePreservesMoneySelection(t *testing.T) {
-	if initiator, reason := v1DeadlineStopCause("MONEY"); initiator != "MONEY_LIMIT" || reason != "money_limit_reached" {
+func TestV1DeadlineStopCauseUsesThresholdProvenance(t *testing.T) {
+	if initiator, reason := v1DeadlineStopCause("CUSTOMER_MONEY", "MONEY"); initiator != "MONEY_LIMIT" || reason != "money_limit_reached" {
 		t.Fatalf("money deadline cause=%q/%q", initiator, reason)
 	}
-	if initiator, reason := v1DeadlineStopCause("TIME"); initiator != "TIME_LIMIT" || reason != "time_limit_reached" {
+	if initiator, reason := v1DeadlineStopCause("WALLET", "TIME"); initiator != "WALLET_LIMIT" || reason != "wallet_limit_reached" {
+		t.Fatalf("wallet deadline cause=%q/%q", initiator, reason)
+	}
+	if initiator, reason := v1DeadlineStopCause("CUSTOMER_TIME", "TIME"); initiator != "TIME_LIMIT" || reason != "time_limit_reached" {
 		t.Fatalf("time deadline cause=%q/%q", initiator, reason)
 	}
 }

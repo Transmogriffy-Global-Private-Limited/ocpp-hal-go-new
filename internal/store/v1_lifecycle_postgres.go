@@ -129,6 +129,7 @@ func v1StartedFact(t *V1Transaction, commandID string) map[string]any {
 		"cms_charger_id": t.CMSChargerID, "cms_connector_id": t.CMSConnectorID,
 		"charger_ocpp_identity": t.ChargerOCPPIdentity, "ocpp_connector_number": t.OCPPConnectorNumber,
 		"id_tag": t.IDTag, "meter_start_wh": t.MeterStartWh, "started_at": t.ActualStartedAt, "limit_type": t.LimitType,
+		"energy_limit_source": t.EnergyLimitSource, "duration_limit_source": t.DurationLimitSource,
 	}
 }
 
@@ -164,6 +165,7 @@ func v1CompletedFact(t *V1Transaction, command *V1RemoteCommand) map[string]any 
 		"cms_connector_id": t.CMSConnectorID, "charger_ocpp_identity": t.ChargerOCPPIdentity,
 		"ocpp_connector_number": t.OCPPConnectorNumber, "meter_start_wh": t.MeterStartWh,
 		"meter_stop_wh": *t.MeterStopWh, "stopped_at": *t.CompletedAt, "limit_type": t.LimitType,
+		"energy_limit_source": t.EnergyLimitSource, "duration_limit_source": t.DurationLimitSource,
 		"ocpp_stop_reason":         nullString(t.OCPPStopReason),
 		"requested_stop_initiator": nil, "requested_stop_reason": nil,
 	}
@@ -289,7 +291,7 @@ func (s *PostgresStore) UpdateV1TelemetryForOCPP(ctx context.Context, identity s
 			return nil, result, err
 		}
 		if current.EnergyLimitWh != nil && *current.LatestMeterWh-current.MeterStartWh >= *current.EnergyLimitWh {
-			initiator, reason := v1EnergyStopCause(current.LimitType)
+			initiator, reason := v1EnergyStopCause(current.EnergyLimitSource, current.LimitType)
 			if _, _, err := s.ensureV1StopWorkflowTx(ctx, tx, current, initiator, reason); err != nil {
 				return nil, result, err
 			}
@@ -307,9 +309,12 @@ func (s *PostgresStore) UpdateV1TelemetryForOCPP(ctx context.Context, identity s
 	return current, result, nil
 }
 
-func v1EnergyStopCause(limitType string) (string, string) {
-	if limitType == "MONEY" {
+func v1EnergyStopCause(source, legacyLimitType string) (string, string) {
+	if source == "CUSTOMER_MONEY" || (source == "" && legacyLimitType == "MONEY") {
 		return "MONEY_LIMIT", "money_limit_reached"
+	}
+	if source == "WALLET" || (source == "" && legacyLimitType == "AUTO") {
+		return "WALLET_LIMIT", "wallet_limit_reached"
 	}
 	return "ENERGY_LIMIT", "energy_limit_reached"
 }

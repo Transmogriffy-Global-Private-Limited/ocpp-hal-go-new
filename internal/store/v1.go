@@ -42,7 +42,9 @@ type V1StartCommandInput struct {
 	CommandExpiresAt    time.Time
 	LimitType           string
 	EnergyLimitWh       *int64
+	EnergyLimitSource   string
 	MaxDurationSeconds  *int64
+	DurationLimitSource string
 }
 
 type V1MappingInput struct {
@@ -115,7 +117,9 @@ type V1RemoteCommand struct {
 	CommandExpiresAt       time.Time
 	LimitType              string
 	EnergyLimitWh          *int64
+	EnergyLimitSource      string
 	MaxDurationSeconds     *int64
+	DurationLimitSource    string
 	RequestedStopInitiator string
 	RequestedStopReason    string
 	HALTransactionID       string
@@ -167,7 +171,9 @@ type V1Transaction struct {
 	SoCObservedAt                 *time.Time    `json:"soc_observed_at,omitempty"`
 	SoCSequence                   int64         `json:"soc_sequence"`
 	EnergyLimitWh                 *int64        `json:"energy_limit_wh,omitempty"`
+	EnergyLimitSource             string        `json:"energy_limit_source"`
 	MaxDurationSeconds            *int64        `json:"max_duration_seconds,omitempty"`
+	DurationLimitSource           string        `json:"duration_limit_source"`
 	StopDeadlineAt                *time.Time    `json:"stop_deadline_at,omitempty"`
 	StopState                     string        `json:"stop_state"`
 	RequestedStopInitiator        string        `json:"requested_stop_initiator,omitempty"`

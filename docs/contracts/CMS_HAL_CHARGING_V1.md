@@ -236,18 +236,27 @@ never sent to HAL.
   "command_expires_at": "2026-08-10T12:06:00Z",
   "limit_type": "MONEY",
   "energy_limit_wh": 18000,
-  "max_duration_seconds": 0
+  "energy_limit_source": "CUSTOMER_MONEY",
+  "max_duration_seconds": 0,
+  "duration_limit_source": "NONE"
 }
 ```
 
 Every identity/delivery field is required. HAL validates CPO, CMS charger/connector, OCPP
 identity, and connector-number mapping before creating a deliverable command.
-`limit_type` is `AUTO`, `ENERGY`, `TIME`, or `MONEY`. `energy_limit_wh` and
-`max_duration_seconds` are independently optional non-negative
-protocol-enforcement instructions: zero means absent. They are not price or
-tariff inputs. A MONEY classification lets HAL preserve money-limit stop
-provenance while its existing meter/deadline workflow enforces the derived
-energy or time threshold.
+`limit_type` is the immutable customer selection: `AUTO`, `ENERGY`, `TIME`,
+or `MONEY`. `energy_limit_wh` and `max_duration_seconds` are independently
+optional non-negative protocol-enforcement instructions: zero means absent.
+Their sources are independently `NONE`, `CUSTOMER_ENERGY`, `CUSTOMER_TIME`,
+`CUSTOMER_MONEY`, or `WALLET`; `CUSTOMER_TIME` is invalid for energy and
+`CUSTOMER_ENERGY` is invalid for duration. They are not price, tariff, GST,
+wallet, or buffer inputs. HAL accepts legacy omitted sources only by narrowly
+inferring the prior `limit_type` meaning.
+
+CMS can therefore send simultaneous energy and duration thresholds without
+HAL converting either dimension. For a triggered energy threshold HAL records
+`ENERGY_LIMIT`, `MONEY_LIMIT`, or `WALLET_LIMIT` from its source; the deadline
+path analogously records `TIME_LIMIT`, `MONEY_LIMIT`, or `WALLET_LIMIT`.
 
 ### 7.2 Stop command
 
@@ -736,6 +745,10 @@ After StartTransaction establishes `meter_start_wh`, HAL evaluates delivered
 energy from that baseline and executes a controlled idempotent RemoteStop
 workflow at the approved enforcement threshold.
 
+The source controls stop provenance only. `CUSTOMER_ENERGY` yields
+`ENERGY_LIMIT`, `CUSTOMER_MONEY` yields `MONEY_LIMIT`, and `WALLET` yields
+`WALLET_LIMIT`; HAL never reinterprets one as another from `limit_type`.
+
 Sampling and stop latency create physical overshoot. V1 deliberately uses the
 first accepted cumulative sample at or above the configured integer-Wh limit;
 it does not invent a predictive power guard. HAL records the stop workflow and
@@ -758,6 +771,8 @@ The deadline is durable, reconstructed after restart, and enters the same
 idempotent stop workflow as user, CPO, and energy-limit stops. A RemoteStart
 acknowledgement does not start the timer. When a charger-originated
 `StopTransaction` arrives first, its actual stop reason remains authoritative.
+`CUSTOMER_TIME`, `CUSTOMER_MONEY`, and `WALLET` yield `TIME_LIMIT`,
+`MONEY_LIMIT`, and `WALLET_LIMIT` respectively.
 
 ## 12. Failure and Reconciliation Rules
 

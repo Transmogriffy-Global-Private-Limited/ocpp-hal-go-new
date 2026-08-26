@@ -6,6 +6,12 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- V1 command/transaction records now retain customer selection independently
+  from energy and duration threshold provenance. CMS may supply both physical
+  limits without HAL predicting one dimension from the other. Meter/deadline
+  stops report customer ENERGY/TIME/MONEY versus WALLET truthfully; migration
+  016 is additive and source-only/unrun.
+
 - V1 start commands now persist an immutable CMS limit classification (`AUTO`,
   `ENERGY`, `TIME`, `MONEY`) with independently optional energy and duration
   thresholds. The existing meter/deadline stop workers remain the only

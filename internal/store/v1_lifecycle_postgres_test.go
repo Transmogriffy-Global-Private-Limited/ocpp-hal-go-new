@@ -6,11 +6,14 @@ import (
 	"time"
 )
 
-func TestV1EnergyStopCausePreservesMoneySelection(t *testing.T) {
-	if initiator, reason := v1EnergyStopCause("MONEY"); initiator != "MONEY_LIMIT" || reason != "money_limit_reached" {
+func TestV1EnergyStopCauseUsesThresholdProvenance(t *testing.T) {
+	if initiator, reason := v1EnergyStopCause("CUSTOMER_MONEY", "MONEY"); initiator != "MONEY_LIMIT" || reason != "money_limit_reached" {
 		t.Fatalf("money energy cause=%q/%q", initiator, reason)
 	}
-	if initiator, reason := v1EnergyStopCause("ENERGY"); initiator != "ENERGY_LIMIT" || reason != "energy_limit_reached" {
+	if initiator, reason := v1EnergyStopCause("WALLET", "ENERGY"); initiator != "WALLET_LIMIT" || reason != "wallet_limit_reached" {
+		t.Fatalf("wallet energy cause=%q/%q", initiator, reason)
+	}
+	if initiator, reason := v1EnergyStopCause("CUSTOMER_ENERGY", "ENERGY"); initiator != "ENERGY_LIMIT" || reason != "energy_limit_reached" {
 		t.Fatalf("energy cause=%q/%q", initiator, reason)
 	}
 }
@@ -57,9 +60,10 @@ func TestV1FactPayloadsConformToApprovedFieldNames(t *testing.T) {
 		IDTag: "appv1_test", OCPPTransactionID: 73, ActualStartedAt: now, ObservedStartedAt: now, MeterStartWh: 12000,
 		LatestMeterWh: int64ptr(12345), MeterObservedAt: timePtr(now.Add(time.Second)), MeterSequence: 1,
 		MeterStopWh: int64ptr(13000), CompletedAt: timePtr(now.Add(2 * time.Second)), OCPPStopReason: "Local",
+		EnergyLimitSource: "CUSTOMER_ENERGY", DurationLimitSource: "WALLET",
 	}
 	started := decodedFactPayload(t, v1StartedFact(transaction, "hal-start-command"))
-	if _, ok := started["actual_started_at"]; ok || started["started_at"] == nil {
+	if _, ok := started["actual_started_at"]; ok || started["started_at"] == nil || started["energy_limit_source"] != "CUSTOMER_ENERGY" || started["duration_limit_source"] != "WALLET" {
 		t.Fatalf("started payload=%#v", started)
 	}
 	meter := decodedFactPayload(t, v1MeterFact(transaction))
