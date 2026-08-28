@@ -58,8 +58,8 @@ Supported flags:
 | `-soc` | `CP_SIM_SOC` | `35` | Initial EV state of charge. |
 | `-heartbeat-interval` | `CP_SIM_HEARTBEAT_INTERVAL` | `0` | Simulator Heartbeat cadence in seconds. `0` honors the accepted `BootNotification.conf.interval`; a positive value is an explicit override. |
 | `-auto-start-id-tag` | `CP_SIM_AUTO_START_ID_TAG` | empty | Run one normal local session after boot using this idTag. |
-| `-auto-power-kw` | `CP_SIM_AUTO_POWER_KW` | `7.2` | Power used by startup automatic metering. |
-| `-auto-meter-interval` | `CP_SIM_AUTO_METER_INTERVAL` | `0` | Automatic MeterValues cadence in seconds after a successful startup transaction. `0` disables it. |
+| `-auto-power-kw` | `CP_SIM_AUTO_POWER_KW` | `7.2` | Constant simulated power used by configured automatic metering. |
+| `-auto-meter-interval` | `CP_SIM_AUTO_METER_INTERVAL` | `0` | Automatic MeterValues cadence in seconds after any successful transaction. `0` disables it. |
 
 Flags take precedence over environment values. These variables are simulator
 client settings; they are not consumed by the HAL server.
@@ -196,15 +196,19 @@ after boot reports `Available`: `plug`, `Authorize`, `StartTransaction`, and
 `StatusNotification Charging`. It retains the Central-System-assigned
 transaction ID. If `-auto-meter-interval` is positive, it starts the same
 periodic meter worker used by `auto <seconds> <power-kW>` only after that start
-has succeeded. A failed startup step is printed with its exact phase and leaves
+has succeeded. The same configured worker also starts after normal terminal or
+accepted remote transactions, is bound to that exact transaction ID, and uses
+actual elapsed time between ticks. A failed startup step is printed with its exact phase and leaves
 the terminal prompt usable; automatic startup never retries after a stop or
 failure.
 
 ## Remote CMS flow
 
-By default, valid `RemoteStartTransaction` and `RemoteStopTransaction` requests
-are accepted and executed after their confirmation is returned. This models a
-normal connected charger for the authenticated v1 remote-command boundary.
+By default, valid `RemoteStartTransaction` requests are accepted and executed
+after their confirmation is returned. An accepted `RemoteStopTransaction`
+owns completion: cpconsole sends one StopTransaction, clears its active state,
+then reports Finishing followed immediately by Available. It does not await a
+manual simulated unplug.
 
 For manual failure and timing tests:
 

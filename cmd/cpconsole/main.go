@@ -88,7 +88,7 @@ type simulator struct {
 	voltage              float64
 	soc                  float64
 	remoteStart          *core.RemoteStartTransactionRequest
-	remoteStop           *core.RemoteStopTransactionRequest
+	stoppingTransaction  int
 	acceptStart          bool
 	acceptStop           bool
 	autoRemote           bool
@@ -97,6 +97,9 @@ type simulator struct {
 	autoDone             chan struct{}
 	autoInterval         time.Duration
 	autoPowerKW          float64
+	autoTransaction      int
+	startupAutoInterval  time.Duration
+	startupAutoPowerKW   float64
 	heartbeatServer      int
 	heartbeatOverride    int
 	heartbeatEffective   int
@@ -186,6 +189,7 @@ func main() {
 
 	sim := newSimulator(*clientID, *model, *vendor, options.connector, options.meterStartWh, options.voltage, options.soc)
 	sim.setHeartbeatOverride(options.heartbeatInterval)
+	sim.setStartupAutoMeter(time.Duration(options.autoMeterInterval)*time.Second, options.autoPowerKW)
 	if err := sim.connectAndBoot(normalizedURL); err != nil {
 		log.Fatal(err)
 	}
@@ -276,9 +280,6 @@ func (options startupOptions) validate() error {
 		return errors.New("automatic start id-tag must contain 1 to 20 characters")
 	}
 	if options.autoMeterInterval > 0 {
-		if options.autoStartIDTag == "" {
-			return errors.New("automatic metering requires -auto-start-id-tag")
-		}
 		if options.autoPowerKW <= 0 {
 			return errors.New("automatic meter power must be greater than zero")
 		}
@@ -289,6 +290,12 @@ func (options startupOptions) validate() error {
 func (s *simulator) setHeartbeatOverride(seconds int) {
 	s.mu.Lock()
 	s.heartbeatOverride = seconds
+	s.mu.Unlock()
+}
+
+func (s *simulator) setStartupAutoMeter(interval time.Duration, powerKW float64) {
+	s.mu.Lock()
+	s.startupAutoInterval, s.startupAutoPowerKW = interval, powerKW
 	s.mu.Unlock()
 }
 
@@ -528,10 +535,7 @@ func (s *simulator) startAutomaticSession(options autoSessionOptions) error {
 	return runAutomaticSession(options, s.plug, func() error {
 		return s.startTransaction(options.idTag, false)
 	}, func() error {
-		if options.meterInterval <= 0 {
-			return nil
-		}
-		return s.startAuto(options.meterInterval, options.powerKW)
+		return nil // startTransaction owns configured automatic metering.
 	})
 }
 
@@ -703,6 +707,14 @@ func (s *simulator) startTransaction(idTag string, remote bool) error {
 		return err
 	}
 	fmt.Printf("[OCPP] StartTransaction accepted; transactionId=%d meterStart=%.0fWh idTag=%s\n", conf.TransactionId, meter, idTag)
+	s.mu.RLock()
+	interval, powerKW := s.startupAutoInterval, s.startupAutoPowerKW
+	s.mu.RUnlock()
+	if interval > 0 {
+		if err := s.startAuto(interval, powerKW); err != nil {
+			fmt.Printf("[SIM] startup automatic metering did not start for transactionId=%d: %v\n", conf.TransactionId, err)
+		}
+	}
 	return nil
 }
 
@@ -712,7 +724,7 @@ func (s *simulator) sendMeter(elapsed time.Duration, powerKW float64) error {
 	return s.sendMeterLocked(elapsed, powerKW)
 }
 
-func (s *simulator) sendAutomaticMeter(cancel <-chan struct{}, elapsed time.Duration, powerKW float64) error {
+func (s *simulator) sendAutomaticMeter(cancel <-chan struct{}, elapsed time.Duration, powerKW float64, expectedTransaction int) error {
 	s.opsMu.Lock()
 	defer s.opsMu.Unlock()
 	select {
@@ -720,8 +732,11 @@ func (s *simulator) sendAutomaticMeter(cancel <-chan struct{}, elapsed time.Dura
 		return errWorkerStopped
 	default:
 		s.mu.RLock()
-		status := s.status
+		status, transaction, stopping := s.status, s.transaction, s.stoppingTransaction
 		s.mu.RUnlock()
+		if transaction != expectedTransaction || stopping != 0 {
+			return errWorkerStopped
+		}
 		if status != core.ChargePointStatusCharging {
 			return errAutomaticMeterPaused
 		}
@@ -792,9 +807,16 @@ func (s *simulator) stopTransaction(reason core.Reason) error {
 	transaction := s.transaction
 	meter := s.meterWh
 	idTag := s.idTag
+	stopping := s.stoppingTransaction
 	s.mu.RUnlock()
 	if transaction == 0 {
 		return errors.New("no active transaction")
+	}
+	if reason != core.ReasonRemote && stopping != 0 {
+		return errors.New("an accepted remote stop is already completing")
+	}
+	if stopping != 0 && stopping != transaction {
+		return errors.New("another transaction is stopping")
 	}
 	ocppMeter, err := ocppMeterWh(meter)
 	if err != nil {
@@ -815,17 +837,23 @@ func (s *simulator) stopTransaction(reason core.Reason) error {
 	s.transaction = 0
 	s.idTag = ""
 	s.powerKW = 0
-	s.remoteStop = nil
+	s.stoppingTransaction = 0
+	s.plugged = false
 	s.mu.Unlock()
 	s.mu.RLock()
 	unavailable := s.unavailableAfterStop
 	s.mu.RUnlock()
-	targetStatus := core.ChargePointStatusFinishing
 	if unavailable {
-		targetStatus = core.ChargePointStatusUnavailable
-	}
-	if err := s.setStatusLocked(targetStatus, core.NoError); err != nil {
-		return err
+		if err := s.setStatusLocked(core.ChargePointStatusUnavailable, core.NoError); err != nil {
+			return err
+		}
+	} else {
+		if err := s.setStatusLocked(core.ChargePointStatusFinishing, core.NoError); err != nil {
+			fmt.Printf("[SIM] Finishing status failed after StopTransaction: %v; continuing to Available\n", err)
+		}
+		if err := s.setStatusLocked(core.ChargePointStatusAvailable, core.NoError); err != nil {
+			return err
+		}
 	}
 	fmt.Printf("[OCPP] StopTransaction status=%s transactionId=%d meterStop=%.0fWh reason=%s\n", status, transaction, meter, reason)
 	return nil
@@ -874,7 +902,10 @@ func (s *simulator) requireTransactionStatus(status core.ChargePointStatus) erro
 }
 
 func (s *simulator) startAuto(interval time.Duration, powerKW float64) error {
-	if !s.hasTransaction() {
+	s.mu.RLock()
+	transaction, stopping := s.transaction, s.stoppingTransaction
+	s.mu.RUnlock()
+	if transaction == 0 || stopping != 0 {
 		return errors.New("automatic metering requires an active transaction")
 	}
 	s.stopAutoAndWait()
@@ -882,16 +913,20 @@ func (s *simulator) startAuto(interval time.Duration, powerKW float64) error {
 	s.mu.Lock()
 	s.autoCancel, s.autoDone = cancel, done
 	s.autoInterval, s.autoPowerKW = interval, powerKW
+	s.autoTransaction = transaction
 	s.mu.Unlock()
 	go func() {
 		defer close(done)
 		defer s.clearAuto(cancel)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		lastSampleAt := time.Now()
 		for {
 			select {
-			case <-ticker.C:
-				if err := s.sendAutomaticMeter(cancel, interval, powerKW); err != nil {
+			case sampleAt := <-ticker.C:
+				elapsed := sampleAt.Sub(lastSampleAt)
+				lastSampleAt = sampleAt
+				if err := s.sendAutomaticMeter(cancel, elapsed, powerKW, transaction); err != nil {
 					if errors.Is(err, errWorkerStopped) {
 						return
 					}
@@ -906,7 +941,7 @@ func (s *simulator) startAuto(interval time.Duration, powerKW float64) error {
 			}
 		}
 	}()
-	fmt.Printf("[SIM] automatic metering every %s at %.3fkW\n", interval, powerKW)
+	fmt.Printf("[SIM] automatic metering transactionId=%d every %s at %.3fkW\n", transaction, interval, powerKW)
 	return nil
 }
 
@@ -933,7 +968,7 @@ func (s *simulator) stopAutoAndWait() {
 func (s *simulator) detachAutoLocked() chan struct{} {
 	cancel := s.autoCancel
 	s.autoCancel, s.autoDone = nil, nil
-	s.autoInterval, s.autoPowerKW = 0, 0
+	s.autoInterval, s.autoPowerKW, s.autoTransaction = 0, 0, 0
 	return cancel
 }
 
@@ -963,13 +998,7 @@ func (s *simulator) executePendingRemoteStart() error {
 }
 
 func (s *simulator) executePendingRemoteStop() error {
-	s.mu.RLock()
-	request := s.remoteStop
-	s.mu.RUnlock()
-	if request == nil {
-		return errors.New("no accepted remote stop is pending")
-	}
-	return s.stopTransaction(core.ReasonRemote)
+	return errors.New("accepted remote stops complete automatically")
 }
 
 func (s *simulator) printState() {
@@ -977,7 +1006,7 @@ func (s *simulator) printState() {
 	defer s.mu.RUnlock()
 	fmt.Printf("connected=%t booted=%t id=%s connector=%d status=%s error=%s plugged=%t\n", s.cp.IsConnected(), s.booted, s.clientID, s.connectorID, s.status, s.errorCode, s.plugged)
 	fmt.Printf("heartbeat server=%ds effective=%ds override=%t active=%t autoMeter=%t interval=%s power=%.3fkW\n", s.heartbeatServer, s.heartbeatEffective, s.heartbeatOverride > 0, s.heartbeatCancel != nil, s.autoCancel != nil, s.autoInterval, s.autoPowerKW)
-	fmt.Printf("transactionId=%d idTag=%q meter=%.0fWh power=%.3fkW voltage=%.1fV soc=%.1f%% pendingRemoteStart=%t pendingRemoteStop=%t autoRemote=%t\n", s.transaction, s.idTag, s.meterWh, s.powerKW, s.voltage, s.soc, s.remoteStart != nil, s.remoteStop != nil, s.autoRemote)
+	fmt.Printf("transactionId=%d stoppingTransactionId=%d autoMeterTransactionId=%d idTag=%q meter=%.0fWh power=%.3fkW voltage=%.1fV soc=%.1f%% pendingRemoteStart=%t autoRemote=%t\n", s.transaction, s.stoppingTransaction, s.autoTransaction, s.idTag, s.meterWh, s.powerKW, s.voltage, s.soc, s.remoteStart != nil, s.autoRemote)
 }
 
 func (s *simulator) hasTransaction() bool {
@@ -1104,22 +1133,21 @@ func (s *simulator) OnRemoteStartTransaction(request *core.RemoteStartTransactio
 
 func (s *simulator) OnRemoteStopTransaction(request *core.RemoteStopTransactionRequest) (*core.RemoteStopTransactionConfirmation, error) {
 	s.mu.Lock()
-	accepted := s.acceptStop && s.transaction == request.TransactionId
-	if accepted {
-		s.remoteStop = request
+	accepted := s.acceptStop && (s.transaction == request.TransactionId || s.stoppingTransaction == request.TransactionId)
+	startCompletion := accepted && s.stoppingTransaction == 0
+	if startCompletion {
+		s.stoppingTransaction = request.TransactionId
 	}
-	auto := s.autoRemote
 	s.mu.Unlock()
 	status := types.RemoteStartStopStatusRejected
 	if accepted {
 		status = types.RemoteStartStopStatusAccepted
 	}
-	fmt.Printf("[REMOTE] RemoteStopTransaction transactionId=%d response=%s auto=%t\n", request.TransactionId, status, auto)
-	if accepted && auto {
+	fmt.Printf("[REMOTE] RemoteStopTransaction transactionId=%d response=%s completing=%t\n", request.TransactionId, status, startCompletion)
+	if startCompletion {
 		go func() {
-			time.Sleep(100 * time.Millisecond)
-			if err := s.executePendingRemoteStop(); err != nil {
-				fmt.Printf("[SIM] automatic remote stop failed: %v\n", err)
+			if err := s.stopTransaction(core.ReasonRemote); err != nil {
+				fmt.Printf("[SIM] accepted remote stop completion failed: %v\n", err)
 			}
 		}()
 	}

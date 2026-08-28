@@ -91,11 +91,11 @@ func TestStartupOptionsValidation(t *testing.T) {
 	}
 	invalidMeter := valid
 	invalidMeter.autoMeterInterval = 10
-	if err := invalidMeter.validate(); err == nil {
-		t.Fatal("automatic metering without startup id-tag was accepted")
+	if err := invalidMeter.validate(); err != nil {
+		t.Fatalf("transaction-bound automatic metering was rejected: %v", err)
 	}
 	invalidPower := valid
-	invalidPower.autoStartIDTag, invalidPower.autoMeterInterval, invalidPower.autoPowerKW = "USER001", 10, 0
+	invalidPower.autoMeterInterval, invalidPower.autoPowerKW = 10, 0
 	if err := invalidPower.validate(); err == nil {
 		t.Fatal("automatic metering with zero power was accepted")
 	}
@@ -128,7 +128,7 @@ func TestCancelledAutomaticMeterCannotSend(t *testing.T) {
 	sim := newSimulator("CP-TEST", "Model", "Vendor", 1, 100000, 230, 35)
 	cancel := make(chan struct{})
 	close(cancel)
-	if err := sim.sendAutomaticMeter(cancel, time.Second, 7.2); !errors.Is(err, errWorkerStopped) {
+	if err := sim.sendAutomaticMeter(cancel, time.Second, 7.2, 1); !errors.Is(err, errWorkerStopped) {
 		t.Fatalf("cancelled automatic meter error=%v", err)
 	}
 }
@@ -139,7 +139,7 @@ func TestAutomaticMeterPausesOutsideCharging(t *testing.T) {
 	sim.transaction = 1
 	sim.status = core.ChargePointStatusSuspendedEV
 	sim.mu.Unlock()
-	if err := sim.sendAutomaticMeter(make(chan struct{}), time.Second, 7.2); !errors.Is(err, errAutomaticMeterPaused) {
+	if err := sim.sendAutomaticMeter(make(chan struct{}), time.Second, 7.2, 1); !errors.Is(err, errAutomaticMeterPaused) {
 		t.Fatalf("suspended automatic meter error=%v", err)
 	}
 }

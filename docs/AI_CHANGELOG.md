@@ -1,5 +1,16 @@
 # AI-assisted changelog
 
+## 2026-08-28 - cpconsole transaction completion and metering correction
+
+- Accepted RemoteStopTransaction now owns one simulated StopTransaction and
+  deterministic Finishing-to-Available completion.
+- Configured automatic metering now starts after any successful local or remote
+  transaction, uses actual elapsed ticker time, and binds its worker to that
+  exact OCPP transaction ID.
+
+Compatibility: virtual-charger-only behavior; no HAL/CMS service contract,
+database, or runtime service changed.
+
 ## 2026-08-26 - Preserve independent limit provenance through HAL
 
 - Extended the existing V1 start command, durable command/transaction records,

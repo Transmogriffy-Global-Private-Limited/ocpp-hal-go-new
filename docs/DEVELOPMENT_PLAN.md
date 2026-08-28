@@ -31,6 +31,9 @@ Completed in this slice:
 - Software-charger automation slice: `cpconsole` now models Boot-driven
   Heartbeats and an optional one-shot normal charging session without creating
   a second protocol or state-machine path.
+- Cpconsole corrective slice: accepted remote stops self-complete through
+  StopTransaction, Finishing, and Available; configured periodic metering is
+  transaction-bound and elapsed-time based.
 - Current cross-service hardening: all v1 HTTP response projections now use
   explicit snake_case transport views, command responses have a typed OpenAPI
   schema, and fact delivery exposes only bounded receiver classifications while
