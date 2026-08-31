@@ -12,13 +12,19 @@
 - Remote start now validates an explicit connector or deterministically selects
   the lowest eligible `Available`/`Preparing` connector. Remote stop resolves
   the exact active OCPP transaction owner and cannot stop another connector.
+- Configured automatic metering now starts for every successful local or remote
+  transaction, is bound to that connector's exact transaction ID, and uses the
+  actual elapsed time between samples. An accepted remote stop cancels only its
+  owner's worker, sends one StopTransaction, then reports `Finishing` and
+  `Available` for that connector.
 
 Compatibility: HAL server, CMS, persistence, migrations, and deployment are
 unchanged. This is cpconsole simulator behavior only.
 
-Verification: focused cpconsole tests and race coverage pass. Broader source
-verification is recorded with the active work item; no remote charger session,
-database, migration, deployment, commit, or push was performed.
+Verification: focused/race cpconsole tests, full Go tests, vet, build, and the
+build script pass. Hosted simulator verification booted once and reported both
+configured connectors without starting a transaction. The PostgreSQL regression
+requires an explicit `TEST_DATABASE_URL` and was not run.
 
 ## 2026-08-26 - Preserve independent limit provenance through HAL
 

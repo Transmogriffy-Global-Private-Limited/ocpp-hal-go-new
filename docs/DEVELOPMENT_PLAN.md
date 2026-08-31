@@ -33,8 +33,8 @@ Completed in this slice:
   a second protocol or state-machine path.
 - Software-charger multi-connector slice: one `cpconsole` Charge Point/WebSocket
   now owns independently selectable connector state, exact remote-start/stop
-  routing, and independent automatic meter workers; no HAL server or CMS path
-  is changed.
+  routing, and independent transaction-bound automatic meter workers using real
+  elapsed sample time; no HAL server or CMS path is changed.
 - Current cross-service hardening: all v1 HTTP response projections now use
   explicit snake_case transport views, command responses have a typed OpenAPI
   schema, and fact delivery exposes only bounded receiver classifications while
