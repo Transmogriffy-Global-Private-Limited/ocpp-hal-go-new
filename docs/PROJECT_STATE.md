@@ -6,6 +6,16 @@ only exposes the authenticated v1 service boundary.
 
 ## Implemented
 
+- STOP lifecycle persistence now has one canonical row order: transaction,
+  stop workflow, remote commands, then outbox facts. RemoteStop acceptance and
+  charger StopTransaction completion therefore serialize instead of acquiring
+  transaction/workflow rows in opposite orders. Only uncommitted PostgreSQL
+  deadlock or serialization failures retry, never an OCPP remote command.
+  Migration 017 adds an additive, backfilled terminal-completion key ledger:
+  new `transaction.completed` facts reserve one HAL transaction aggregate while
+  preserving any historical outbox rows. The migration and PostgreSQL race
+  regression remain unrun without an explicit disposable `TEST_DATABASE_URL`.
+
 - V1 command/transaction records now retain customer selection independently
   from energy and duration threshold provenance. CMS may supply both physical
   limits without HAL predicting one dimension from the other. Meter/deadline

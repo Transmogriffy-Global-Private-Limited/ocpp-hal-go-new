@@ -1,5 +1,24 @@
 # AI-assisted changelog
 
+## 2026-08-31 - STOP lifecycle lock-order and completion-fact hardening
+
+- Eliminated the PostgreSQL lock inversion between RemoteStop-delivery updates
+  and charger StopTransaction completion. All shared lifecycle mutations now
+  lock transaction, stop workflow, remote commands, then facts; only a local
+  deadlock/serialization abort can retry the uncommitted store transaction.
+  OCPP delivery is never replayed by this retry path.
+- Added additive migration 017. Its terminal-completion key ledger backfills
+  one canonical historical fact per aggregate without deleting old outbox rows,
+  then prevents future duplicate logical `transaction.completed` facts even
+  though their legacy sequence is NULL.
+- Added source retry classification coverage and a `TEST_DATABASE_URL`-gated
+  concurrent delivery/completion regression with both operation orderings,
+  terminal state assertions, and exact completion-fact count checks.
+
+Verification: `go test ./internal/store` passed. PostgreSQL integration is
+deliberately skipped without `TEST_DATABASE_URL`; no migration, repair,
+deployment, or service restart was performed.
+
 ## 2026-08-31 - cpconsole one charge point with multiple connectors
 
 - Replaced cpconsole's single scalar connector/transaction/meter state with one

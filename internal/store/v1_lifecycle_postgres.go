@@ -98,7 +98,30 @@ func (s *PostgresStore) insertV1FactTx(ctx context.Context, tx *sql.Tx, factType
 		return err
 	}
 	digest := sha256.Sum256(envelope)
-	_, err = tx.ExecContext(ctx, `INSERT INTO v1_fact_outbox (fact_id,fact_type,aggregate_key,sequence,payload,content_digest,schema_version,occurred_at,producer,status,next_retry_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,1,$7,$8,'PENDING',$7) ON CONFLICT (fact_type,aggregate_key,sequence) DO NOTHING`, fact.FactID, factType, aggregate, sequence, string(body), hex.EncodeToString(digest[:]), occurredAt, v1FactProducer)
+	statement := `INSERT INTO v1_fact_outbox (fact_id,fact_type,aggregate_key,sequence,payload,content_digest,schema_version,occurred_at,producer,status,next_retry_at) VALUES ($1,$2,$3,$4,$5::jsonb,$6,1,$7,$8,'PENDING',$7) ON CONFLICT (fact_type,aggregate_key,sequence) DO NOTHING`
+	completionReserved := false
+	if factType == "transaction.completed" {
+		// Completion intentionally has no sequence. Reserve its aggregate in the
+		// additive terminal-fact key table first, because PostgreSQL considers the
+		// NULL sequence distinct in the older three-column outbox uniqueness key.
+		reservation, err := tx.ExecContext(ctx, `INSERT INTO v1_transaction_completion_fact_keys (aggregate_key) VALUES ($1) ON CONFLICT (aggregate_key) DO NOTHING`, aggregate)
+		if err != nil {
+			return err
+		}
+		created, err := reservation.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if created == 0 {
+			return nil
+		}
+		completionReserved = true
+	}
+	_, err = tx.ExecContext(ctx, statement, fact.FactID, factType, aggregate, sequence, string(body), hex.EncodeToString(digest[:]), occurredAt, v1FactProducer)
+	if err != nil || !completionReserved {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE v1_transaction_completion_fact_keys SET fact_id=$2::uuid WHERE aggregate_key=$1 AND fact_id IS NULL`, aggregate, fact.FactID)
 	return err
 }
 
@@ -286,15 +309,18 @@ func (s *PostgresStore) UpdateV1TelemetryForOCPP(ctx context.Context, identity s
 		return nil, result, err
 	}
 	if result.EnergyAccepted {
-		seq := current.MeterSequence
-		if err := s.insertV1FactTx(ctx, tx, "transaction.meter", halID, &seq, *current.MeterObservedAt, v1MeterFact(current)); err != nil {
-			return nil, result, err
-		}
+		// The transaction row was locked above. If the accepted meter value
+		// reaches a limit, create/lock the STOP workflow before appending a fact
+		// so this path retains transaction -> workflow -> facts ordering.
 		if current.EnergyLimitWh != nil && *current.LatestMeterWh-current.MeterStartWh >= *current.EnergyLimitWh {
 			initiator, reason := v1EnergyStopCause(current.EnergyLimitSource, current.LimitType)
 			if _, _, err := s.ensureV1StopWorkflowTx(ctx, tx, current, initiator, reason); err != nil {
 				return nil, result, err
 			}
+		}
+		seq := current.MeterSequence
+		if err := s.insertV1FactTx(ctx, tx, "transaction.meter", halID, &seq, *current.MeterObservedAt, v1MeterFact(current)); err != nil {
+			return nil, result, err
 		}
 	}
 	if result.SoCAccepted {
@@ -332,6 +358,9 @@ func (s *PostgresStore) UpdateV1Meter(ctx context.Context, halID string, ocppID,
 }
 
 func (s *PostgresStore) ensureV1StopWorkflowTx(ctx context.Context, tx *sql.Tx, t *V1Transaction, initiator, reason string) (*V1StopWorkflow, bool, error) {
+	// Callers must hold the transaction row lock before this second workflow
+	// lock. That invariant prevents the RemoteStop-acceptance path and the
+	// charger StopTransaction path from taking their shared rows in reverse.
 	workflow := &V1StopWorkflow{}
 	err := tx.QueryRowContext(ctx, `SELECT hal_transaction_id::text,requested_stop_initiator,requested_stop_reason,state,delivery_attempts,COALESCE(last_ocpp_result,''),COALESCE(last_error_category,''),COALESCE(last_error_detail,''),created_at,updated_at,completed_at FROM v1_stop_workflows WHERE hal_transaction_id=$1 FOR UPDATE`, t.HALTransactionID).Scan(&workflow.HALTransactionID, &workflow.RequestedStopInitiator, &workflow.RequestedStopReason, &workflow.State, &workflow.DeliveryAttempts, &workflow.LastOCPPResult, &workflow.LastErrorCategory, &workflow.LastErrorDetail, &workflow.CreatedAt, &workflow.UpdatedAt, &workflow.CompletedAt)
 	if err == nil {
@@ -355,23 +384,20 @@ func (s *PostgresStore) ensureV1StopWorkflowTx(ctx context.Context, tx *sql.Tx, 
 }
 
 func (s *PostgresStore) EnsureV1StopWorkflow(ctx context.Context, halID, initiator, reason string) (*V1StopWorkflow, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	var workflow *V1StopWorkflow
+	var created bool
+	err := s.withV1StopLifecycleTransaction(ctx, func(tx *sql.Tx) error {
+		rows, err := s.lockV1StopLifecycleRows(ctx, tx, halID)
+		if err != nil {
+			return err
+		}
+		workflow, created, err = s.ensureV1StopWorkflowTx(ctx, tx, rows.Transaction, initiator, reason)
+		return err
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	defer tx.Rollback()
-	t, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
-	if err != nil {
-		return nil, false, err
-	}
-	w, created, err := s.ensureV1StopWorkflowTx(ctx, tx, t, initiator, reason)
-	if err != nil {
-		return nil, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, err
-	}
-	return w, created, nil
+	return workflow, created, nil
 }
 
 func (s *PostgresStore) RequestV1Stop(ctx context.Context, halID, initiator, reason string) (*V1Transaction, bool, error) {
@@ -400,20 +426,43 @@ func (s *PostgresStore) GetV1StopWorkflow(ctx context.Context, halID string) (*V
 }
 
 func (s *PostgresStore) ClaimV1StopDelivery(ctx context.Context, halID string) (*V1StopWorkflow, bool, error) {
-	result, err := s.db.ExecContext(ctx, `UPDATE v1_stop_workflows w SET state='PENDING_DELIVERY',claimed_until=NOW()+INTERVAL '30 seconds',updated_at=NOW() WHERE w.hal_transaction_id=$1 AND w.state='PERSISTED' AND EXISTS (SELECT 1 FROM v1_transactions t WHERE t.hal_transaction_id=w.hal_transaction_id AND t.completed_at IS NULL)`, halID)
+	claimed := false
+	err := s.withV1StopLifecycleTransaction(ctx, func(tx *sql.Tx) error {
+		claimed = false
+		rows, err := s.lockV1StopLifecycleRows(ctx, tx, halID)
+		if err != nil {
+			return err
+		}
+		if rows.Transaction.CompletedAt != nil || rows.Workflow == nil || rows.Workflow.State != "PERSISTED" {
+			return nil
+		}
+		result, err := tx.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='PENDING_DELIVERY',claimed_until=NOW()+INTERVAL '30 seconds',updated_at=NOW() WHERE hal_transaction_id=$1 AND state='PERSISTED'`, halID)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		claimed = count == 1
+		return err
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return nil, false, err
-	}
-	w, err := s.GetV1StopWorkflow(ctx, halID)
-	return w, rows == 1, err
+	workflow, err := s.GetV1StopWorkflow(ctx, halID)
+	return workflow, claimed, err
 }
 
 func (s *PostgresStore) BeginV1StopDelivery(ctx context.Context, halID string) (*V1StopWorkflow, error) {
-	_, err := s.db.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='DELIVERY_ATTEMPTED',delivery_attempts=delivery_attempts+1,claimed_until=NOW()+INTERVAL '2 minutes',updated_at=NOW() WHERE hal_transaction_id=$1 AND state='PENDING_DELIVERY'`, halID)
+	err := s.withV1StopLifecycleTransaction(ctx, func(tx *sql.Tx) error {
+		rows, err := s.lockV1StopLifecycleRows(ctx, tx, halID)
+		if err != nil {
+			return err
+		}
+		if rows.Transaction.CompletedAt != nil || rows.Workflow == nil || rows.Workflow.State != "PENDING_DELIVERY" {
+			return nil
+		}
+		_, err = tx.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='DELIVERY_ATTEMPTED',delivery_attempts=delivery_attempts+1,claimed_until=NOW()+INTERVAL '2 minutes',updated_at=NOW() WHERE hal_transaction_id=$1 AND state='PENDING_DELIVERY'`, halID)
+		return err
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -432,47 +481,49 @@ func (s *PostgresStore) MarkV1StopDelivery(ctx context.Context, halID, status, r
 		state = "AMBIGUOUS"
 		category = "delivery"
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	_, err = tx.ExecContext(ctx, `UPDATE v1_stop_workflows SET state=$2,last_ocpp_result=$3,last_error_category=$4,last_error_detail=$5,claimed_until=NULL,updated_at=NOW() WHERE hal_transaction_id=$1 AND state NOT IN ('COMPLETED','SUPERSEDED')`, halID, state, nullString(result), nullString(category), nullString(detail))
-	if err != nil {
-		return nil, err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET stop_state=$2,updated_at=NOW() WHERE hal_transaction_id=$1 AND completed_at IS NULL`, halID, state)
-	if err != nil {
-		return nil, err
-	}
-	rows, err := tx.QueryContext(ctx, `UPDATE v1_remote_commands SET state=$2,last_ocpp_result=$3,last_error_category=$4,last_error_detail=$5,claimed_until=NULL,updated_at=NOW() WHERE stop_workflow_transaction_id=$1 AND kind='STOP' AND state NOT IN ('SUPERSEDED','MATERIALIZED') RETURNING cms_command_id::text`, halID, state, nullString(result), nullString(category), nullString(detail))
-	if err != nil {
-		return nil, err
-	}
-	var commandIDs []string
-	for rows.Next() {
-		var id string
-		if err := rows.Scan(&id); err != nil {
-			rows.Close()
-			return nil, err
-		}
-		commandIDs = append(commandIDs, id)
-	}
-	if err := rows.Err(); err != nil {
-		rows.Close()
-		return nil, err
-	}
-	rows.Close()
-	for _, commandID := range commandIDs {
-		command, err := s.getV1CommandWith(ctx, txByQueryer{tx}, commandID)
+	err := s.withV1StopLifecycleTransaction(ctx, func(tx *sql.Tx) error {
+		rows, err := s.lockV1StopLifecycleRows(ctx, tx, halID)
 		if err != nil {
-			return nil, err
+			return err
 		}
-		if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, command.UpdatedAt, v1CommandFact(command)); err != nil {
-			return nil, err
+		if rows.Transaction.CompletedAt != nil || rows.Workflow == nil || rows.Workflow.State == "COMPLETED" || rows.Workflow.State == "SUPERSEDED" {
+			return nil
 		}
-	}
-	if err := tx.Commit(); err != nil {
+		if _, err = tx.ExecContext(ctx, `UPDATE v1_stop_workflows SET state=$2,last_ocpp_result=$3,last_error_category=$4,last_error_detail=$5,claimed_until=NULL,updated_at=NOW() WHERE hal_transaction_id=$1 AND state NOT IN ('COMPLETED','SUPERSEDED')`, halID, state, nullString(result), nullString(category), nullString(detail)); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET stop_state=$2,updated_at=NOW() WHERE hal_transaction_id=$1 AND completed_at IS NULL`, halID, state); err != nil {
+			return err
+		}
+		commandRows, err := tx.QueryContext(ctx, `UPDATE v1_remote_commands SET state=$2,last_ocpp_result=$3,last_error_category=$4,last_error_detail=$5,claimed_until=NULL,updated_at=NOW() WHERE stop_workflow_transaction_id=$1 AND kind='STOP' AND state NOT IN ('SUPERSEDED','MATERIALIZED') RETURNING cms_command_id::text`, halID, state, nullString(result), nullString(category), nullString(detail))
+		if err != nil {
+			return err
+		}
+		var commandIDs []string
+		for commandRows.Next() {
+			var id string
+			if err := commandRows.Scan(&id); err != nil {
+				return err
+			}
+			commandIDs = append(commandIDs, id)
+		}
+		if err := commandRows.Err(); err != nil {
+			commandRows.Close()
+			return err
+		}
+		commandRows.Close()
+		for _, commandID := range commandIDs {
+			command, err := s.getV1CommandWith(ctx, txByQueryer{tx}, commandID)
+			if err != nil {
+				return err
+			}
+			if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, command.UpdatedAt, v1CommandFact(command)); err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+	if err != nil {
 		return nil, err
 	}
 	return s.GetV1StopWorkflow(ctx, halID)
@@ -542,70 +593,64 @@ func (s *PostgresStore) ListV1OverdueTransactions(ctx context.Context, now time.
 }
 
 func (s *PostgresStore) CompleteV1Transaction(ctx context.Context, halID string, meterStopWh int64, ocppReason string, completedAt, observedAt time.Time) (*V1Transaction, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	t, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
-	if err != nil {
-		return nil, err
-	}
-	if t.CompletedAt != nil {
-		expectedRaw := t.MeterStopWh
-		if t.RawMeterStopWh != nil {
-			expectedRaw = t.RawMeterStopWh
+	var completed *V1Transaction
+	err := s.withV1StopLifecycleTransaction(ctx, func(tx *sql.Tx) error {
+		rows, err := s.lockV1StopLifecycleRows(ctx, tx, halID)
+		if err != nil {
+			return err
 		}
-		if expectedRaw == nil || *expectedRaw != meterStopWh || t.OCPPStopReason != ocppReason || !t.CompletedAt.Equal(completedAt) {
-			return nil, ErrV1InvalidEvidence
+		transaction := rows.Transaction
+		if transaction.CompletedAt != nil {
+			expectedRaw := transaction.MeterStopWh
+			if transaction.RawMeterStopWh != nil {
+				expectedRaw = transaction.RawMeterStopWh
+			}
+			if expectedRaw == nil || *expectedRaw != meterStopWh || transaction.OCPPStopReason != ocppReason || !transaction.CompletedAt.Equal(completedAt) {
+				return ErrV1InvalidEvidence
+			}
+			completed = transaction
+			return nil
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, err
+		if completedAt.Before(transaction.ActualStartedAt) || observedAt.Before(transaction.ObservedStartedAt) || !plausibleV1ProtocolTime(completedAt, observedAt) {
+			return ErrV1InvalidEvidence
 		}
-		return t, nil
-	}
-	if completedAt.Before(t.ActualStartedAt) || observedAt.Before(t.ObservedStartedAt) || !plausibleV1ProtocolTime(completedAt, observedAt) {
-		return nil, ErrV1InvalidEvidence
-	}
-	if t.MeterObservedAt != nil && t.MeterObservedAt.After(completedAt) && t.LatestMeterWh != nil && meterStopWh < *t.LatestMeterWh {
-		// A protocol sample timestamped after the supplied stop cannot explain
-		// rounding normalization. Do not let charger clock ordering hide a
-		// non-monotonic authoritative projection.
-		return nil, ErrV1InvalidEvidence
-	}
-	classification, classifyErr := classifyV1MeterEvidence(t.MeterStartWh, t.LatestMeterWh, meterStopWh)
-	if classifyErr != nil {
-		return nil, ErrV1InvalidEvidence
-	}
-	effectiveStopWh := classification.EffectiveWh
-	meterObservedAt := completedAt
-	if t.MeterObservedAt != nil && meterObservedAt.Before(*t.MeterObservedAt) {
-		meterObservedAt = *t.MeterObservedAt
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_stop_wh=$2,raw_meter_stop_wh=$3,meter_stop_adjustment_wh=$4,meter_stop_evidence=$5,latest_meter_wh=$2,meter_observed_at=$6,ocpp_stop_reason=$7,completed_at=$8,observed_completed_at=$9,stop_state='COMPLETED',updated_at=NOW() WHERE hal_transaction_id=$1`, halID, effectiveStopWh, meterStopWh, classification.AdjustmentWh, classification.Class, meterObservedAt, nullString(ocppReason), completedAt, observedAt)
+		if transaction.MeterObservedAt != nil && transaction.MeterObservedAt.After(completedAt) && transaction.LatestMeterWh != nil && meterStopWh < *transaction.LatestMeterWh {
+			// A protocol sample timestamped after the supplied stop cannot explain
+			// rounding normalization. Do not let charger clock ordering hide a
+			// non-monotonic authoritative projection.
+			return ErrV1InvalidEvidence
+		}
+		classification, classifyErr := classifyV1MeterEvidence(transaction.MeterStartWh, transaction.LatestMeterWh, meterStopWh)
+		if classifyErr != nil {
+			return ErrV1InvalidEvidence
+		}
+		effectiveStopWh := classification.EffectiveWh
+		meterObservedAt := completedAt
+		if transaction.MeterObservedAt != nil && meterObservedAt.Before(*transaction.MeterObservedAt) {
+			meterObservedAt = *transaction.MeterObservedAt
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE v1_transactions SET meter_stop_wh=$2,raw_meter_stop_wh=$3,meter_stop_adjustment_wh=$4,meter_stop_evidence=$5,latest_meter_wh=$2,meter_observed_at=$6,ocpp_stop_reason=$7,completed_at=$8,observed_completed_at=$9,stop_state='COMPLETED',updated_at=NOW() WHERE hal_transaction_id=$1`, halID, effectiveStopWh, meterStopWh, classification.AdjustmentWh, classification.Class, meterObservedAt, nullString(ocppReason), completedAt, observedAt); err != nil {
+			return err
+		}
+		if rows.Workflow != nil {
+			if _, err = tx.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='COMPLETED',completed_at=$2,claimed_until=NULL,updated_at=NOW() WHERE hal_transaction_id=$1 AND state <> 'COMPLETED'`, halID, completedAt); err != nil {
+				return err
+			}
+		}
+		if _, err = tx.ExecContext(ctx, `UPDATE v1_remote_commands SET state='SUPERSEDED',updated_at=NOW() WHERE stop_workflow_transaction_id=$1 AND state NOT IN ('SUPERSEDED','MATERIALIZED')`, halID); err != nil {
+			return err
+		}
+		completed, err = s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
+		if err != nil {
+			return err
+		}
+		command, err := s.getV1CompletionCommandTx(ctx, tx, halID)
+		if err != nil {
+			return err
+		}
+		return s.insertV1FactTx(ctx, tx, "transaction.completed", halID, nil, observedAt, v1CompletedFact(completed, command))
+	})
 	if err != nil {
-		return nil, err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE v1_stop_workflows SET state='COMPLETED',completed_at=$2,claimed_until=NULL,updated_at=NOW() WHERE hal_transaction_id=$1 AND state <> 'COMPLETED'`, halID, completedAt)
-	if err != nil {
-		return nil, err
-	}
-	_, err = tx.ExecContext(ctx, `UPDATE v1_remote_commands SET state='SUPERSEDED',updated_at=NOW() WHERE stop_workflow_transaction_id=$1 AND state NOT IN ('SUPERSEDED','MATERIALIZED')`, halID)
-	if err != nil {
-		return nil, err
-	}
-	completed, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, halID)
-	if err != nil {
-		return nil, err
-	}
-	command, err := s.getV1CompletionCommandTx(ctx, tx, halID)
-	if err != nil {
-		return nil, err
-	}
-	if err := s.insertV1FactTx(ctx, tx, "transaction.completed", halID, nil, observedAt, v1CompletedFact(completed, command)); err != nil {
-		return nil, err
-	}
-	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
 	return completed, nil

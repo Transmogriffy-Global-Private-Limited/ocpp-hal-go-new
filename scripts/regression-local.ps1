@@ -34,7 +34,7 @@ go test ./internal/integration -count=1
 Write-Host ""
 Write-Host "===== v1 PostgreSQL lifecycle and fact-outbox regression ====="
 
-go test ./internal/store -run 'TestV1(PostgresStoreDurabilityAndRuntime|FactOutbox)' -count=1
+go test ./internal/store -run 'TestV1(PostgresStoreDurabilityAndRuntime|FactOutbox|StopLifecycleConcurrentDeliveryAndCompletion)' -count=1
 
 Write-Host ""
 Write-Host "===== local v1 regression passed ====="

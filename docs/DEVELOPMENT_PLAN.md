@@ -61,10 +61,16 @@ Completed in this slice:
   independently accepts valid percentage SoC, persists first/latest evidence
   with a separate sequence, and delivers additive `transaction.soc` facts.
   Migration 014 and cross-service/cpconsole acceptance remain pending.
+- STOP lifecycle deadlock hardening is implemented in source: every concurrent
+  mutation now locks transaction, workflow, commands, and facts in that order;
+  only uncommitted PostgreSQL deadlock/serialization aborts retry locally.
+  Migration 017 adds a backfilled terminal-completion key ledger so new
+  `transaction.completed` facts are one logical fact per HAL transaction
+  without deleting historical outbox evidence.
 
 ## Next Approved Work
 
-1. Apply and verify additive migrations 010 through 013 against a
+1. Apply and verify additive migrations 010 through 017 against a
    clearly disposable PostgreSQL database, including stop-worker crash and
    recovery behavior.
 2. Expand real-device acceptance coverage for energy/time stop races and

@@ -223,58 +223,50 @@ func (s *PostgresStore) CreateV1StartCommand(ctx context.Context, input V1StartC
 }
 
 func (s *PostgresStore) CreateV1StopCommand(ctx context.Context, input V1StopCommandInput) (*V1RemoteCommand, bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, false, err
-	}
-	defer tx.Rollback()
-	transaction, err := s.getV1TransactionByID(ctx, txByQueryer{tx}, input.HALTransactionID)
-	if err != nil {
-		return nil, false, err
-	}
-	if transaction.CompletedAt != nil || transaction.OCPPTransactionID != input.OCPPTransactionID || transaction.CPOID != input.CPOID || transaction.CMSChargerID != input.CMSChargerID || transaction.CMSConnectorID != input.CMSConnectorID || transaction.ChargerOCPPIdentity != input.ChargerOCPPIdentity || transaction.OCPPConnectorNumber != input.OCPPConnectorNumber {
-		return nil, false, ErrV1TransactionNotFound
-	}
-	workflow, _, err := s.ensureV1StopWorkflowTx(ctx, tx, transaction, input.RequestedStopInitiator, input.RequestedStopReason)
-	if err != nil {
-		return nil, false, err
-	}
-	commandID, err := NewSecureUUIDString()
-	if err != nil {
-		return nil, false, err
-	}
-	result, err := tx.ExecContext(ctx, `INSERT INTO v1_remote_commands (id,cms_command_id,kind,request_digest,cpo_id,customer_id,correlation_id,cms_charging_session_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,command_expires_at,requested_stop_initiator,requested_stop_reason,hal_transaction_id,ocpp_transaction_id,stop_workflow_transaction_id,state) VALUES ($1,$2,'STOP',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'PERSISTED') ON CONFLICT (cms_command_id) DO NOTHING`, commandID, input.CMSCommandID, input.RequestDigest, input.CPOID, nullString(input.CustomerID), nullString(input.CorrelationID), input.CMSChargingSessionID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.CommandExpiresAt, input.RequestedStopInitiator, input.RequestedStopReason, input.HALTransactionID, input.OCPPTransactionID, workflow.HALTransactionID)
-	if err != nil {
-		return nil, false, err
-	}
-	rows, err := result.RowsAffected()
-	if err != nil {
-		return nil, false, err
-	}
-	if rows == 0 {
-		command, err := s.getV1CommandWith(ctx, txByQueryer{tx}, input.CMSCommandID)
+	var command *V1RemoteCommand
+	duplicate := false
+	err := s.withV1StopLifecycleTransaction(ctx, func(tx *sql.Tx) error {
+		rows, err := s.lockV1StopLifecycleRows(ctx, tx, input.HALTransactionID)
 		if err != nil {
-			return nil, false, err
+			return err
 		}
-		if command.RequestDigest != input.RequestDigest {
-			return nil, false, ErrV1IdempotencyConflict
+		transaction := rows.Transaction
+		if transaction.CompletedAt != nil || transaction.OCPPTransactionID != input.OCPPTransactionID || transaction.CPOID != input.CPOID || transaction.CMSChargerID != input.CMSChargerID || transaction.CMSConnectorID != input.CMSConnectorID || transaction.ChargerOCPPIdentity != input.ChargerOCPPIdentity || transaction.OCPPConnectorNumber != input.OCPPConnectorNumber {
+			return ErrV1TransactionNotFound
 		}
-		if err := tx.Commit(); err != nil {
-			return nil, false, err
+		workflow, _, err := s.ensureV1StopWorkflowTx(ctx, tx, transaction, input.RequestedStopInitiator, input.RequestedStopReason)
+		if err != nil {
+			return err
 		}
-		return command, true, nil
-	}
-	command, err := s.getV1CommandWith(ctx, txByQueryer{tx}, input.CMSCommandID)
+		commandID, err := NewSecureUUIDString()
+		if err != nil {
+			return err
+		}
+		result, err := tx.ExecContext(ctx, `INSERT INTO v1_remote_commands (id,cms_command_id,kind,request_digest,cpo_id,customer_id,correlation_id,cms_charging_session_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,command_expires_at,requested_stop_initiator,requested_stop_reason,hal_transaction_id,ocpp_transaction_id,stop_workflow_transaction_id,state) VALUES ($1,$2,'STOP',$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,'PERSISTED') ON CONFLICT (cms_command_id) DO NOTHING`, commandID, input.CMSCommandID, input.RequestDigest, input.CPOID, nullString(input.CustomerID), nullString(input.CorrelationID), input.CMSChargingSessionID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.CommandExpiresAt, input.RequestedStopInitiator, input.RequestedStopReason, input.HALTransactionID, input.OCPPTransactionID, workflow.HALTransactionID)
+		if err != nil {
+			return err
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		command, err = s.getV1CommandWith(ctx, txByQueryer{tx}, input.CMSCommandID)
+		if err != nil {
+			return err
+		}
+		if count == 0 {
+			if command.RequestDigest != input.RequestDigest {
+				return ErrV1IdempotencyConflict
+			}
+			duplicate = true
+			return nil
+		}
+		return s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, time.Now().UTC(), v1CommandFact(command))
+	})
 	if err != nil {
 		return nil, false, err
 	}
-	if err := s.insertV1FactTx(ctx, tx, "command.updated", command.HALCommandID, nil, time.Now().UTC(), v1CommandFact(command)); err != nil {
-		return nil, false, err
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, false, err
-	}
-	return command, false, nil
+	return command, duplicate, nil
 }
 
 func (s *PostgresStore) GetV1Command(ctx context.Context, cmsCommandID string) (*V1RemoteCommand, error) {

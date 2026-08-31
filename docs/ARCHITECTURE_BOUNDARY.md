@@ -43,6 +43,13 @@ outside this work.
   register-quantization discrepancy; all other rollbacks are rejected. A
   conflicting duplicate completion is rejected and does not create a completed
   fact.
+- Every concurrent STOP lifecycle mutation takes durable rows in one order:
+  transaction, stop workflow, remote command rows, then outbox facts. A local
+  PostgreSQL deadlock or serialization abort may retry that uncommitted store
+  transaction a bounded number of times; it never replays an OCPP command.
+  Completion reserves one terminal-fact aggregate in the same transaction, so
+  retransmitted identical StopTransaction evidence cannot create another
+  logical `transaction.completed` fact.
 - CMS charger UUID, public charger ID, OCPP identity, CMS connector UUID, OCPP
   connector number, CPO/customer/group IDs, CMS start intent/session/command,
   app credential/idTag, HAL command/transaction IDs, and OCPP transaction ID
@@ -170,7 +177,8 @@ implementation:
 5. Generalized realtime/live-availability projection.
 6. Whether historical legacy tables require a separately approved destructive
    retirement migration.
-7. Detailed future migration/table design and implementation retry constants.
+7. Detailed future migration/table design beyond the bounded STOP-lifecycle
+   retry and terminal-fact key already implemented.
 
 ## Required Implementation Method
 
