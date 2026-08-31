@@ -56,6 +56,4 @@ No migration, deployment, commit, or push is authorized.
 
 ## Completion
 
-Complete. This file should move to `docs/work/archive/` with the next approved
-repository-state cleanup; it remains here only because the terminal bridge was
-occupied by the short hosted simulator verification at completion.
+Complete and archived after the approved publication reconciliation.
