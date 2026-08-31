@@ -1,5 +1,25 @@
 # AI-assisted changelog
 
+## 2026-08-31 - cpconsole one charge point with multiple connectors
+
+- Replaced cpconsole's single scalar connector/transaction/meter state with one
+  OCPP Charge Point/WebSocket and independently locked connector states. Startup
+  boots once and reports `Available` for every configured connector.
+- Added `-connectors` / `CP_SIM_CONNECTORS`, retained `-connector` as the
+  initial terminal selection, and added `use <connector>` plus `state all`.
+  Each connector has isolated metering, SoC, pending remote actions, and
+  automatic-meter lifecycle.
+- Remote start now validates an explicit connector or deterministically selects
+  the lowest eligible `Available`/`Preparing` connector. Remote stop resolves
+  the exact active OCPP transaction owner and cannot stop another connector.
+
+Compatibility: HAL server, CMS, persistence, migrations, and deployment are
+unchanged. This is cpconsole simulator behavior only.
+
+Verification: focused cpconsole tests and race coverage pass. Broader source
+verification is recorded with the active work item; no remote charger session,
+database, migration, deployment, commit, or push was performed.
+
 ## 2026-08-26 - Preserve independent limit provenance through HAL
 
 - Extended the existing V1 start command, durable command/transaction records,

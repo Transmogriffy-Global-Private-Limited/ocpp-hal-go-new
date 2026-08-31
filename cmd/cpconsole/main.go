@@ -10,6 +10,7 @@ import (
 	"math"
 	"net/url"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -22,44 +23,6 @@ import (
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/types"
 )
 
-const helpText = `Commands:
-  help                              show this help
-  state                             show connection, connector and transaction state
-  heartbeat                         send Heartbeat
-  plug                              report Preparing
-  unplug                            report Available (only when no transaction is active)
-  authorize <id-tag>                send Authorize
-  start <id-tag>                    start a local transaction on the configured connector
-  remote-start                      execute a pending accepted RemoteStartTransaction
-  tick <seconds> [power-kW]         advance the cumulative meter and send MeterValues
-  meter                             resend the current meter sample without adding energy
-  auto <seconds> <power-kW>         periodically tick while charging
-  auto off                          stop periodic metering
-  suspend ev|evse                   report SuspendedEV or SuspendedEVSE
-  resume                            report Charging for an active transaction
-  stop [reason]                     stop locally; reason defaults to Local
-  remote-stop                       execute a pending accepted RemoteStopTransaction
-  finish                            report Available after a stopped, still-plugged session
-  fault <error-code>                report Faulted using an OCPP 1.6 error code
-  clear-fault                       return to Preparing or Available
-  status <ocpp-status>              send an explicit valid StatusNotification
-  policy remote-start accept|reject set response policy for future remote starts
-  policy remote-stop accept|reject  set response policy for future remote stops
-  policy auto-remote on|off         automatically execute accepted remote start/stop
-  quit                              stop the simulator
-
-Startup automation is configured with flags: -heartbeat-interval 0 honors the
-accepted BootNotification interval; a positive value overrides it. Use
--auto-start-id-tag with optional -auto-meter-interval and -auto-power-kw to
-run one normal local session before the interactive prompt.
-
-Stop reasons: DeAuthorized, EmergencyStop, EVDisconnected, HardReset, Local,
-Other, PowerLoss, Reboot, Remote, SoftReset, UnlockCommand.
-Fault codes: ConnectorLockFailure, EVCommunicationError, GroundFailure,
-HighTemperature, InternalError, LocalListConflict, OtherError,
-OverCurrentFailure, OverVoltage, PowerMeterFailure, PowerSwitchFailure,
-ReaderFailure, ResetFailure, UnderVoltage, WeakSignal.`
-
 const maxOCPPMeterWh int64 = 2147483647
 
 var (
@@ -67,148 +30,219 @@ var (
 	errAutomaticMeterPaused = errors.New("automatic meter paused by connector state")
 )
 
+const helpText = `Commands:
+  use <connector>                           select a connector (default: -connector)
+  state [all|connector]                     show charge-point or connector state
+  heartbeat                                 send charge-point Heartbeat
+  plug | unplug | finish                    selected connector lifecycle
+  authorize <id-tag> | start <id-tag>       selected connector authorization/start
+  remote-start [connector]                  execute pending remote start for connector
+  tick <seconds> [power-kW] | meter         selected connector metering
+  auto <seconds> <power-kW> | auto off      selected connector automatic metering
+  suspend ev|evse | resume                  selected connector transaction state
+  stop [reason] | remote-stop [connector]   selected/pending connector stop
+  fault <error-code> | clear-fault          selected connector fault state
+  status <ocpp-status>                      explicit selected connector status
+  policy remote-start accept|reject
+  policy remote-stop accept|reject
+  policy auto-remote on|off
+  quit
+
+One cpconsole process is one OCPP charge point and one WebSocket. Connector
+commands operate on use <connector>; charge-point commands remain global.`
+
+// connectorState contains only connector-local physical state. Operations are
+// serialized per connector, so a slow OCPP call on one connector never blocks
+// a separate connector transaction or meter worker.
+type connectorState struct {
+	id                             int
+	ops                            sync.Mutex
+	mu                             sync.RWMutex
+	status                         core.ChargePointStatus
+	errorCode                      core.ChargePointErrorCode
+	plugged                        bool
+	idTag                          string
+	transaction                    int
+	meterWh, powerKW, voltage, soc float64
+	remoteStart                    *core.RemoteStartTransactionRequest
+	remoteStop                     *core.RemoteStopTransactionRequest
+	unavailableAfterStop           bool
+	autoCancel, autoDone           chan struct{}
+	autoInterval                   time.Duration
+	autoPowerKW                    float64
+	autoTransaction                int
+}
+
 type simulator struct {
-	cp          ocpp16.ChargePoint
-	clientID    string
-	model       string
-	vendor      string
-	connectorID int
+	cp                                                     ocpp16.ChargePoint
+	clientID, model, vendor                                string
+	mu                                                     sync.RWMutex
+	connectors                                             map[int]*connectorState
+	selectedConnector                                      int
+	booted, acceptStart, acceptStop, autoRemote            bool
+	configuration                                          map[string]string
+	automaticMeterInterval                                 time.Duration
+	automaticMeterPowerKW                                  float64
+	heartbeatMu                                            sync.Mutex
+	heartbeatServer, heartbeatOverride, heartbeatEffective int
+	heartbeatCancel, heartbeatDone                         chan struct{}
 
-	opsMu sync.Mutex
-	mu    sync.RWMutex
-
-	booted               bool
-	status               core.ChargePointStatus
-	errorCode            core.ChargePointErrorCode
-	plugged              bool
-	idTag                string
-	transaction          int
-	meterWh              float64
-	powerKW              float64
-	voltage              float64
-	soc                  float64
-	remoteStart          *core.RemoteStartTransactionRequest
-	remoteStop           *core.RemoteStopTransactionRequest
-	acceptStart          bool
-	acceptStop           bool
-	autoRemote           bool
-	unavailableAfterStop bool
-	autoCancel           chan struct{}
-	autoDone             chan struct{}
-	autoInterval         time.Duration
-	autoPowerKW          float64
-	heartbeatServer      int
-	heartbeatOverride    int
-	heartbeatEffective   int
-	heartbeatCancel      chan struct{}
-	heartbeatDone        chan struct{}
-	heartbeatAction      func(<-chan struct{}) error
-	autoStartAttempted   bool
-	configuration        map[string]string
+	// Protocol seams are production-backed defaults, while focused tests can
+	// capture routing without needing a network connection.
+	bootAction      func() (*core.BootNotificationConfirmation, error)
+	heartbeatAction func(<-chan struct{}) error
+	statusAction    func(int, core.ChargePointErrorCode, core.ChargePointStatus) error
+	authorizeAction func(string) (*core.AuthorizeConfirmation, error)
+	startAction     func(int, string, int) (*core.StartTransactionConfirmation, error)
+	meterAction     func(int, []types.MeterValue, int) error
+	stopAction      func(int, int, string, core.Reason) (*core.StopTransactionConfirmation, error)
 }
 
 type startupOptions struct {
-	connector         int
-	meterStartWh      float64
-	voltage           float64
-	soc               float64
-	heartbeatInterval int
-	autoStartIDTag    string
-	autoPowerKW       float64
-	autoMeterInterval int
+	connectors, connector      int
+	meterStartWh, voltage, soc float64
+	heartbeatInterval          int
+	autoStartIDTag             string
+	autoPowerKW                float64
+	autoMeterInterval          int
 }
 
 type autoSessionOptions struct {
+	connector     int
 	idTag         string
 	meterInterval time.Duration
 	powerKW       float64
 }
 
-func newSimulator(clientID, model, vendor string, connectorID int, meterStartWh, voltage, soc float64) *simulator {
-	s := &simulator{
-		clientID:      clientID,
-		model:         model,
-		vendor:        vendor,
-		connectorID:   connectorID,
-		status:        core.ChargePointStatusUnavailable,
-		errorCode:     core.NoError,
-		meterWh:       meterStartWh,
-		voltage:       voltage,
-		soc:           soc,
-		acceptStart:   true,
-		acceptStop:    true,
-		autoRemote:    true,
-		configuration: map[string]string{"MeterValueSampleInterval": "60"},
+func newSimulator(id, model, vendor string, count, selected int, meter, voltage, soc float64) *simulator {
+	s := &simulator{clientID: id, model: model, vendor: vendor, connectors: make(map[int]*connectorState, count), selectedConnector: selected, acceptStart: true, acceptStop: true, autoRemote: true, configuration: map[string]string{"MeterValueSampleInterval": "60"}}
+	for i := 1; i <= count; i++ {
+		s.connectors[i] = &connectorState{id: i, status: core.ChargePointStatusUnavailable, errorCode: core.NoError, meterWh: meter, voltage: voltage, soc: soc}
 	}
-	s.cp = ocpp16.NewChargePoint(clientID, nil, nil)
+	s.cp = ocpp16.NewChargePoint(id, nil, nil)
 	s.cp.SetCoreHandler(s)
 	s.cp.SetFirmwareManagementHandler(s)
 	s.cp.SetRemoteTriggerHandler(s)
+	s.bootAction = func() (*core.BootNotificationConfirmation, error) { return s.cp.BootNotification(s.model, s.vendor) }
 	s.heartbeatAction = s.automaticHeartbeat
+	s.statusAction = func(id int, code core.ChargePointErrorCode, status core.ChargePointStatus) error {
+		_, err := s.cp.StatusNotification(id, code, status, func(r *core.StatusNotificationRequest) { r.Timestamp = types.Now() })
+		return err
+	}
+	s.authorizeAction = func(tag string) (*core.AuthorizeConfirmation, error) {
+		return s.cp.Authorize(tag)
+	}
+	s.startAction = func(id int, tag string, meter int) (*core.StartTransactionConfirmation, error) {
+		return s.cp.StartTransaction(id, tag, meter, types.Now())
+	}
+	s.meterAction = func(id int, values []types.MeterValue, tx int) error {
+		_, err := s.cp.MeterValues(id, values, func(r *core.MeterValuesRequest) { r.TransactionId = &tx })
+		return err
+	}
+	s.stopAction = func(meter, tx int, tag string, reason core.Reason) (*core.StopTransactionConfirmation, error) {
+		return s.cp.StopTransaction(meter, types.Now(), tx, func(r *core.StopTransactionRequest) { r.IdTag = tag; r.Reason = reason })
+	}
 	return s
 }
 
 func main() {
-	centralURL := flag.String("url", env("CP_SIM_URL", "ws://127.0.0.1:18081"), "central-system WebSocket base URL")
-	clientID := flag.String("id", env("CP_SIM_ID", "CP-SIM-001"), "OCPP charge point identity")
-	model := flag.String("model", env("CP_SIM_MODEL", "TransEV-Simulator"), "BootNotification chargePointModel")
-	vendor := flag.String("vendor", env("CP_SIM_VENDOR", "TransEV"), "BootNotification chargePointVendor")
-	connector := flag.Int("connector", envInt("CP_SIM_CONNECTOR", 1), "connector ID")
-	meterStart := flag.Float64("meter-start-wh", envFloat("CP_SIM_METER_START_WH", 100000), "initial cumulative energy register in Wh")
-	voltage := flag.Float64("voltage", envFloat("CP_SIM_VOLTAGE", 230), "simulated voltage in V")
-	soc := flag.Float64("soc", envFloat("CP_SIM_SOC", 35), "initial state of charge percentage")
-	heartbeatInterval := flag.Int("heartbeat-interval", envInt("CP_SIM_HEARTBEAT_INTERVAL", 0), "simulator Heartbeat interval in seconds; 0 honors BootNotification")
-	autoStartIDTag := flag.String("auto-start-id-tag", env("CP_SIM_AUTO_START_ID_TAG", ""), "start one local session after boot with this idTag")
-	autoPowerKW := flag.Float64("auto-power-kw", envFloat("CP_SIM_AUTO_POWER_KW", 7.2), "power used by automatic metering in kW")
-	autoMeterInterval := flag.Int("auto-meter-interval", envInt("CP_SIM_AUTO_METER_INTERVAL", 0), "automatic MeterValues interval in seconds; 0 disables automatic metering")
+	urlValue := flag.String("url", env("CP_SIM_URL", "ws://127.0.0.1:18081"), "central-system WebSocket base URL")
+	id := flag.String("id", env("CP_SIM_ID", "CP-SIM-001"), "OCPP charge point identity")
+	model := flag.String("model", env("CP_SIM_MODEL", "TransEV-Simulator"), "Boot model")
+	vendor := flag.String("vendor", env("CP_SIM_VENDOR", "TransEV"), "Boot vendor")
+	connectors := flag.Int("connectors", envInt("CP_SIM_CONNECTORS", 1), "number of simulated connectors")
+	connector := flag.Int("connector", envInt("CP_SIM_CONNECTOR", 1), "initial selected connector")
+	meter := flag.Float64("meter-start-wh", envFloat("CP_SIM_METER_START_WH", 100000), "initial Wh register per connector")
+	voltage := flag.Float64("voltage", envFloat("CP_SIM_VOLTAGE", 230), "simulated voltage")
+	soc := flag.Float64("soc", envFloat("CP_SIM_SOC", 35), "initial SoC percent")
+	heartbeat := flag.Int("heartbeat-interval", envInt("CP_SIM_HEARTBEAT_INTERVAL", 0), "Heartbeat seconds; 0 uses BootNotification")
+	autoTag := flag.String("auto-start-id-tag", env("CP_SIM_AUTO_START_ID_TAG", ""), "start one session after boot")
+	autoPower := flag.Float64("auto-power-kw", envFloat("CP_SIM_AUTO_POWER_KW", 7.2), "automatic meter power")
+	autoInterval := flag.Int("auto-meter-interval", envInt("CP_SIM_AUTO_METER_INTERVAL", 0), "automatic meter seconds; 0 disables")
 	flag.Parse()
-
-	options := startupOptions{
-		connector:         *connector,
-		meterStartWh:      *meterStart,
-		voltage:           *voltage,
-		soc:               *soc,
-		heartbeatInterval: *heartbeatInterval,
-		autoStartIDTag:    strings.TrimSpace(*autoStartIDTag),
-		autoPowerKW:       *autoPowerKW,
-		autoMeterInterval: *autoMeterInterval,
-	}
-	if err := options.validate(); err != nil {
+	opts := startupOptions{connectors: *connectors, connector: *connector, meterStartWh: *meter, voltage: *voltage, soc: *soc, heartbeatInterval: *heartbeat, autoStartIDTag: strings.TrimSpace(*autoTag), autoPowerKW: *autoPower, autoMeterInterval: *autoInterval}
+	if err := opts.validate(); err != nil {
 		log.Fatal(err)
 	}
-	if strings.TrimSpace(*clientID) == "" || strings.TrimSpace(*model) == "" || len(*model) > 20 || strings.TrimSpace(*vendor) == "" || len(*vendor) > 20 {
+	if strings.TrimSpace(*id) == "" || strings.TrimSpace(*model) == "" || len(*model) > 20 || strings.TrimSpace(*vendor) == "" || len(*vendor) > 20 {
 		log.Fatal("charger ID must be non-empty; OCPP model and vendor must contain 1 to 20 characters")
 	}
-	normalizedURL, err := normalizeWebSocketURL(*centralURL)
+	base, err := normalizeWebSocketURL(*urlValue)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	sim := newSimulator(*clientID, *model, *vendor, options.connector, options.meterStartWh, options.voltage, options.soc)
-	sim.setHeartbeatOverride(options.heartbeatInterval)
-	if err := sim.connectAndBoot(normalizedURL); err != nil {
+	s := newSimulator(*id, *model, *vendor, opts.connectors, opts.connector, opts.meterStartWh, opts.voltage, opts.soc)
+	s.setHeartbeatOverride(opts.heartbeatInterval)
+	s.setAutomaticMeterConfig(time.Duration(opts.autoMeterInterval)*time.Second, opts.autoPowerKW)
+	if err = s.connectAndBoot(base); err != nil {
 		log.Fatal(err)
 	}
-	defer sim.close()
-	if options.autoStartIDTag != "" {
-		if err := sim.startAutomaticSession(autoSessionOptions{
-			idTag:         options.autoStartIDTag,
-			meterInterval: time.Duration(options.autoMeterInterval) * time.Second,
-			powerKW:       options.autoPowerKW,
-		}); err != nil {
+	defer s.close()
+	if opts.autoStartIDTag != "" {
+		if err = s.startAutomaticSession(autoSessionOptions{connector: opts.connector, idTag: opts.autoStartIDTag, meterInterval: time.Duration(opts.autoMeterInterval) * time.Second, powerKW: opts.autoPowerKW}); err != nil {
 			fmt.Printf("[SIM] startup automation failed: %v\n", err)
 		}
 	}
-
-	fmt.Printf("\nOCPP 1.6J software charger %s is ready. Type help for commands.\n", *clientID)
-	if err := runConsole(os.Stdin, os.Stdout, sim); err != nil {
+	fmt.Printf("\nOCPP 1.6J charge point %s (%d connectors) is ready. Type help for commands.\n", *id, opts.connectors)
+	if err = runConsole(os.Stdin, os.Stdout, s); err != nil {
 		log.Fatal(err)
 	}
 }
 
-func (s *simulator) connectAndBoot(url string) error {
-	if err := s.cp.Start(url); err != nil {
-		return fmt.Errorf("connect %s to %s: %w", s.clientID, url, err)
+func (o startupOptions) validate() error {
+	if o.connectors < 1 || o.connector < 1 || o.connector > o.connectors || o.meterStartWh < 0 || o.voltage <= 0 || o.soc < 0 || o.soc > 100 {
+		return errors.New("connectors must be >= 1, selected connector must exist, meter/voltage must be valid, and SoC must be between 0 and 100")
+	}
+	if o.heartbeatInterval < 0 || o.autoMeterInterval < 0 {
+		return errors.New("heartbeat and automatic meter intervals must be zero or greater")
+	}
+	if o.autoStartIDTag != "" && len(o.autoStartIDTag) > 20 {
+		return errors.New("automatic start id-tag must contain 1 to 20 characters")
+	}
+	if o.autoMeterInterval > 0 && o.autoPowerKW <= 0 {
+		return errors.New("automatic meter power must be greater than zero")
+	}
+	return nil
+}
+
+func (s *simulator) connector(id int) (*connectorState, error) {
+	s.mu.RLock()
+	c := s.connectors[id]
+	s.mu.RUnlock()
+	if c == nil {
+		return nil, fmt.Errorf("connector %d is not configured", id)
+	}
+	return c, nil
+}
+func (s *simulator) connectorIDs() []int {
+	s.mu.RLock()
+	ids := make([]int, 0, len(s.connectors))
+	for id := range s.connectors {
+		ids = append(ids, id)
+	}
+	s.mu.RUnlock()
+	sort.Ints(ids)
+	return ids
+}
+func (s *simulator) selected() (*connectorState, error) {
+	s.mu.RLock()
+	id := s.selectedConnector
+	s.mu.RUnlock()
+	return s.connector(id)
+}
+func (s *simulator) selectConnector(id int) error {
+	if _, err := s.connector(id); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	s.selectedConnector = id
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *simulator) connectAndBoot(base string) error {
+	if err := s.cp.Start(base); err != nil {
+		return fmt.Errorf("connect %s to %s: %w", s.clientID, base, err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
 	for !s.cp.IsConnected() && time.Now().Before(deadline) {
@@ -220,26 +254,27 @@ func (s *simulator) connectAndBoot(url string) error {
 	if err := s.boot(); err != nil {
 		return err
 	}
-	return s.setStatus(core.ChargePointStatusAvailable, core.NoError)
+	for _, id := range s.connectorIDs() {
+		c, _ := s.connector(id)
+		if err := s.setStatus(c, core.ChargePointStatusAvailable, core.NoError); err != nil {
+			return err
+		}
+	}
+	return nil
 }
-
 func (s *simulator) close() {
-	s.stopAutoAndWait()
+	for _, id := range s.connectorIDs() {
+		c, _ := s.connector(id)
+		c.stopAutoAndWait()
+	}
 	s.stopHeartbeat()
 	s.cp.Stop()
 }
-
 func (s *simulator) boot() error {
-	s.opsMu.Lock()
-	conf, err := s.cp.BootNotification(s.model, s.vendor)
-	s.opsMu.Unlock()
+	conf, err := s.bootAction()
 	if err != nil {
 		return fmt.Errorf("BootNotification: %w", err)
 	}
-	return s.handleBootConfirmation(conf)
-}
-
-func (s *simulator) handleBootConfirmation(conf *core.BootNotificationConfirmation) error {
 	if conf == nil || conf.Status != core.RegistrationStatusAccepted {
 		status := "nil"
 		if conf != nil {
@@ -247,88 +282,62 @@ func (s *simulator) handleBootConfirmation(conf *core.BootNotificationConfirmati
 		}
 		return fmt.Errorf("BootNotification was not accepted: %s", status)
 	}
-	if err := s.configureBootHeartbeat(conf.Interval); err != nil {
+	if err = s.configureBootHeartbeat(conf.Interval); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	s.booted = true
-	effective := s.heartbeatEffective
-	override := s.heartbeatOverride
 	s.mu.Unlock()
 	fmt.Printf("[OCPP] BootNotification accepted; heartbeat interval=%ds\n", conf.Interval)
-	if override > 0 {
-		fmt.Printf("[SIM] heartbeat override active; effective interval=%ds\n", effective)
-	}
 	return nil
 }
 
-func (options startupOptions) validate() error {
-	if options.connector < 1 || options.meterStartWh < 0 || options.voltage <= 0 || options.soc < 0 || options.soc > 100 {
-		return errors.New("connector must be >= 1, meter/voltage must be valid, and SoC must be between 0 and 100")
-	}
-	if options.heartbeatInterval < 0 {
-		return errors.New("heartbeat interval must be zero or greater")
-	}
-	if options.autoMeterInterval < 0 {
-		return errors.New("automatic meter interval must be zero or greater")
-	}
-	if options.autoStartIDTag != "" && len(options.autoStartIDTag) > 20 {
-		return errors.New("automatic start id-tag must contain 1 to 20 characters")
-	}
-	if options.autoMeterInterval > 0 {
-		if options.autoStartIDTag == "" {
-			return errors.New("automatic metering requires -auto-start-id-tag")
-		}
-		if options.autoPowerKW <= 0 {
-			return errors.New("automatic meter power must be greater than zero")
-		}
-	}
-	return nil
-}
-
-func (s *simulator) setHeartbeatOverride(seconds int) {
-	s.mu.Lock()
-	s.heartbeatOverride = seconds
-	s.mu.Unlock()
-}
-
-func selectHeartbeatInterval(serverInterval, override int) (int, error) {
-	if serverInterval <= 0 {
+func selectHeartbeatInterval(server, override int) (int, error) {
+	if server <= 0 {
 		return 0, errors.New("BootNotification returned an invalid heartbeat interval")
 	}
 	if override > 0 {
 		return override, nil
 	}
-	return serverInterval, nil
+	return server, nil
 }
-
-func (s *simulator) configureBootHeartbeat(serverInterval int) error {
-	s.mu.RLock()
+func (s *simulator) setHeartbeatOverride(seconds int) {
+	s.heartbeatMu.Lock()
+	s.heartbeatOverride = seconds
+	s.heartbeatMu.Unlock()
+}
+func (s *simulator) setAutomaticMeterConfig(interval time.Duration, powerKW float64) {
+	s.mu.Lock()
+	s.automaticMeterInterval, s.automaticMeterPowerKW = interval, powerKW
+	s.mu.Unlock()
+}
+func (s *simulator) configureBootHeartbeat(server int) error {
+	s.heartbeatMu.Lock()
 	override := s.heartbeatOverride
-	s.mu.RUnlock()
-	effective, err := selectHeartbeatInterval(serverInterval, override)
+	s.heartbeatMu.Unlock()
+	effective, err := selectHeartbeatInterval(server, override)
 	if err != nil {
 		return err
 	}
+	s.heartbeatMu.Lock()
+	s.heartbeatServer, s.heartbeatEffective = server, effective
+	s.heartbeatMu.Unlock()
 	s.mu.Lock()
-	s.heartbeatServer = serverInterval
-	s.heartbeatEffective = effective
 	s.configuration["HeartbeatInterval"] = strconv.Itoa(effective)
 	s.mu.Unlock()
 	s.startHeartbeat(time.Duration(effective) * time.Second)
 	return nil
 }
-
 func (s *simulator) startHeartbeat(interval time.Duration) {
 	s.stopHeartbeat()
 	if interval <= 0 {
 		return
 	}
 	cancel, done := make(chan struct{}), make(chan struct{})
-	s.mu.Lock()
+	s.heartbeatMu.Lock()
 	s.heartbeatCancel, s.heartbeatDone = cancel, done
 	action := s.heartbeatAction
-	s.mu.Unlock()
+	s.heartbeatMu.Unlock()
 	go func() {
 		defer close(done)
 		ticker := time.NewTicker(interval)
@@ -345,26 +354,42 @@ func (s *simulator) startHeartbeat(interval time.Duration) {
 		}
 	}()
 }
-
 func (s *simulator) stopHeartbeat() {
-	s.mu.Lock()
+	s.heartbeatMu.Lock()
 	cancel, done := s.heartbeatCancel, s.heartbeatDone
 	s.heartbeatCancel, s.heartbeatDone = nil, nil
-	s.mu.Unlock()
+	s.heartbeatMu.Unlock()
 	if cancel != nil {
 		close(cancel)
 		<-done
 	}
 }
+func (s *simulator) heartbeat() error { return s.heartbeatLocked() }
+func (s *simulator) heartbeatLocked() error {
+	conf, err := s.cp.Heartbeat()
+	if err != nil {
+		return fmt.Errorf("Heartbeat: %w", err)
+	}
+	fmt.Printf("[OCPP] Heartbeat accepted; central time=%s\n", conf.CurrentTime.String())
+	return nil
+}
+func (s *simulator) automaticHeartbeat(cancel <-chan struct{}) error {
+	select {
+	case <-cancel:
+		return errWorkerStopped
+	default:
+		return s.heartbeatLocked()
+	}
+}
 
-func runConsole(in io.Reader, out io.Writer, sim *simulator) error {
+func runConsole(in io.Reader, out io.Writer, s *simulator) error {
 	scanner := bufio.NewScanner(in)
 	for {
 		fmt.Fprint(out, "cp> ")
 		if !scanner.Scan() {
 			return scanner.Err()
 		}
-		quit, err := sim.execute(strings.Fields(scanner.Text()))
+		quit, err := s.execute(strings.Fields(scanner.Text()))
 		if err != nil {
 			fmt.Fprintf(out, "error: %v\n", err)
 		}
@@ -378,94 +403,29 @@ func (s *simulator) execute(args []string) (bool, error) {
 	if len(args) == 0 {
 		return false, nil
 	}
+	if strings.EqualFold(args[0], "use") {
+		if len(args) != 2 {
+			return false, errors.New("usage: use <connector>")
+		}
+		id, err := strconv.Atoi(args[1])
+		if err != nil {
+			return false, errors.New("connector must be a positive integer")
+		}
+		if err = s.selectConnector(id); err != nil {
+			return false, err
+		}
+		fmt.Printf("[SIM] selected connector %d\n", id)
+		return false, nil
+	}
 	switch strings.ToLower(args[0]) {
 	case "help", "?":
 		fmt.Println(helpText)
 	case "state":
-		s.printState()
+		return false, s.executeState(args)
 	case "heartbeat":
 		return false, s.heartbeat()
-	case "plug":
-		return false, s.plug()
-	case "unplug":
-		return false, s.unplug()
-	case "authorize":
-		if len(args) != 2 {
-			return false, errors.New("usage: authorize <id-tag>")
-		}
-		return false, s.authorize(args[1])
-	case "start":
-		if len(args) != 2 {
-			return false, errors.New("usage: start <id-tag>")
-		}
-		return false, s.startTransaction(args[1], false)
-	case "remote-start":
-		return false, s.executePendingRemoteStart()
-	case "tick":
-		return false, s.executeTick(args)
-	case "meter":
-		return false, s.sendMeter(0, s.currentPower())
-	case "auto":
-		return false, s.executeAuto(args)
-	case "suspend":
-		if len(args) != 2 {
-			return false, errors.New("usage: suspend ev|evse")
-		}
-		if strings.EqualFold(args[1], "ev") {
-			return false, s.requireTransactionStatus(core.ChargePointStatusSuspendedEV)
-		}
-		if strings.EqualFold(args[1], "evse") {
-			return false, s.requireTransactionStatus(core.ChargePointStatusSuspendedEVSE)
-		}
-		return false, errors.New("usage: suspend ev|evse")
-	case "resume":
-		return false, s.requireTransactionStatus(core.ChargePointStatusCharging)
-	case "stop":
-		reason := core.ReasonLocal
-		if len(args) > 2 {
-			return false, errors.New("usage: stop [reason]")
-		}
-		if len(args) == 2 {
-			parsed, ok := parseStopReason(args[1])
-			if !ok {
-				return false, fmt.Errorf("invalid stop reason %q", args[1])
-			}
-			reason = parsed
-		}
-		return false, s.stopTransaction(reason)
-	case "remote-stop":
-		return false, s.executePendingRemoteStop()
-	case "finish":
-		if s.hasTransaction() {
-			return false, errors.New("stop the active transaction before finish")
-		}
-		return false, s.setStatus(core.ChargePointStatusAvailable, core.NoError)
-	case "fault":
-		if len(args) != 2 {
-			return false, errors.New("usage: fault <error-code>")
-		}
-		code, ok := parseErrorCode(args[1])
-		if !ok || code == core.NoError {
-			return false, fmt.Errorf("invalid fault code %q", args[1])
-		}
-		return false, s.setStatus(core.ChargePointStatusFaulted, code)
-	case "clear-fault":
-		s.mu.RLock()
-		plugged := s.plugged
-		s.mu.RUnlock()
-		if plugged {
-			return false, s.setStatus(core.ChargePointStatusPreparing, core.NoError)
-		}
-		return false, s.setStatus(core.ChargePointStatusAvailable, core.NoError)
-	case "status":
-		if len(args) != 2 {
-			return false, errors.New("usage: status <ocpp-status>")
-		}
-		status, ok := parseStatus(args[1])
-		if !ok {
-			return false, fmt.Errorf("invalid OCPP status %q", args[1])
-		}
-		return false, s.setStatus(status, core.NoError)
+	case "plug", "unplug", "finish", "authorize", "start", "remote-start", "tick", "meter", "auto", "suspend", "resume", "stop", "remote-stop", "fault", "clear-fault", "status":
+		return false, s.executeConnectorCommand(args)
 	case "policy":
 		return false, s.executePolicy(args)
 	case "quit", "exit":
@@ -476,7 +436,164 @@ func (s *simulator) execute(args []string) (bool, error) {
 	return false, nil
 }
 
-func (s *simulator) executeTick(args []string) error {
+func (s *simulator) executeState(args []string) error {
+	if len(args) > 2 {
+		return errors.New("usage: state [all|connector]")
+	}
+	if len(args) == 2 && !strings.EqualFold(args[1], "all") {
+		id, err := strconv.Atoi(args[1])
+		if err != nil {
+			return errors.New("usage: state [all|connector]")
+		}
+		c, err := s.connector(id)
+		if err != nil {
+			return err
+		}
+		s.printConnectorState(c)
+		return nil
+	}
+	s.printState()
+	if len(args) == 2 {
+		for _, id := range s.connectorIDs() {
+			c, _ := s.connector(id)
+			s.printConnectorState(c)
+		}
+	}
+	return nil
+}
+
+func (s *simulator) executeConnectorCommand(args []string) error {
+	c, err := s.selected()
+	if err != nil {
+		return err
+	}
+	command := strings.ToLower(args[0])
+	switch command {
+	case "plug":
+		if len(args) != 1 {
+			return errors.New("usage: plug")
+		}
+		return s.plug(c)
+	case "unplug":
+		if len(args) != 1 {
+			return errors.New("usage: unplug")
+		}
+		return s.unplug(c)
+	case "finish":
+		if len(args) != 1 {
+			return errors.New("usage: finish")
+		}
+		return s.finish(c)
+	case "authorize":
+		if len(args) != 2 {
+			return errors.New("usage: authorize <id-tag>")
+		}
+		return s.authorize(c, args[1])
+	case "start":
+		if len(args) != 2 {
+			return errors.New("usage: start <id-tag>")
+		}
+		return s.startTransaction(c, args[1], false)
+	case "remote-start":
+		if len(args) == 2 {
+			id, e := strconv.Atoi(args[1])
+			if e != nil {
+				return errors.New("usage: remote-start [connector]")
+			}
+			c, err = s.connector(id)
+			if err != nil {
+				return err
+			}
+		} else if len(args) != 1 {
+			return errors.New("usage: remote-start [connector]")
+		}
+		return s.executePendingRemoteStart(c)
+	case "tick":
+		return s.executeTick(c, args)
+	case "meter":
+		if len(args) != 1 {
+			return errors.New("usage: meter")
+		}
+		return s.sendMeter(c, 0, s.currentPower(c))
+	case "auto":
+		return s.executeAuto(c, args)
+	case "suspend":
+		if len(args) != 2 {
+			return errors.New("usage: suspend ev|evse")
+		}
+		if strings.EqualFold(args[1], "ev") {
+			return s.requireTransactionStatus(c, core.ChargePointStatusSuspendedEV)
+		}
+		if strings.EqualFold(args[1], "evse") {
+			return s.requireTransactionStatus(c, core.ChargePointStatusSuspendedEVSE)
+		}
+		return errors.New("usage: suspend ev|evse")
+	case "resume":
+		if len(args) != 1 {
+			return errors.New("usage: resume")
+		}
+		return s.requireTransactionStatus(c, core.ChargePointStatusCharging)
+	case "stop":
+		reason := core.ReasonLocal
+		if len(args) > 2 {
+			return errors.New("usage: stop [reason]")
+		}
+		if len(args) == 2 {
+			var ok bool
+			reason, ok = parseStopReason(args[1])
+			if !ok {
+				return fmt.Errorf("invalid stop reason %q", args[1])
+			}
+		}
+		return s.stopTransaction(c, reason)
+	case "remote-stop":
+		if len(args) == 2 {
+			id, e := strconv.Atoi(args[1])
+			if e != nil {
+				return errors.New("usage: remote-stop [connector]")
+			}
+			c, err = s.connector(id)
+			if err != nil {
+				return err
+			}
+		} else if len(args) != 1 {
+			return errors.New("usage: remote-stop [connector]")
+		}
+		return s.executePendingRemoteStop(c)
+	case "fault":
+		if len(args) != 2 {
+			return errors.New("usage: fault <error-code>")
+		}
+		code, ok := parseErrorCode(args[1])
+		if !ok || code == core.NoError {
+			return fmt.Errorf("invalid fault code %q", args[1])
+		}
+		return s.setStatus(c, core.ChargePointStatusFaulted, code)
+	case "clear-fault":
+		if len(args) != 1 {
+			return errors.New("usage: clear-fault")
+		}
+		c.mu.RLock()
+		plugged := c.plugged
+		c.mu.RUnlock()
+		if plugged {
+			return s.setStatus(c, core.ChargePointStatusPreparing, core.NoError)
+		}
+		return s.setStatus(c, core.ChargePointStatusAvailable, core.NoError)
+	case "status":
+		if len(args) != 2 {
+			return errors.New("usage: status <ocpp-status>")
+		}
+		status, ok := parseStatus(args[1])
+		if !ok {
+			return fmt.Errorf("invalid OCPP status %q", args[1])
+		}
+		return s.setStatus(c, status, core.NoError)
+	}
+	return fmt.Errorf("unknown connector command %q", command)
+}
+
+func (s *simulator) executeTick(c *connectorState, args []string) error {
 	if len(args) < 2 || len(args) > 3 {
 		return errors.New("usage: tick <seconds> [power-kW]")
 	}
@@ -484,7 +601,7 @@ func (s *simulator) executeTick(args []string) error {
 	if err != nil || seconds <= 0 {
 		return errors.New("seconds must be greater than zero")
 	}
-	power := s.currentPower()
+	power := s.currentPower(c)
 	if len(args) == 3 {
 		power, err = strconv.ParseFloat(args[2], 64)
 		if err != nil || power < 0 {
@@ -494,13 +611,12 @@ func (s *simulator) executeTick(args []string) error {
 	if power == 0 {
 		power = 7.2
 	}
-	return s.sendMeter(time.Duration(seconds*float64(time.Second)), power)
+	return s.sendMeter(c, time.Duration(seconds*float64(time.Second)), power)
 }
-
-func (s *simulator) executeAuto(args []string) error {
+func (s *simulator) executeAuto(c *connectorState, args []string) error {
 	if len(args) == 2 && strings.EqualFold(args[1], "off") {
-		s.stopAuto()
-		fmt.Println("[SIM] automatic metering stopped")
+		c.stopAutoAndWait()
+		fmt.Printf("[SIM] connector %d automatic metering stopped\n", c.id)
 		return nil
 	}
 	if len(args) != 3 {
@@ -514,28 +630,18 @@ func (s *simulator) executeAuto(args []string) error {
 	if err != nil || power <= 0 {
 		return errors.New("power-kW must be greater than zero")
 	}
-	return s.startAuto(time.Duration(seconds*float64(time.Second)), power)
+	return s.startAuto(c, time.Duration(seconds*float64(time.Second)), power)
 }
-
-func (s *simulator) startAutomaticSession(options autoSessionOptions) error {
-	s.mu.Lock()
-	if s.autoStartAttempted {
-		s.mu.Unlock()
-		return nil
+func (s *simulator) startAutomaticSession(o autoSessionOptions) error {
+	c, err := s.connector(o.connector)
+	if err != nil {
+		return err
 	}
-	s.autoStartAttempted = true
-	s.mu.Unlock()
-	return runAutomaticSession(options, s.plug, func() error {
-		return s.startTransaction(options.idTag, false)
-	}, func() error {
-		if options.meterInterval <= 0 {
-			return nil
-		}
-		return s.startAuto(options.meterInterval, options.powerKW)
+	return runAutomaticSession(o, func() error { return s.plug(c) }, func() error { return s.startTransaction(c, o.idTag, false) }, func() error {
+		return nil // startTransaction owns configured transaction-bound automatic metering.
 	})
 }
-
-func runAutomaticSession(options autoSessionOptions, plug, start, meter func() error) error {
+func runAutomaticSession(_ autoSessionOptions, plug, start, meter func() error) error {
 	if err := plug(); err != nil {
 		return fmt.Errorf("auto-start plug: %w", err)
 	}
@@ -556,23 +662,23 @@ func (s *simulator) executePolicy(args []string) error {
 	defer s.mu.Unlock()
 	switch strings.ToLower(args[1]) {
 	case "remote-start":
-		value, ok := parseBoolPolicy(args[2], "accept", "reject")
+		v, ok := parseBoolPolicy(args[2], "accept", "reject")
 		if !ok {
 			return errors.New("remote-start policy must be accept or reject")
 		}
-		s.acceptStart = value
+		s.acceptStart = v
 	case "remote-stop":
-		value, ok := parseBoolPolicy(args[2], "accept", "reject")
+		v, ok := parseBoolPolicy(args[2], "accept", "reject")
 		if !ok {
 			return errors.New("remote-stop policy must be accept or reject")
 		}
-		s.acceptStop = value
+		s.acceptStop = v
 	case "auto-remote":
-		value, ok := parseBoolPolicy(args[2], "on", "off")
+		v, ok := parseBoolPolicy(args[2], "on", "off")
 		if !ok {
 			return errors.New("auto-remote policy must be on or off")
 		}
-		s.autoRemote = value
+		s.autoRemote = v
 	default:
 		return fmt.Errorf("unknown policy %q", args[1])
 	}
@@ -580,102 +686,93 @@ func (s *simulator) executePolicy(args []string) error {
 	return nil
 }
 
-func (s *simulator) heartbeat() error {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-	return s.heartbeatLocked()
-}
-
-func (s *simulator) heartbeatLocked() error {
-	conf, err := s.cp.Heartbeat()
-	if err != nil {
-		return fmt.Errorf("Heartbeat: %w", err)
-	}
-	fmt.Printf("[OCPP] Heartbeat accepted; central time=%s\n", conf.CurrentTime.String())
-	return nil
-}
-
-func (s *simulator) automaticHeartbeat(cancel <-chan struct{}) error {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-	select {
-	case <-cancel:
-		return errWorkerStopped
-	default:
-		return s.heartbeatLocked()
-	}
-}
-
-func (s *simulator) plug() error {
-	s.mu.Lock()
-	if s.transaction != 0 {
-		s.mu.Unlock()
+func (s *simulator) plug(c *connectorState) error {
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	c.mu.Lock()
+	if c.transaction != 0 {
+		c.mu.Unlock()
 		return errors.New("connector already has an active transaction")
 	}
-	s.plugged = true
-	s.mu.Unlock()
-	return s.setStatus(core.ChargePointStatusPreparing, core.NoError)
+	c.plugged = true
+	c.mu.Unlock()
+	return s.setStatusLocked(c, core.ChargePointStatusPreparing, core.NoError)
 }
-
-func (s *simulator) unplug() error {
-	s.mu.Lock()
-	if s.transaction != 0 {
-		s.mu.Unlock()
+func (s *simulator) unplug(c *connectorState) error {
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	c.mu.Lock()
+	if c.transaction != 0 {
+		c.mu.Unlock()
 		return errors.New("stop the transaction before unplugging")
 	}
-	s.plugged = false
-	s.mu.Unlock()
-	return s.setStatus(core.ChargePointStatusAvailable, core.NoError)
+	c.plugged = false
+	c.mu.Unlock()
+	return s.setStatusLocked(c, core.ChargePointStatusAvailable, core.NoError)
 }
-
-func (s *simulator) authorize(idTag string) error {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-	return s.authorizeLocked(idTag)
+func (s *simulator) finish(c *connectorState) error {
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	c.mu.RLock()
+	if c.transaction != 0 {
+		c.mu.RUnlock()
+		return errors.New("stop the active transaction before finish")
+	}
+	target := core.ChargePointStatusAvailable
+	if c.unavailableAfterStop {
+		target = core.ChargePointStatusUnavailable
+	}
+	c.mu.RUnlock()
+	return s.setStatusLocked(c, target, core.NoError)
 }
-
-func (s *simulator) authorizeLocked(idTag string) error {
-	if idTag == "" || len(idTag) > 20 {
+func (s *simulator) authorize(c *connectorState, tag string) error {
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	return s.authorizeLocked(tag)
+}
+func (s *simulator) authorizeLocked(tag string) error {
+	if tag == "" || len(tag) > 20 {
 		return errors.New("id-tag must contain 1 to 20 characters")
 	}
-	conf, err := s.cp.Authorize(idTag)
+	conf, err := s.authorizeAction(tag)
 	if err != nil {
 		return fmt.Errorf("Authorize: %w", err)
 	}
-	fmt.Printf("[OCPP] Authorize idTag=%s status=%s\n", idTag, conf.IdTagInfo.Status)
+	if conf == nil {
+		return errors.New("Authorize returned an empty confirmation")
+	}
+	fmt.Printf("[OCPP] Authorize idTag=%s status=%s\n", tag, conf.IdTagInfo.Status)
 	if conf.IdTagInfo.Status != types.AuthorizationStatusAccepted {
 		return fmt.Errorf("id-tag was not accepted: %s", conf.IdTagInfo.Status)
 	}
 	return nil
 }
 
-func (s *simulator) startTransaction(idTag string, remote bool) error {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-	if idTag == "" || len(idTag) > 20 {
+func (s *simulator) startTransaction(c *connectorState, tag string, remote bool) error {
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	if tag == "" || len(tag) > 20 {
 		return errors.New("id-tag must contain 1 to 20 characters")
 	}
-	s.mu.RLock()
-	active := s.transaction != 0
-	status := s.status
-	meter := s.meterWh
-	s.mu.RUnlock()
+	c.mu.RLock()
+	active, status, meter := c.transaction != 0, c.status, c.meterWh
+	c.mu.RUnlock()
 	if active {
-		return errors.New("a transaction is already active")
+		return errors.New("a transaction is already active on this connector")
 	}
 	if status == core.ChargePointStatusFaulted || status == core.ChargePointStatusUnavailable {
 		return fmt.Errorf("cannot start while connector status is %s", status)
 	}
 	if !remote {
-		if err := s.authorizeLocked(idTag); err != nil {
+		if err := s.authorizeLocked(tag); err != nil {
 			return err
 		}
 	}
 	if status == core.ChargePointStatusAvailable {
-		s.mu.Lock()
-		s.plugged = true
-		s.mu.Unlock()
-		if err := s.setStatusLocked(core.ChargePointStatusPreparing, core.NoError); err != nil {
+		c.mu.Lock()
+		c.plugged = true
+		c.mu.Unlock()
+		if err := s.setStatusLocked(c, core.ChargePointStatusPreparing, core.NoError); err != nil {
 			return err
 		}
 	}
@@ -683,157 +780,133 @@ func (s *simulator) startTransaction(idTag string, remote bool) error {
 	if err != nil {
 		return fmt.Errorf("start meter: %w", err)
 	}
-	conf, err := s.cp.StartTransaction(s.connectorID, idTag, ocppMeter, types.Now())
+	conf, err := s.startAction(c.id, tag, ocppMeter)
 	if err != nil {
 		return fmt.Errorf("StartTransaction: %w", err)
 	}
 	if conf == nil || conf.IdTagInfo.Status != types.AuthorizationStatusAccepted || conf.TransactionId <= 0 {
-		status := "nil"
+		state := "nil"
 		if conf != nil {
-			status = string(conf.IdTagInfo.Status)
+			state = string(conf.IdTagInfo.Status)
 		}
-		return fmt.Errorf("StartTransaction was not accepted: %s", status)
+		return fmt.Errorf("StartTransaction was not accepted: %s", state)
 	}
-	s.mu.Lock()
-	s.transaction = conf.TransactionId
-	s.idTag = idTag
-	s.remoteStart = nil
-	s.mu.Unlock()
-	if err := s.setStatusLocked(core.ChargePointStatusCharging, core.NoError); err != nil {
+	c.mu.Lock()
+	c.transaction, c.idTag, c.remoteStart = conf.TransactionId, tag, nil
+	c.mu.Unlock()
+	if err := s.setStatusLocked(c, core.ChargePointStatusCharging, core.NoError); err != nil {
 		return err
 	}
-	fmt.Printf("[OCPP] StartTransaction accepted; transactionId=%d meterStart=%.0fWh idTag=%s\n", conf.TransactionId, meter, idTag)
+	s.mu.RLock()
+	interval, powerKW := s.automaticMeterInterval, s.automaticMeterPowerKW
+	s.mu.RUnlock()
+	if interval > 0 {
+		if err := s.startAuto(c, interval, powerKW); err != nil {
+			fmt.Printf("[SIM] automatic metering did not start for connector %d transactionId=%d: %v\n", c.id, conf.TransactionId, err)
+		}
+	}
+	fmt.Printf("[OCPP] StartTransaction connector=%d transactionId=%d meterStart=%.0fWh idTag=%s\n", c.id, conf.TransactionId, meter, tag)
 	return nil
 }
 
-func (s *simulator) sendMeter(elapsed time.Duration, powerKW float64) error {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-	return s.sendMeterLocked(elapsed, powerKW)
+func (s *simulator) sendMeter(c *connectorState, elapsed time.Duration, power float64) error {
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	return s.sendMeterLocked(c, elapsed, power)
 }
-
-func (s *simulator) sendAutomaticMeter(cancel <-chan struct{}, elapsed time.Duration, powerKW float64) error {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
+func (s *simulator) sendAutomaticMeter(c *connectorState, cancel <-chan struct{}, elapsed time.Duration, power float64, expectedTransaction int) error {
 	select {
 	case <-cancel:
 		return errWorkerStopped
 	default:
-		s.mu.RLock()
-		status := s.status
-		s.mu.RUnlock()
-		if status != core.ChargePointStatusCharging {
-			return errAutomaticMeterPaused
-		}
-		return s.sendMeterLocked(elapsed, powerKW)
 	}
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	select {
+	case <-cancel:
+		return errWorkerStopped
+	default:
+	}
+	c.mu.RLock()
+	charging := c.status == core.ChargePointStatusCharging
+	transactionMatches := c.transaction == expectedTransaction && c.autoTransaction == expectedTransaction
+	c.mu.RUnlock()
+	if !transactionMatches {
+		return errWorkerStopped
+	}
+	if !charging {
+		return errAutomaticMeterPaused
+	}
+	return s.sendMeterLocked(c, elapsed, power)
 }
-
-func (s *simulator) sendMeterLocked(elapsed time.Duration, powerKW float64) error {
-	s.mu.Lock()
-	if s.transaction == 0 {
-		s.mu.Unlock()
+func (s *simulator) sendMeterLocked(c *connectorState, elapsed time.Duration, power float64) error {
+	c.mu.Lock()
+	if c.transaction == 0 {
+		c.mu.Unlock()
 		return errors.New("meter values require an active transaction")
 	}
-	if elapsed < 0 || powerKW < 0 {
-		s.mu.Unlock()
+	if elapsed < 0 || power < 0 {
+		c.mu.Unlock()
 		return errors.New("elapsed time and power cannot be negative")
 	}
-	deltaWh := powerKW * 1000 * elapsed.Hours()
-	s.meterWh += deltaWh
-	s.powerKW = powerKW
-	if deltaWh > 0 && s.soc < 100 {
-		// A 60 kWh reference battery keeps SoC progression coherent with energy.
-		s.soc += deltaWh / 60000 * 100
-		if s.soc > 100 {
-			s.soc = 100
+	delta := power * 1000 * elapsed.Hours()
+	c.meterWh += delta
+	c.powerKW = power
+	if delta > 0 && c.soc < 100 {
+		c.soc += delta / 60000 * 100
+		if c.soc > 100 {
+			c.soc = 100
 		}
 	}
-	meterWh := s.meterWh
-	transaction := s.transaction
-	voltage := s.voltage
-	soc := s.soc
-	connector := s.connectorID
-	s.mu.Unlock()
-	ocppMeter, err := ocppMeterWh(meterWh)
+	meter, tx, voltage, soc := c.meterWh, c.transaction, c.voltage, c.soc
+	c.mu.Unlock()
+	ocppMeter, err := ocppMeterWh(meter)
 	if err != nil {
 		return fmt.Errorf("meter value: %w", err)
 	}
-
 	current := 0.0
 	if voltage > 0 {
-		current = powerKW * 1000 / voltage
+		current = power * 1000 / voltage
 	}
-	values := []types.MeterValue{{
-		Timestamp: types.Now(),
-		SampledValue: []types.SampledValue{
-			{Value: strconv.Itoa(ocppMeter), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandEnergyActiveImportRegister, Unit: types.UnitOfMeasureWh},
-			{Value: fmt.Sprintf("%.3f", powerKW), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandPowerActiveImport, Unit: types.UnitOfMeasureKW},
-			{Value: fmt.Sprintf("%.2f", current), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandCurrentImport, Unit: types.UnitOfMeasureA},
-			{Value: fmt.Sprintf("%.1f", voltage), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandVoltage, Unit: types.UnitOfMeasureV},
-			{Value: fmt.Sprintf("%.1f", soc), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandSoC, Unit: types.UnitOfMeasurePercent},
-		},
-	}}
-	_, err = s.cp.MeterValues(connector, values, func(request *core.MeterValuesRequest) {
-		request.TransactionId = &transaction
-	})
-	if err != nil {
+	values := []types.MeterValue{{Timestamp: types.Now(), SampledValue: []types.SampledValue{{Value: strconv.Itoa(ocppMeter), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandEnergyActiveImportRegister, Unit: types.UnitOfMeasureWh}, {Value: fmt.Sprintf("%.3f", power), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandPowerActiveImport, Unit: types.UnitOfMeasureKW}, {Value: fmt.Sprintf("%.2f", current), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandCurrentImport, Unit: types.UnitOfMeasureA}, {Value: fmt.Sprintf("%.1f", voltage), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandVoltage, Unit: types.UnitOfMeasureV}, {Value: fmt.Sprintf("%.1f", soc), Context: types.ReadingContextSamplePeriodic, Measurand: types.MeasurandSoC, Unit: types.UnitOfMeasurePercent}}}}
+	if err := s.meterAction(c.id, values, tx); err != nil {
 		return fmt.Errorf("MeterValues: %w", err)
 	}
-	fmt.Printf("[OCPP] MeterValues transactionId=%d meter=%dWh (+%.1fWh) power=%.3fkW current=%.2fA voltage=%.1fV soc=%.1f%%\n", transaction, ocppMeter, deltaWh, powerKW, current, voltage, soc)
+	fmt.Printf("[OCPP] MeterValues connector=%d transactionId=%d meter=%dWh (+%.1fWh) power=%.3fkW current=%.2fA voltage=%.1fV soc=%.1f%%\n", c.id, tx, ocppMeter, delta, power, current, voltage, soc)
 	return nil
 }
 
-func (s *simulator) stopTransaction(reason core.Reason) error {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-	s.stopAuto()
-	s.mu.RLock()
-	transaction := s.transaction
-	meter := s.meterWh
-	idTag := s.idTag
-	s.mu.RUnlock()
-	if transaction == 0 {
+func (s *simulator) stopTransaction(c *connectorState, reason core.Reason) error {
+	c.stopAutoAndWait()
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	c.mu.RLock()
+	tx, meter, tag := c.transaction, c.meterWh, c.idTag
+	c.mu.RUnlock()
+	if tx == 0 {
 		return errors.New("no active transaction")
 	}
 	ocppMeter, err := ocppMeterWh(meter)
 	if err != nil {
 		return fmt.Errorf("stop meter: %w", err)
 	}
-	conf, err := s.cp.StopTransaction(ocppMeter, types.Now(), transaction, func(request *core.StopTransactionRequest) {
-		request.IdTag = idTag
-		request.Reason = reason
-	})
+	conf, err := s.stopAction(ocppMeter, tx, tag, reason)
 	if err != nil {
 		return fmt.Errorf("StopTransaction: %w", err)
 	}
-	status := "Accepted"
+	state := "Accepted"
 	if conf != nil && conf.IdTagInfo != nil {
-		status = string(conf.IdTagInfo.Status)
+		state = string(conf.IdTagInfo.Status)
 	}
-	s.mu.Lock()
-	s.transaction = 0
-	s.idTag = ""
-	s.powerKW = 0
-	s.remoteStop = nil
-	s.mu.Unlock()
-	s.mu.RLock()
-	unavailable := s.unavailableAfterStop
-	s.mu.RUnlock()
-	targetStatus := core.ChargePointStatusFinishing
-	if unavailable {
-		targetStatus = core.ChargePointStatusUnavailable
-	}
-	if err := s.setStatusLocked(targetStatus, core.NoError); err != nil {
+	c.mu.Lock()
+	c.transaction, c.idTag, c.powerKW, c.remoteStop = 0, "", 0, nil
+	c.mu.Unlock()
+	if err := s.setStatusLocked(c, core.ChargePointStatusFinishing, core.NoError); err != nil {
 		return err
 	}
-	fmt.Printf("[OCPP] StopTransaction status=%s transactionId=%d meterStop=%.0fWh reason=%s\n", status, transaction, meter, reason)
+	fmt.Printf("[OCPP] StopTransaction connector=%d status=%s transactionId=%d meterStop=%.0fWh reason=%s\n", c.id, state, tx, meter, reason)
 	return nil
 }
-
-// ocppMeterWh is the only conversion from the simulator's fractional internal
-// register to OCPP's integer Wh payload. Every transaction boundary therefore
-// emits the same cumulative value for the same physical register state.
 func ocppMeterWh(value float64) (int, error) {
 	if math.IsNaN(value) || math.IsInf(value, 0) || value < 0 {
 		return 0, errors.New("meter must be a finite non-negative value")
@@ -844,61 +917,68 @@ func ocppMeterWh(value float64) (int, error) {
 	}
 	return int(rounded), nil
 }
-
-func (s *simulator) setStatus(status core.ChargePointStatus, code core.ChargePointErrorCode) error {
-	s.opsMu.Lock()
-	defer s.opsMu.Unlock()
-	return s.setStatusLocked(status, code)
+func (s *simulator) setStatus(c *connectorState, status core.ChargePointStatus, code core.ChargePointErrorCode) error {
+	c.ops.Lock()
+	defer c.ops.Unlock()
+	return s.setStatusLocked(c, status, code)
 }
-
-func (s *simulator) setStatusLocked(status core.ChargePointStatus, code core.ChargePointErrorCode) error {
-	_, err := s.cp.StatusNotification(s.connectorID, code, status, func(request *core.StatusNotificationRequest) {
-		request.Timestamp = types.Now()
-	})
-	if err != nil {
+func (s *simulator) setStatusLocked(c *connectorState, status core.ChargePointStatus, code core.ChargePointErrorCode) error {
+	if err := s.statusAction(c.id, code, status); err != nil {
 		return fmt.Errorf("StatusNotification %s: %w", status, err)
 	}
-	s.mu.Lock()
-	s.status = status
-	s.errorCode = code
-	s.mu.Unlock()
-	fmt.Printf("[OCPP] StatusNotification connector=%d status=%s errorCode=%s\n", s.connectorID, status, code)
+	c.mu.Lock()
+	c.status, c.errorCode = status, code
+	c.mu.Unlock()
+	fmt.Printf("[OCPP] StatusNotification connector=%d status=%s errorCode=%s\n", c.id, status, code)
 	return nil
 }
-
-func (s *simulator) requireTransactionStatus(status core.ChargePointStatus) error {
-	if !s.hasTransaction() {
+func (s *simulator) requireTransactionStatus(c *connectorState, status core.ChargePointStatus) error {
+	c.mu.RLock()
+	transaction := c.transaction
+	c.mu.RUnlock()
+	if transaction == 0 {
 		return errors.New("this status requires an active transaction")
 	}
-	return s.setStatus(status, core.NoError)
+	return s.setStatus(c, status, core.NoError)
+}
+func (s *simulator) currentPower(c *connectorState) float64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.powerKW
 }
 
-func (s *simulator) startAuto(interval time.Duration, powerKW float64) error {
-	if !s.hasTransaction() {
+func (s *simulator) startAuto(c *connectorState, interval time.Duration, power float64) error {
+	c.mu.RLock()
+	transaction := c.transaction
+	c.mu.RUnlock()
+	if transaction == 0 {
 		return errors.New("automatic metering requires an active transaction")
 	}
-	s.stopAutoAndWait()
+	c.stopAutoAndWait()
 	cancel, done := make(chan struct{}), make(chan struct{})
-	s.mu.Lock()
-	s.autoCancel, s.autoDone = cancel, done
-	s.autoInterval, s.autoPowerKW = interval, powerKW
-	s.mu.Unlock()
+	c.mu.Lock()
+	c.autoCancel, c.autoDone, c.autoInterval, c.autoPowerKW, c.autoTransaction = cancel, done, interval, power, transaction
+	c.mu.Unlock()
 	go func() {
 		defer close(done)
-		defer s.clearAuto(cancel)
+		defer c.clearAuto(cancel)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
+		lastSampleAt := time.Now()
 		for {
 			select {
-			case <-ticker.C:
-				if err := s.sendAutomaticMeter(cancel, interval, powerKW); err != nil {
-					if errors.Is(err, errWorkerStopped) {
-						return
-					}
-					if errors.Is(err, errAutomaticMeterPaused) {
-						continue
-					}
-					fmt.Printf("[SIM] automatic meter stopped: %v\n", err)
+			case sampleAt := <-ticker.C:
+				elapsed := sampleAt.Sub(lastSampleAt)
+				lastSampleAt = sampleAt
+				err := s.sendAutomaticMeter(c, cancel, elapsed, power, transaction)
+				if errors.Is(err, errWorkerStopped) {
+					return
+				}
+				if errors.Is(err, errAutomaticMeterPaused) {
+					continue
+				}
+				if err != nil {
+					fmt.Printf("[SIM] connector %d automatic meter stopped: %v\n", c.id, err)
 					return
 				}
 			case <-cancel:
@@ -906,161 +986,199 @@ func (s *simulator) startAuto(interval time.Duration, powerKW float64) error {
 			}
 		}
 	}()
-	fmt.Printf("[SIM] automatic metering every %s at %.3fkW\n", interval, powerKW)
+	fmt.Printf("[SIM] connector %d automatic metering transactionId=%d every %s at %.3fkW\n", c.id, transaction, interval, power)
 	return nil
 }
-
-func (s *simulator) stopAuto() {
-	s.mu.Lock()
-	cancel := s.detachAutoLocked()
-	s.mu.Unlock()
-	if cancel != nil {
-		close(cancel)
-	}
-}
-
-func (s *simulator) stopAutoAndWait() {
-	s.mu.Lock()
-	done := s.autoDone
-	cancel := s.detachAutoLocked()
-	s.mu.Unlock()
+func (c *connectorState) stopAutoAndWait() {
+	c.mu.Lock()
+	cancel, done := c.autoCancel, c.autoDone
+	c.autoCancel, c.autoDone, c.autoInterval, c.autoPowerKW, c.autoTransaction = nil, nil, 0, 0, 0
+	c.mu.Unlock()
 	if cancel != nil {
 		close(cancel)
 		<-done
 	}
 }
-
-func (s *simulator) detachAutoLocked() chan struct{} {
-	cancel := s.autoCancel
-	s.autoCancel, s.autoDone = nil, nil
-	s.autoInterval, s.autoPowerKW = 0, 0
-	return cancel
+func (c *connectorState) clearAuto(cancel chan struct{}) {
+	c.mu.Lock()
+	if c.autoCancel == cancel {
+		c.autoCancel, c.autoDone, c.autoInterval, c.autoPowerKW, c.autoTransaction = nil, nil, 0, 0, 0
+	}
+	c.mu.Unlock()
 }
 
-func (s *simulator) clearAuto(cancel chan struct{}) {
-	s.mu.Lock()
-	if s.autoCancel == cancel {
-		s.detachAutoLocked()
-	}
-	s.mu.Unlock()
+func (s *simulator) remoteStartEligible(c *connectorState) bool {
+	c.mu.RLock()
+	ok := c.transaction == 0 && c.remoteStart == nil && (c.status == core.ChargePointStatusAvailable || c.status == core.ChargePointStatusPreparing)
+	c.mu.RUnlock()
+	return ok
 }
-
-func (s *simulator) executePendingRemoteStart() error {
-	s.mu.RLock()
-	request := s.remoteStart
-	s.mu.RUnlock()
-	if request == nil {
-		return errors.New("no accepted remote start is pending")
+func (s *simulator) selectRemoteStartConnector(r *core.RemoteStartTransactionRequest) (*connectorState, error) {
+	if r == nil {
+		return nil, errors.New("remote start request is required")
 	}
-	connector := s.connectorID
-	if request.ConnectorId != nil {
-		connector = *request.ConnectorId
+	if r.ConnectorId != nil {
+		c, err := s.connector(*r.ConnectorId)
+		if err != nil {
+			return nil, err
+		}
+		if !s.remoteStartEligible(c) {
+			return nil, fmt.Errorf("connector %d is not eligible for remote start", c.id)
+		}
+		return c, nil
 	}
-	if connector != s.connectorID {
-		return fmt.Errorf("remote start requested connector %d, simulator owns connector %d", connector, s.connectorID)
+	for _, id := range s.connectorIDs() {
+		c, _ := s.connector(id)
+		if s.remoteStartEligible(c) {
+			return c, nil
+		}
 	}
-	return s.startTransaction(request.IdTag, true)
+	return nil, errors.New("no configured connector is eligible for remote start")
 }
-
-func (s *simulator) executePendingRemoteStop() error {
-	s.mu.RLock()
-	request := s.remoteStop
-	s.mu.RUnlock()
-	if request == nil {
-		return errors.New("no accepted remote stop is pending")
+func (s *simulator) findTransactionConnector(tx int) (*connectorState, error) {
+	for _, id := range s.connectorIDs() {
+		c, _ := s.connector(id)
+		c.mu.RLock()
+		match := c.transaction == tx
+		c.mu.RUnlock()
+		if match {
+			return c, nil
+		}
 	}
-	return s.stopTransaction(core.ReasonRemote)
+	return nil, fmt.Errorf("transaction %d is not active on this charge point", tx)
+}
+func (s *simulator) executePendingRemoteStart(c *connectorState) error {
+	c.mu.RLock()
+	r := c.remoteStart
+	c.mu.RUnlock()
+	if r == nil {
+		return errors.New("no accepted remote start is pending on this connector")
+	}
+	return s.startTransaction(c, r.IdTag, true)
+}
+func (s *simulator) executePendingRemoteStop(c *connectorState) error {
+	c.mu.RLock()
+	r := c.remoteStop
+	c.mu.RUnlock()
+	if r == nil {
+		return errors.New("no accepted remote stop is pending on this connector")
+	}
+	if err := s.stopTransaction(c, core.ReasonRemote); err != nil {
+		return err
+	}
+	return s.finish(c)
 }
 
 func (s *simulator) printState() {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	fmt.Printf("connected=%t booted=%t id=%s connector=%d status=%s error=%s plugged=%t\n", s.cp.IsConnected(), s.booted, s.clientID, s.connectorID, s.status, s.errorCode, s.plugged)
-	fmt.Printf("heartbeat server=%ds effective=%ds override=%t active=%t autoMeter=%t interval=%s power=%.3fkW\n", s.heartbeatServer, s.heartbeatEffective, s.heartbeatOverride > 0, s.heartbeatCancel != nil, s.autoCancel != nil, s.autoInterval, s.autoPowerKW)
-	fmt.Printf("transactionId=%d idTag=%q meter=%.0fWh power=%.3fkW voltage=%.1fV soc=%.1f%% pendingRemoteStart=%t pendingRemoteStop=%t autoRemote=%t\n", s.transaction, s.idTag, s.meterWh, s.powerKW, s.voltage, s.soc, s.remoteStart != nil, s.remoteStop != nil, s.autoRemote)
+	selected, booted, start, stop, auto := s.selectedConnector, s.booted, s.acceptStart, s.acceptStop, s.autoRemote
+	s.mu.RUnlock()
+	s.heartbeatMu.Lock()
+	server, effective, override, active := s.heartbeatServer, s.heartbeatEffective, s.heartbeatOverride > 0, s.heartbeatCancel != nil
+	s.heartbeatMu.Unlock()
+	fmt.Printf("connected=%t booted=%t id=%s connectors=%d selected=%d heartbeat server=%ds effective=%ds override=%t active=%t remoteStart=%t remoteStop=%t autoRemote=%t\n", s.cp.IsConnected(), booted, s.clientID, len(s.connectorIDs()), selected, server, effective, override, active, start, stop, auto)
 }
-
-func (s *simulator) hasTransaction() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.transaction != 0
-}
-
-func (s *simulator) currentPower() float64 {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.powerKW
+func (s *simulator) printConnectorState(c *connectorState) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	fmt.Printf("connector=%d status=%s error=%s plugged=%t transactionId=%d idTag=%q meter=%.0fWh power=%.3fkW voltage=%.1fV soc=%.1f%% pendingRemoteStart=%t pendingRemoteStop=%t autoMeter=%t interval=%s autoPower=%.3fkW\n", c.id, c.status, c.errorCode, c.plugged, c.transaction, c.idTag, c.meterWh, c.powerKW, c.voltage, c.soc, c.remoteStart != nil, c.remoteStop != nil, c.autoCancel != nil, c.autoInterval, c.autoPowerKW)
 }
 
 // OCPP Core profile: Central System -> Charge Point handlers.
-
-func (s *simulator) OnChangeAvailability(request *core.ChangeAvailabilityRequest) (*core.ChangeAvailabilityConfirmation, error) {
-	fmt.Printf("[REMOTE] ChangeAvailability connector=%d type=%s\n", request.ConnectorId, request.Type)
-	if request.ConnectorId != 0 && request.ConnectorId != s.connectorID {
+func (s *simulator) OnChangeAvailability(r *core.ChangeAvailabilityRequest) (*core.ChangeAvailabilityConfirmation, error) {
+	if r == nil {
 		return core.NewChangeAvailabilityConfirmation(core.AvailabilityStatusRejected), nil
 	}
-	if request.Type == core.AvailabilityTypeInoperative && s.hasTransaction() {
-		s.mu.Lock()
-		s.unavailableAfterStop = true
-		s.mu.Unlock()
+	fmt.Printf("[REMOTE] ChangeAvailability connector=%d type=%s\n", r.ConnectorId, r.Type)
+	targets := make([]*connectorState, 0)
+	if r.ConnectorId == 0 {
+		for _, id := range s.connectorIDs() {
+			c, _ := s.connector(id)
+			targets = append(targets, c)
+		}
+	} else {
+		c, err := s.connector(r.ConnectorId)
+		if err != nil {
+			return core.NewChangeAvailabilityConfirmation(core.AvailabilityStatusRejected), nil
+		}
+		targets = append(targets, c)
+	}
+	scheduled := false
+	for _, c := range targets {
+		c.mu.Lock()
+		active := c.transaction != 0
+		if r.Type == core.AvailabilityTypeInoperative && active {
+			c.unavailableAfterStop = true
+			scheduled = true
+		}
+		if r.Type == core.AvailabilityTypeOperative {
+			c.unavailableAfterStop = false
+		}
+		c.mu.Unlock()
+	}
+	if scheduled {
 		return core.NewChangeAvailabilityConfirmation(core.AvailabilityStatusScheduled), nil
 	}
-	target := core.ChargePointStatusAvailable
-	if request.Type == core.AvailabilityTypeInoperative {
-		target = core.ChargePointStatusUnavailable
+	status := core.ChargePointStatusAvailable
+	if r.Type == core.AvailabilityTypeInoperative {
+		status = core.ChargePointStatusUnavailable
 	}
-	s.mu.Lock()
-	s.unavailableAfterStop = request.Type == core.AvailabilityTypeInoperative
-	s.mu.Unlock()
-	go func() { _ = s.setStatus(target, core.NoError) }()
+	for _, c := range targets {
+		go func(c *connectorState) {
+			if err := s.setStatus(c, status, core.NoError); err != nil {
+				fmt.Printf("[SIM] ChangeAvailability connector %d failed: %v\n", c.id, err)
+			}
+		}(c)
+	}
 	return core.NewChangeAvailabilityConfirmation(core.AvailabilityStatusAccepted), nil
 }
-
-func (s *simulator) OnChangeConfiguration(request *core.ChangeConfigurationRequest) (*core.ChangeConfigurationConfirmation, error) {
-	fmt.Printf("[REMOTE] ChangeConfiguration key=%s value=%s\n", request.Key, request.Value)
-	if request.Key == "HeartbeatInterval" {
-		interval, err := strconv.Atoi(request.Value)
+func (s *simulator) OnChangeConfiguration(r *core.ChangeConfigurationRequest) (*core.ChangeConfigurationConfirmation, error) {
+	if r == nil {
+		return core.NewChangeConfigurationConfirmation(core.ConfigurationStatusRejected), nil
+	}
+	fmt.Printf("[REMOTE] ChangeConfiguration key=%s value=%s\n", r.Key, r.Value)
+	if r.Key == "HeartbeatInterval" {
+		interval, err := strconv.Atoi(r.Value)
 		if err != nil || interval <= 0 {
 			return core.NewChangeConfigurationConfirmation(core.ConfigurationStatusRejected), nil
 		}
-		s.mu.RLock()
+		s.heartbeatMu.Lock()
 		override := s.heartbeatOverride
-		s.mu.RUnlock()
+		s.heartbeatMu.Unlock()
 		if override > 0 {
-			fmt.Printf("[SIM] ChangeConfiguration HeartbeatInterval rejected; CLI override remains %ds\n", override)
 			return core.NewChangeConfigurationConfirmation(core.ConfigurationStatusRejected), nil
 		}
-		s.mu.Lock()
+		s.heartbeatMu.Lock()
 		s.heartbeatEffective = interval
-		s.configuration[request.Key] = request.Value
+		s.heartbeatMu.Unlock()
+		s.mu.Lock()
+		s.configuration[r.Key] = r.Value
 		s.mu.Unlock()
 		s.startHeartbeat(time.Duration(interval) * time.Second)
 		return core.NewChangeConfigurationConfirmation(core.ConfigurationStatusAccepted), nil
 	}
 	s.mu.Lock()
-	s.configuration[request.Key] = request.Value
+	s.configuration[r.Key] = r.Value
 	s.mu.Unlock()
 	return core.NewChangeConfigurationConfirmation(core.ConfigurationStatusAccepted), nil
 }
-
 func (s *simulator) OnClearCache(*core.ClearCacheRequest) (*core.ClearCacheConfirmation, error) {
 	fmt.Println("[REMOTE] ClearCache")
 	return core.NewClearCacheConfirmation(core.ClearCacheStatusAccepted), nil
 }
-
 func (s *simulator) OnDataTransfer(*core.DataTransferRequest) (*core.DataTransferConfirmation, error) {
 	return core.NewDataTransferConfirmation(core.DataTransferStatusAccepted), nil
 }
-
-func (s *simulator) OnGetConfiguration(request *core.GetConfigurationRequest) (*core.GetConfigurationConfirmation, error) {
+func (s *simulator) OnGetConfiguration(r *core.GetConfigurationRequest) (*core.GetConfigurationConfirmation, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	keys := request.Key
+	keys := r.Key
 	if len(keys) == 0 {
 		keys = make([]string, 0, len(s.configuration))
 		for key := range s.configuration {
 			keys = append(keys, key)
 		}
+		sort.Strings(keys)
 	}
 	known := make([]core.ConfigurationKey, 0, len(keys))
 	unknown := make([]string, 0)
@@ -1077,90 +1195,124 @@ func (s *simulator) OnGetConfiguration(request *core.GetConfigurationRequest) (*
 	conf.UnknownKey = unknown
 	return conf, nil
 }
-
-func (s *simulator) OnRemoteStartTransaction(request *core.RemoteStartTransactionRequest) (*core.RemoteStartTransactionConfirmation, error) {
-	s.mu.Lock()
-	accepted := s.acceptStart && s.transaction == 0 && s.status != core.ChargePointStatusFaulted && s.status != core.ChargePointStatusUnavailable
+func (s *simulator) OnRemoteStartTransaction(r *core.RemoteStartTransactionRequest) (*core.RemoteStartTransactionConfirmation, error) {
+	s.mu.RLock()
+	accept, auto := s.acceptStart, s.autoRemote
+	s.mu.RUnlock()
+	c, err := s.selectRemoteStartConnector(r)
+	accepted := accept && err == nil
 	if accepted {
-		s.remoteStart = request
+		c.mu.Lock()
+		accepted = c.transaction == 0 && c.remoteStart == nil && (c.status == core.ChargePointStatusAvailable || c.status == core.ChargePointStatusPreparing)
+		if accepted {
+			c.remoteStart = r
+		}
+		c.mu.Unlock()
 	}
-	auto := s.autoRemote
-	s.mu.Unlock()
 	status := types.RemoteStartStopStatusRejected
 	if accepted {
 		status = types.RemoteStartStopStatusAccepted
 	}
-	fmt.Printf("[REMOTE] RemoteStartTransaction idTag=%s response=%s auto=%t\n", request.IdTag, status, auto)
+	requested := 0
+	if r != nil && r.ConnectorId != nil {
+		requested = *r.ConnectorId
+	}
+	tag := ""
+	if r != nil {
+		tag = r.IdTag
+	}
+	fmt.Printf("[REMOTE] RemoteStartTransaction connector=%d idTag=%s response=%s auto=%t\n", requested, tag, status, auto)
 	if accepted && auto {
 		go func() {
 			time.Sleep(100 * time.Millisecond)
-			if err := s.executePendingRemoteStart(); err != nil {
-				fmt.Printf("[SIM] automatic remote start failed: %v\n", err)
+			if err := s.executePendingRemoteStart(c); err != nil {
+				fmt.Printf("[SIM] automatic remote start connector %d failed: %v\n", c.id, err)
 			}
 		}()
 	}
 	return core.NewRemoteStartTransactionConfirmation(status), nil
 }
-
-func (s *simulator) OnRemoteStopTransaction(request *core.RemoteStopTransactionRequest) (*core.RemoteStopTransactionConfirmation, error) {
-	s.mu.Lock()
-	accepted := s.acceptStop && s.transaction == request.TransactionId
-	if accepted {
-		s.remoteStop = request
+func (s *simulator) OnRemoteStopTransaction(r *core.RemoteStopTransactionRequest) (*core.RemoteStopTransactionConfirmation, error) {
+	s.mu.RLock()
+	accept := s.acceptStop
+	s.mu.RUnlock()
+	var c *connectorState
+	var err error
+	if r == nil {
+		err = errors.New("remote stop request is required")
+	} else {
+		c, err = s.findTransactionConnector(r.TransactionId)
 	}
-	auto := s.autoRemote
-	s.mu.Unlock()
+	accepted := accept && err == nil
+	if accepted {
+		c.mu.Lock()
+		if c.transaction != r.TransactionId || c.remoteStop != nil {
+			accepted = false
+		} else {
+			c.remoteStop = r
+		}
+		c.mu.Unlock()
+	}
 	status := types.RemoteStartStopStatusRejected
 	if accepted {
 		status = types.RemoteStartStopStatusAccepted
 	}
-	fmt.Printf("[REMOTE] RemoteStopTransaction transactionId=%d response=%s auto=%t\n", request.TransactionId, status, auto)
-	if accepted && auto {
+	tx := 0
+	if r != nil {
+		tx = r.TransactionId
+	}
+	fmt.Printf("[REMOTE] RemoteStopTransaction transactionId=%d response=%s completing=%t\n", tx, status, accepted)
+	if accepted {
 		go func() {
-			time.Sleep(100 * time.Millisecond)
-			if err := s.executePendingRemoteStop(); err != nil {
-				fmt.Printf("[SIM] automatic remote stop failed: %v\n", err)
+			if err := s.executePendingRemoteStop(c); err != nil {
+				fmt.Printf("[SIM] automatic remote stop connector %d failed: %v\n", c.id, err)
 			}
 		}()
 	}
 	return core.NewRemoteStopTransactionConfirmation(status), nil
 }
-
-func (s *simulator) OnReset(request *core.ResetRequest) (*core.ResetConfirmation, error) {
-	fmt.Printf("[REMOTE] Reset type=%s\n", request.Type)
+func (s *simulator) OnReset(r *core.ResetRequest) (*core.ResetConfirmation, error) {
+	fmt.Printf("[REMOTE] Reset type=%s\n", r.Type)
 	go func() {
 		time.Sleep(100 * time.Millisecond)
-		if s.hasTransaction() {
-			reason := core.ReasonSoftReset
-			if request.Type == core.ResetTypeHard {
-				reason = core.ReasonHardReset
-			}
-			if err := s.stopTransaction(reason); err != nil {
-				fmt.Printf("[SIM] reset stop failed: %v\n", err)
-				return
+		reason := core.ReasonSoftReset
+		if r.Type == core.ResetTypeHard {
+			reason = core.ReasonHardReset
+		}
+		for _, id := range s.connectorIDs() {
+			c, _ := s.connector(id)
+			c.mu.RLock()
+			active := c.transaction != 0
+			c.mu.RUnlock()
+			if active {
+				if err := s.stopTransaction(c, reason); err != nil {
+					fmt.Printf("[SIM] reset stop connector %d failed: %v\n", id, err)
+				}
 			}
 		}
 		if err := s.boot(); err != nil {
 			fmt.Printf("[SIM] reset boot failed: %v\n", err)
 			return
 		}
-		_ = s.setStatus(core.ChargePointStatusAvailable, core.NoError)
+		for _, id := range s.connectorIDs() {
+			c, _ := s.connector(id)
+			if err := s.finish(c); err != nil {
+				fmt.Printf("[SIM] reset status connector %d failed: %v\n", id, err)
+			}
+		}
 	}()
 	return core.NewResetConfirmation(core.ResetStatusAccepted), nil
 }
-
-func (s *simulator) OnUnlockConnector(request *core.UnlockConnectorRequest) (*core.UnlockConnectorConfirmation, error) {
-	fmt.Printf("[REMOTE] UnlockConnector connector=%d\n", request.ConnectorId)
-	if request.ConnectorId != s.connectorID {
+func (s *simulator) OnUnlockConnector(r *core.UnlockConnectorRequest) (*core.UnlockConnectorConfirmation, error) {
+	fmt.Printf("[REMOTE] UnlockConnector connector=%d\n", r.ConnectorId)
+	if _, err := s.connector(r.ConnectorId); err != nil {
 		return core.NewUnlockConnectorConfirmation(core.UnlockStatusNotSupported), nil
 	}
 	return core.NewUnlockConnectorConfirmation(core.UnlockStatusUnlocked), nil
 }
 
-// OCPP Firmware Management and Remote Trigger profile handlers used by HAL REST commands.
-
-func (s *simulator) OnGetDiagnostics(request *firmware.GetDiagnosticsRequest) (*firmware.GetDiagnosticsConfirmation, error) {
-	fmt.Printf("[REMOTE] GetDiagnostics location=%s\n", request.Location)
+func (s *simulator) OnGetDiagnostics(r *firmware.GetDiagnosticsRequest) (*firmware.GetDiagnosticsConfirmation, error) {
+	fmt.Printf("[REMOTE] GetDiagnostics location=%s\n", r.Location)
 	conf := firmware.NewGetDiagnosticsConfirmation()
 	conf.FileName = fmt.Sprintf("%s-diagnostics.log", s.clientID)
 	go func() {
@@ -1171,9 +1323,8 @@ func (s *simulator) OnGetDiagnostics(request *firmware.GetDiagnosticsRequest) (*
 	}()
 	return conf, nil
 }
-
-func (s *simulator) OnUpdateFirmware(request *firmware.UpdateFirmwareRequest) (*firmware.UpdateFirmwareConfirmation, error) {
-	fmt.Printf("[REMOTE] UpdateFirmware location=%s retrieveDate=%s\n", request.Location, request.RetrieveDate.String())
+func (s *simulator) OnUpdateFirmware(r *firmware.UpdateFirmwareRequest) (*firmware.UpdateFirmwareConfirmation, error) {
+	fmt.Printf("[REMOTE] UpdateFirmware location=%s retrieveDate=%s\n", r.Location, r.RetrieveDate.String())
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		for _, status := range []firmware.FirmwareStatus{firmware.FirmwareStatusDownloading, firmware.FirmwareStatusDownloaded, firmware.FirmwareStatusInstalling, firmware.FirmwareStatusInstalled} {
@@ -1183,31 +1334,45 @@ func (s *simulator) OnUpdateFirmware(request *firmware.UpdateFirmwareRequest) (*
 	}()
 	return firmware.NewUpdateFirmwareConfirmation(), nil
 }
-
-func (s *simulator) OnTriggerMessage(request *remotetrigger.TriggerMessageRequest) (*remotetrigger.TriggerMessageConfirmation, error) {
-	fmt.Printf("[REMOTE] TriggerMessage requestedMessage=%s\n", request.RequestedMessage)
-	implemented := request.RequestedMessage == core.BootNotificationFeatureName || request.RequestedMessage == core.HeartbeatFeatureName || request.RequestedMessage == core.StatusNotificationFeatureName || request.RequestedMessage == core.MeterValuesFeatureName
+func (s *simulator) OnTriggerMessage(r *remotetrigger.TriggerMessageRequest) (*remotetrigger.TriggerMessageConfirmation, error) {
+	fmt.Printf("[REMOTE] TriggerMessage requestedMessage=%s\n", r.RequestedMessage)
+	implemented := r.RequestedMessage == core.BootNotificationFeatureName || r.RequestedMessage == core.HeartbeatFeatureName || r.RequestedMessage == core.StatusNotificationFeatureName || r.RequestedMessage == core.MeterValuesFeatureName
 	if !implemented {
 		return remotetrigger.NewTriggerMessageConfirmation(remotetrigger.TriggerMessageStatusNotImplemented), nil
 	}
 	go func() {
 		time.Sleep(100 * time.Millisecond)
 		var err error
-		switch request.RequestedMessage {
+		switch r.RequestedMessage {
 		case core.BootNotificationFeatureName:
 			err = s.boot()
 		case core.HeartbeatFeatureName:
 			err = s.heartbeat()
 		case core.StatusNotificationFeatureName:
-			s.mu.RLock()
-			status, code := s.status, s.errorCode
-			s.mu.RUnlock()
-			err = s.setStatus(status, code)
+			for _, id := range s.connectorIDs() {
+				c, _ := s.connector(id)
+				c.mu.RLock()
+				status, code := c.status, c.errorCode
+				c.mu.RUnlock()
+				if err = s.setStatus(c, status, code); err != nil {
+					break
+				}
+			}
 		case core.MeterValuesFeatureName:
-			err = s.sendMeter(0, s.currentPower())
+			for _, id := range s.connectorIDs() {
+				c, _ := s.connector(id)
+				c.mu.RLock()
+				active, power := c.transaction != 0, c.powerKW
+				c.mu.RUnlock()
+				if active {
+					if err = s.sendMeter(c, 0, power); err != nil {
+						break
+					}
+				}
+			}
 		}
 		if err != nil {
-			fmt.Printf("[SIM] triggered %s failed: %v\n", request.RequestedMessage, err)
+			fmt.Printf("[SIM] triggered %s failed: %v\n", r.RequestedMessage, err)
 		}
 	}()
 	return remotetrigger.NewTriggerMessageConfirmation(remotetrigger.TriggerMessageStatusAccepted), nil
@@ -1222,7 +1387,6 @@ func parseBoolPolicy(value, truthy, falsy string) (bool, bool) {
 	}
 	return false, false
 }
-
 func normalizeWebSocketURL(value string) (string, error) {
 	value = strings.TrimRight(strings.TrimSpace(value), "/")
 	parsed, err := url.Parse(value)
@@ -1234,44 +1398,36 @@ func normalizeWebSocketURL(value string) (string, error) {
 	}
 	return value, nil
 }
-
 func parseStatus(value string) (core.ChargePointStatus, bool) {
-	statuses := []core.ChargePointStatus{core.ChargePointStatusAvailable, core.ChargePointStatusPreparing, core.ChargePointStatusCharging, core.ChargePointStatusSuspendedEVSE, core.ChargePointStatusSuspendedEV, core.ChargePointStatusFinishing, core.ChargePointStatusReserved, core.ChargePointStatusUnavailable, core.ChargePointStatusFaulted}
-	for _, status := range statuses {
+	for _, status := range []core.ChargePointStatus{core.ChargePointStatusAvailable, core.ChargePointStatusPreparing, core.ChargePointStatusCharging, core.ChargePointStatusSuspendedEVSE, core.ChargePointStatusSuspendedEV, core.ChargePointStatusFinishing, core.ChargePointStatusReserved, core.ChargePointStatusUnavailable, core.ChargePointStatusFaulted} {
 		if strings.EqualFold(value, string(status)) {
 			return status, true
 		}
 	}
 	return "", false
 }
-
 func parseErrorCode(value string) (core.ChargePointErrorCode, bool) {
-	codes := []core.ChargePointErrorCode{core.ConnectorLockFailure, core.EVCommunicationError, core.GroundFailure, core.HighTemperature, core.InternalError, core.LocalListConflict, core.NoError, core.OtherError, core.OverCurrentFailure, core.OverVoltage, core.PowerMeterFailure, core.PowerSwitchFailure, core.ReaderFailure, core.ResetFailure, core.UnderVoltage, core.WeakSignal}
-	for _, code := range codes {
+	for _, code := range []core.ChargePointErrorCode{core.ConnectorLockFailure, core.EVCommunicationError, core.GroundFailure, core.HighTemperature, core.InternalError, core.LocalListConflict, core.NoError, core.OtherError, core.OverCurrentFailure, core.OverVoltage, core.PowerMeterFailure, core.PowerSwitchFailure, core.ReaderFailure, core.ResetFailure, core.UnderVoltage, core.WeakSignal} {
 		if strings.EqualFold(value, string(code)) {
 			return code, true
 		}
 	}
 	return "", false
 }
-
 func parseStopReason(value string) (core.Reason, bool) {
-	reasons := []core.Reason{core.ReasonDeAuthorized, core.ReasonEmergencyStop, core.ReasonEVDisconnected, core.ReasonHardReset, core.ReasonLocal, core.ReasonOther, core.ReasonPowerLoss, core.ReasonReboot, core.ReasonRemote, core.ReasonSoftReset, core.ReasonUnlockCommand}
-	for _, reason := range reasons {
+	for _, reason := range []core.Reason{core.ReasonDeAuthorized, core.ReasonEmergencyStop, core.ReasonEVDisconnected, core.ReasonHardReset, core.ReasonLocal, core.ReasonOther, core.ReasonPowerLoss, core.ReasonReboot, core.ReasonRemote, core.ReasonSoftReset, core.ReasonUnlockCommand} {
 		if strings.EqualFold(value, string(reason)) {
 			return reason, true
 		}
 	}
 	return "", false
 }
-
 func env(key, fallback string) string {
 	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
 		return value
 	}
 	return fallback
 }
-
 func envInt(key string, fallback int) int {
 	value, err := strconv.Atoi(env(key, strconv.Itoa(fallback)))
 	if err != nil {
@@ -1279,7 +1435,6 @@ func envInt(key string, fallback int) int {
 	}
 	return value
 }
-
 func envFloat(key string, fallback float64) float64 {
 	value, err := strconv.ParseFloat(env(key, strconv.FormatFloat(fallback, 'f', -1, 64)), 64)
 	if err != nil {

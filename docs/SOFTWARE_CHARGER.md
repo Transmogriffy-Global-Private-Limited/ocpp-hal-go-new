@@ -2,10 +2,10 @@
 
 ## Purpose and boundary
 
-`cpconsole` is a standalone software EV charger. It behaves as an OCPP 1.6J
-Charge Point and connects outbound to an OCPP Central System over WebSocket. It
-does not run inside the HAL server and does not call the HAL database or CMS
-directly.
+`cpconsole` is a standalone software EV charger. It behaves as one OCPP 1.6J
+Charge Point with one outbound WebSocket and one or more independently modeled
+connectors. It does not run inside the HAL server and does not call the HAL
+database or CMS directly.
 
 ```text
 terminal commands or HAL remote commands
@@ -52,14 +52,15 @@ Supported flags:
 | `-id` | `CP_SIM_ID` | `CP-SIM-001` | OCPP charge point identity. |
 | `-model` | `CP_SIM_MODEL` | `TransEV-Simulator` | Boot model (1–20 characters). |
 | `-vendor` | `CP_SIM_VENDOR` | `TransEV` | Boot vendor (1–20 characters). |
-| `-connector` | `CP_SIM_CONNECTOR` | `1` | Simulated connector ID. |
+| `-connectors` | `CP_SIM_CONNECTORS` | `1` | Number of connectors on the one simulated charge point. Must be at least one. |
+| `-connector` | `CP_SIM_CONNECTOR` | `1` | Initial selected connector ID for terminal/startup automation. It must be within `1..connectors`; this retains the original one-connector default. |
 | `-meter-start-wh` | `CP_SIM_METER_START_WH` | `100000` | Initial cumulative energy register. |
 | `-voltage` | `CP_SIM_VOLTAGE` | `230` | Voltage used for coherent current calculation. |
 | `-soc` | `CP_SIM_SOC` | `35` | Initial EV state of charge. |
 | `-heartbeat-interval` | `CP_SIM_HEARTBEAT_INTERVAL` | `0` | Simulator Heartbeat cadence in seconds. `0` honors the accepted `BootNotification.conf.interval`; a positive value is an explicit override. |
 | `-auto-start-id-tag` | `CP_SIM_AUTO_START_ID_TAG` | empty | Run one normal local session after boot using this idTag. |
-| `-auto-power-kw` | `CP_SIM_AUTO_POWER_KW` | `7.2` | Power used by startup automatic metering. |
-| `-auto-meter-interval` | `CP_SIM_AUTO_METER_INTERVAL` | `0` | Automatic MeterValues cadence in seconds after a successful startup transaction. `0` disables it. |
+| `-auto-power-kw` | `CP_SIM_AUTO_POWER_KW` | `7.2` | Constant power used by configured transaction-bound automatic metering. |
+| `-auto-meter-interval` | `CP_SIM_AUTO_METER_INTERVAL` | `0` | Automatic MeterValues cadence in seconds after every successful local or remote transaction. `0` disables it. |
 
 Flags take precedence over environment values. These variables are simulator
 client settings; they are not consumed by the HAL server.
@@ -84,13 +85,13 @@ Hosted development examples:
 
 ```powershell
 # Manual charger with the server-requested Heartbeat cadence.
-go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connector 1
+go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connectors 2 -connector 1
 
 # Manual charger with a 60-second simulator Heartbeat override.
-go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connector 1 -heartbeat-interval 60
+go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connectors 2 -connector 1 -heartbeat-interval 60
 
 # One realistic local session, then retain the interactive cp> prompt.
-go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connector 1 -heartbeat-interval 60 -auto-start-id-tag USER001 -auto-power-kw 7.2 -auto-meter-interval 10
+go run ./cmd/cpconsole -url wss://dev-ocpphal-new.transev.site -id bd9099 -connectors 2 -connector 1 -heartbeat-interval 60 -auto-start-id-tag USER001 -auto-power-kw 7.2 -auto-meter-interval 10
 ```
 
 ## Optional SoC acceptance
@@ -145,8 +146,8 @@ Startup automatically performs:
 
 ```text
 WebSocket connect
-→ BootNotification (must be Accepted)
-→ StatusNotification Available
+→ one BootNotification (must be Accepted)
+→ StatusNotification Available for each configured connector (1 through N)
 → terminal prompt
 ```
 
@@ -175,11 +176,12 @@ unplug
 → StatusNotification Available
 ```
 
-The simulator retains a fractional internal register for energy accumulation,
-but `StartTransaction`, every `MeterValues` sample, and `StopTransaction` all
-use the same finite, non-negative, rounded integer-Wh conversion. The same
-physical register therefore cannot be rounded for a periodic sample and
-truncated for StopTransaction.
+Each connector retains its own fractional internal meter, transaction, SoC,
+status, pending remote action, and automatic meter worker. `StartTransaction`,
+every `MeterValues` sample, and `StopTransaction` for that connector all use
+the same finite, non-negative, rounded integer-Wh conversion. The same physical
+register therefore cannot be rounded for a periodic sample and truncated for
+StopTransaction.
 
 `tick` never invents unrelated readings. The simulator calculates:
 
@@ -196,7 +198,9 @@ after boot reports `Available`: `plug`, `Authorize`, `StartTransaction`, and
 `StatusNotification Charging`. It retains the Central-System-assigned
 transaction ID. If `-auto-meter-interval` is positive, it starts the same
 periodic meter worker used by `auto <seconds> <power-kW>` only after that start
-has succeeded. A failed startup step is printed with its exact phase and leaves
+has succeeded. The configured worker also starts for normal terminal and
+accepted remote starts, is bound to that exact connector transaction, and uses
+actual elapsed time between samples. A failed startup step is printed with its exact phase and leaves
 the terminal prompt usable; automatic startup never retries after a stop or
 failure.
 
@@ -222,21 +226,28 @@ policy remote-start reject
 policy remote-stop reject
 ```
 
-Remote start is rejected when a transaction is already active or the connector
-is `Faulted`/`Unavailable`. Remote stop is rejected unless its transaction ID
-matches the active server-assigned transaction.
+For `RemoteStartTransaction`, an explicit connector must exist and be eligible.
+With no connector supplied, cpconsole chooses the lowest eligible connector in
+`Available` or `Preparing` state. A remote start never creates another WebSocket
+or uses a connector with an active/pending transaction. `RemoteStopTransaction`
+searches the configured connector states by exact server-assigned transaction
+ID, stops only that owner, cancels only its meter worker, reports `Finishing`,
+then returns it to `Available` (or scheduled `Unavailable`). Other connectors
+continue unchanged.
 
 ## Terminal command reference
 
 Run `help` inside the program for the canonical compact command list.
 
-- `state` prints connection, boot, connector, meter, transaction and policy state.
-- `state` also shows server/effective Heartbeat cadence, active workers, and
-  automatic-meter cadence/power.
+- `use <connector>` selects the connector used by all connector-local commands.
+- `state` prints charge-point connection/boot/policy state; `state all` prints
+  every connector's separate status, meter, transaction, pending command, and
+  automatic-meter state. `state <connector>` prints just that connector.
 - `heartbeat` sends an on-demand OCPP heartbeat while automatic Heartbeats run.
 - `plug`, `unplug`, `finish`, `suspend ev|evse`, and `resume` model normal states.
 - `authorize`, `start`, `tick`, `meter`, and `stop` drive the transaction lifecycle.
-- `auto <seconds> <power-kW>` sends periodic coherent readings; `auto off` stops it.
+- `auto <seconds> <power-kW>` sends periodic coherent readings for the selected
+  connector; `auto off` stops only that connector's worker.
 - Automatic metering pauses without adding energy while a manual command leaves
   the connector outside `Charging` (for example `suspend ev` or `fault`), and
   resumes only when the same state machine returns to `Charging`.

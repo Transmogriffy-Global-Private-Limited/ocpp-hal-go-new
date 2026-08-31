@@ -102,10 +102,12 @@ only exposes the authenticated v1 service boundary.
   workflows, recovery queries, and immutable fact delivery.
 - `cpconsole` is an OCPP-native interactive virtual charger with Boot-driven
   automatic Heartbeats, an explicit cadence override, one-shot normal local
-  startup sessions, and optional periodic metering. One shared rounded integer
-  Wh conversion is used for StartTransaction, MeterValues, and StopTransaction.
-  It remains a test client, not HAL runtime behavior or a durable source of
-  truth.
+  startup sessions, and optional periodic metering. One process now models one
+  charge point/WebSocket with independent per-connector transaction, meter,
+  status, pending remote command, and automatic-meter state. One shared rounded
+  integer Wh conversion is used for StartTransaction, MeterValues, and
+  StopTransaction on each connector. It remains a test client, not HAL runtime
+  behavior or a durable source of truth.
 - V1 completion persists `meter_stop_wh` as its effective/billable cumulative
   meter and may retain raw stop, adjustment, and evidence metadata for a
   temporally eligible one-Wh register discrepancy. Larger rollback evidence
