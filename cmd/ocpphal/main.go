@@ -65,6 +65,7 @@ func main() {
 			}
 		}
 	}()
+	go runTraceRetention(workerCtx, logger, v1Store, cfg.V1TraceRetentionDays, time.Duration(cfg.V1TraceRetentionIntervalSeconds)*time.Second)
 	factWorker, err := v1facts.New(cfg, v1Store, logger)
 	if err != nil {
 		logger.Error("failed to initialize v1 fact delivery", "error", err)
@@ -124,6 +125,27 @@ func main() {
 	}
 
 	logger.Info("shutdown complete")
+}
+
+func runTraceRetention(ctx context.Context, logger *slog.Logger, traces store.V1TraceStore, retentionDays int, interval time.Duration) {
+	if retentionDays < 1 {
+		retentionDays = 30
+	}
+	if interval <= 0 {
+		interval = time.Hour
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		if _, err := traces.DeleteV1TracesBefore(ctx, time.Now().UTC().AddDate(0, 0, -retentionDays), 500); err != nil && ctx.Err() == nil {
+			logger.Warn("charging trace retention cleanup failed", "error", err)
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
 }
 
 func chooseV1Store(ctx context.Context, cfg config.Config) (*store.PostgresStore, error) {

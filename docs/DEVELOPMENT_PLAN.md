@@ -9,6 +9,17 @@ no shared database and no supported old-CMS compatibility runtime.
 
 Current phase: v1 consumer-boundary verification and legacy retirement.
 
+Current trace/migration-ownership slice:
+
+- source implements a connector-aware, durable diagnostic transaction trace
+  readable only by CMS over the service bearer, with bounded retention and no
+  authority over OCPP, transactions, connector state, facts, or CMS commerce;
+- additive migration 018 is source-only and guarded by the new configurable
+  application-role migration path. Runtime starts only after a read-only check
+  confirms the application role can access the required v1 relations,
+  including the migration-017 completion ledger. No migration or deployment
+  has occurred.
+
 Completed in this slice:
 
 - customer-selected/wallet-derived limit contract: existing V1 start,
@@ -75,7 +86,10 @@ Completed in this slice:
    recovery behavior.
 2. Expand real-device acceptance coverage for energy/time stop races and
    charger-specific MeterValues variants before production rollout.
-3. Implement CMS-owned consumer projections, commercial flow, and UI in
+3. Apply and verify migration 018 through `cmd/migrate` with the configured
+   application/schema role and a disposable PostgreSQL database, including
+   relation-owner/privilege checks.
+4. Implement CMS-owned consumer projections, commercial flow, and UI in
    `ev-cms-backend-new` using the frozen v1 contract.
 
 ## Open Decisions

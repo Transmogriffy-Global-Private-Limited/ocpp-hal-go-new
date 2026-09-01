@@ -1,5 +1,22 @@
 # AI-assisted changelog
 
+## 2026-09-01 - Charging transaction trace and migration-ownership guard
+
+- Added additive trace migration 018, connector-aware HAL trace storage,
+  private CMS bearer reads, cursor/sanitizer/retention behavior, and OCPP
+  lifecycle/failure evidence. Trace remains diagnostic only and does not alter
+  transaction, command, connector, fact, or commercial authority.
+- Added `cmd/migrate`: it requires a configured `HAL_MIGRATION_APPLICATION_ROLE`,
+  verifies `current_user` after `SET LOCAL ROLE`, executes one reviewed SQL
+  file transactionally, resets role, and verifies each created table owner
+  before commit. Startup now read-only checks required v1 relation privileges
+  so ownership/ACL drift fails before OCPP traffic is accepted.
+
+Verification: focused trace/store/http/config/migration tests, full `go test
+./...`, `go vet ./...`, `go build ./...`, and `git diff --check` pass locally.
+PostgreSQL-gated tests remain skipped without `TEST_DATABASE_URL`. No migration
+was applied and deployment has not been performed.
+
 ## 2026-08-31 - STOP lifecycle lock-order and completion-fact hardening
 
 - Eliminated the PostgreSQL lock inversion between RemoteStop-delivery updates

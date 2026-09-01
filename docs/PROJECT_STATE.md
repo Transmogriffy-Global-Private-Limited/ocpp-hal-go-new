@@ -1,5 +1,18 @@
 # Project State
 
+## 2026-09-01 - Charging transaction trace source implementation verified, not deployed
+
+- The current source adds additive migration 018, durable
+  connector-aware diagnostic trace roots/events, private CMS-only trace reads,
+  sanitizer-at-persistence, bounded cursor reads/retention, and OCPP lifecycle
+  evidence. CMS-created roots bind to the eventual StartTransaction identity;
+  charger-only roots are created only when no such root exists.
+- The source also adds a guarded migration command that runs reviewed DDL under
+  a configurable application/schema role and verifies resulting ownership, plus
+  a non-mutating startup privilege gate for required v1 relations including the
+  migration-017 completion ledger. No migration, database repair, deployment,
+  service restart, or charger acceptance was performed.
+
 `ocpp-hal-go-new` is a PostgreSQL-backed OCPP 1.6 HAL for
 `ev-cms-backend-new`. It accepts only enabled durable v1 charger mappings and
 only exposes the authenticated v1 service boundary.

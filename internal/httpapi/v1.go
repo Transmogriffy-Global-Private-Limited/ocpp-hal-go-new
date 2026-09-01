@@ -82,6 +82,7 @@ type v1MappingRequest struct {
 }
 
 type v1StartRequest struct {
+	TraceID             string    `json:"trace_id"`
 	CMSCommandID        string    `json:"cms_command_id"`
 	CMSStartIntentID    string    `json:"cms_start_intent_id"`
 	CPOID               string    `json:"cpo_id"`
@@ -101,6 +102,7 @@ type v1StartRequest struct {
 }
 
 type v1StopRequest struct {
+	TraceID                string    `json:"trace_id"`
 	CMSCommandID           string    `json:"cms_command_id"`
 	CMSChargingSessionID   string    `json:"cms_charging_session_id"`
 	CPOID                  string    `json:"cpo_id"`
@@ -124,6 +126,7 @@ func (s *Server) registerV1Routes(mux *http.ServeMux) {
 	mux.Handle("/v1/remote-commands", guard(http.HandlerFunc(s.v1Command)))
 	mux.Handle("/v1/transactions", guard(http.HandlerFunc(s.v1Transactions)))
 	mux.Handle("/v1/transactions/", guard(http.HandlerFunc(s.v1Transaction)))
+	mux.Handle("/v1/charging-traces/", guard(http.HandlerFunc(s.v1ChargingTrace)))
 	mux.Handle("/v1/facts/", guard(http.HandlerFunc(s.v1FactRequeue)))
 	mux.Handle("/v1/runtime/chargers/", guard(http.HandlerFunc(s.v1ChargerRuntime)))
 	mux.Handle("/v1/runtime/connectors/", guard(http.HandlerFunc(s.v1ConnectorRuntime)))
@@ -223,7 +226,7 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 	if sourcesValid {
 		req.DurationLimitSource, sourcesValid = normalizeV1LimitSource(req.LimitType, req.DurationLimitSource, req.MaxDurationSeconds, false)
 	}
-	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSStartIntentID) || !validUUID(req.CPOID) || !validUUID(req.CustomerID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || req.OCPPConnectorNumber <= 0 || !strings.HasPrefix(req.IDTag, "appv1_") || len(req.IDTag) > 20 || !validV1LimitType(req.LimitType) || req.EnergyLimitWh < 0 || req.MaxDurationSeconds < 0 || !sourcesValid || !req.CredentialExpiresAt.After(time.Now().UTC()) || !req.CommandExpiresAt.After(req.CredentialExpiresAt) {
+	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || (req.TraceID != "" && !validUUID(req.TraceID)) || !validUUID(req.CMSCommandID) || !validUUID(req.CMSStartIntentID) || !validUUID(req.CPOID) || !validUUID(req.CustomerID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || req.OCPPConnectorNumber <= 0 || !strings.HasPrefix(req.IDTag, "appv1_") || len(req.IDTag) > 20 || !validV1LimitType(req.LimitType) || req.EnergyLimitWh < 0 || req.MaxDurationSeconds < 0 || !sourcesValid || !req.CredentialExpiresAt.After(time.Now().UTC()) || !req.CommandExpiresAt.After(req.CredentialExpiresAt) {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid start command"})
 		return
 	}
@@ -243,6 +246,13 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
+	if traces, ok := s.v1Store.(store.V1TraceStore); ok && req.TraceID != "" {
+		if _, err := traces.EnsureV1Trace(r.Context(), store.V1Trace{TraceID: req.TraceID, CPOID: req.CPOID, CMSStartIntentID: req.CMSStartIntentID, CMSCommandID: req.CMSCommandID, ChargerOCPPIdentity: req.ChargerOCPPIdentity, OCPPConnectorNumber: req.OCPPConnectorNumber}); err != nil {
+			s.logger.Warn("failed to persist diagnostic start trace root", "trace_id", req.TraceID, "error", err)
+		} else {
+			_ = traces.AppendV1TraceEvent(r.Context(), req.TraceID, store.V1TraceEventInput{Source: "CMS", Target: "HAL", Category: "COMMAND", Protocol: "HTTP", Phase: "STARTING", Summary: "CMS start command accepted by HAL", OccurredAt: time.Now().UTC(), CorrelationID: correlation})
+		}
+	}
 	command, claimed, err := s.v1Store.ClaimV1StartDelivery(r.Context(), req.CMSCommandID)
 	if err != nil {
 		s.writeV1StoreError(w, err)
@@ -255,6 +265,13 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		status, callErr := s.hal.RemoteStartTransaction(r.Context(), req.ChargerOCPPIdentity, req.IDTag, req.OCPPConnectorNumber)
+		if traces, ok := s.v1Store.(store.V1TraceStore); ok && req.TraceID != "" {
+			outcome := "RemoteStartTransaction outcome unavailable"
+			if callErr == nil {
+				outcome = "RemoteStartTransaction response received"
+			}
+			_ = traces.AppendV1TraceEvent(r.Context(), req.TraceID, store.V1TraceEventInput{Source: "HAL", Target: "CHARGER", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: outcome, OccurredAt: time.Now().UTC(), CorrelationID: correlation, Data: sanitizedTraceData(map[string]any{"action": "RemoteStartTransaction", "result": status})})
+		}
 		if callErr != nil {
 			command, err = s.v1Store.MarkV1CommandDelivery(r.Context(), req.CMSCommandID, "AMBIGUOUS", "", "remote start result unavailable")
 			if err != nil {
@@ -285,7 +302,7 @@ func (s *Server) v1Stop(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || !validUUID(req.CMSCommandID) || !validUUID(req.CMSChargingSessionID) || !validUUID(req.CPOID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || !validUUID(req.HALTransactionID) || req.OCPPTransactionID <= 0 || req.OCPPConnectorNumber <= 0 || !req.CommandExpiresAt.After(time.Now().UTC()) || !validV1StopInitiator(req.RequestedStopInitiator) || strings.TrimSpace(req.RequestedStopReason) == "" {
+	if r.Header.Get("Idempotency-Key") != req.CMSCommandID || (req.TraceID != "" && !validUUID(req.TraceID)) || !validUUID(req.CMSCommandID) || !validUUID(req.CMSChargingSessionID) || !validUUID(req.CPOID) || !validUUID(req.CMSChargerID) || !validUUID(req.CMSConnectorID) || !validUUID(req.HALTransactionID) || req.OCPPTransactionID <= 0 || req.OCPPConnectorNumber <= 0 || !req.CommandExpiresAt.After(time.Now().UTC()) || !validV1StopInitiator(req.RequestedStopInitiator) || strings.TrimSpace(req.RequestedStopReason) == "" {
 		writeJSON(w, http.StatusUnprocessableEntity, map[string]string{"error": "invalid stop command"})
 		return
 	}
@@ -293,6 +310,10 @@ func (s *Server) v1Stop(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		s.writeV1StoreError(w, err)
 		return
+	}
+	if traces, ok := s.v1Store.(store.V1TraceStore); ok && req.TraceID != "" {
+		_ = traces.BindV1TraceTransaction(r.Context(), req.TraceID, &store.V1Transaction{HALTransactionID: req.HALTransactionID, OCPPTransactionID: req.OCPPTransactionID})
+		_ = traces.AppendV1TraceEvent(r.Context(), req.TraceID, store.V1TraceEventInput{Source: "CMS", Target: "HAL", Category: "COMMAND", Protocol: "HTTP", Phase: "STOPPING", Summary: "CMS stop command accepted by HAL", OccurredAt: time.Now().UTC(), CorrelationID: correlation})
 	}
 	workflow, dispatchErr := s.hal.DispatchV1Stop(r.Context(), req.HALTransactionID)
 	if dispatchErr != nil {

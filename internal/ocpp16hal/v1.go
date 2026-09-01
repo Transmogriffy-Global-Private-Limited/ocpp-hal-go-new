@@ -148,6 +148,9 @@ func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValue
 		}
 	}
 	if accepted.EnergyAccepted || accepted.SoCAccepted {
+		h.recordV1Trace(transaction.HALTransactionID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "METER", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "Accepted transaction meter observation", OccurredAt: time.Now().UTC(), Data: traceMeterData(telemetry)})
+	}
+	if accepted.EnergyAccepted || accepted.SoCAccepted {
 		return meterPersisted
 	}
 	return meterIgnored
@@ -167,12 +170,14 @@ func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTr
 		return false
 	}
 	observedAt := time.Now().UTC()
+	h.recordV1Trace(transaction.HALTransactionID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STOPPING", Summary: "StopTransaction received", OccurredAt: observedAt, Data: map[string]any{"action": "StopTransaction", "transaction_id": request.TransactionId, "meter_wh": request.MeterStop, "reason": string(request.Reason)}})
 	completedAt := observedAt
 	if request.Timestamp != nil && !request.Timestamp.IsZero() {
 		completedAt = request.Timestamp.UTC()
 	}
 	completed, err := h.v1Store.CompleteV1Transaction(context.Background(), transaction.HALTransactionID, int64(request.MeterStop), string(request.Reason), completedAt, observedAt)
 	if err != nil {
+		h.recordV1Trace(transaction.HALTransactionID, store.V1TraceEventInput{Source: "HAL", Target: "HAL", Category: "PERSISTENCE", Protocol: "POSTGRES", Phase: "STOPPING", Summary: "StopTransaction persistence failed", OccurredAt: observedAt, Data: map[string]any{"error_class": traceErrorClass(err)}})
 		h.logger.Error("failed to complete v1 transaction", "hal_transaction_id", transaction.HALTransactionID, "error", err)
 		return false
 	}
@@ -184,7 +189,35 @@ func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTr
 		h.logger.Info("normalized v1 stop meter quantization evidence", "hal_transaction_id", completed.HALTransactionID, "charge_point_id", chargePointID, "raw_meter_stop_wh", *completed.RawMeterStopWh, "effective_meter_stop_wh", *completed.MeterStopWh, "meter_stop_adjustment_wh", *completed.MeterStopAdjustmentWh, "meter_stop_evidence", completed.MeterStopEvidence)
 	}
 	h.registry.ApplyStopTransaction(chargePointID, completed.OCPPConnectorNumber, float64(*completed.MeterStopWh))
+	h.recordV1Trace(completed.HALTransactionID, store.V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "LIFECYCLE", Protocol: "OCPP1.6", Phase: "POST_STOP", Summary: "Transaction completion persisted", OccurredAt: observedAt, StateBefore: "ACTIVE", StateAfter: "COMPLETED", Data: map[string]any{"transaction_id": completed.OCPPTransactionID, "meter_wh": *completed.MeterStopWh, "reason": completed.OCPPStopReason}})
 	return true
+}
+
+func (h *HAL) recordV1Trace(halTransactionID string, input store.V1TraceEventInput) {
+	traces, ok := h.v1Store.(store.V1TraceStore)
+	if !ok {
+		return
+	}
+	trace, err := traces.FindV1TraceByTransaction(context.Background(), halTransactionID)
+	if err != nil {
+		return
+	}
+	if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, input); err != nil {
+		h.logger.Warn("failed to persist diagnostic v1 trace event", "trace_id", trace.TraceID, "error", err)
+	}
+}
+func traceMeterData(telemetry store.V1MeterTelemetry) map[string]any {
+	data := map[string]any{}
+	if telemetry.EnergyWh != nil {
+		data["meter_wh"] = *telemetry.EnergyWh
+	}
+	return data
+}
+func traceErrorClass(err error) string {
+	if err == nil {
+		return ""
+	}
+	return "persistence_error"
 }
 
 func ptrInt64(value int64) *int64 { return &value }

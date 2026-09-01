@@ -11,6 +11,7 @@
 - [CMS/HAL charging integration analysis (historical decision evidence)](plans/CMS_HAL_CHARGING_INTEGRATION_ANALYSIS.md)
 - [Current project state](PROJECT_STATE.md)
 - [Configuration semantics](CONFIGURATION.md)
+- [Active charging transaction trace work item](work/active/WI-20260901-charging-transaction-trace.md)
 - [Living development plan](DEVELOPMENT_PLAN.md)
 - [Agent-assisted changelog](AI_CHANGELOG.md)
 

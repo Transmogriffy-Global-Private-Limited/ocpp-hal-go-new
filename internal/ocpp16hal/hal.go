@@ -592,6 +592,11 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 		h.logger.Error("failed to durably persist v1 connector status", "charge_point_id", chargePointID, "connector_id", request.ConnectorId, "error", err)
 		return nil, errors.New("StatusNotification was not durably persisted")
 	}
+	if traces, ok := h.v1Store.(store.V1TraceStore); ok {
+		if trace, traceErr := traces.FindV1TraceForConnector(context.Background(), chargePointID, request.ConnectorId); traceErr == nil {
+			_ = traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "STATUS", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "Connector status persisted", OccurredAt: observedAt, Data: map[string]any{"status": string(request.Status), "connector_id": request.ConnectorId}})
+		}
+	}
 	h.registry.ApplyStatusNotification(chargePointID, request.ConnectorId, string(request.Status), string(request.ErrorCode))
 
 	return core.NewStatusNotificationConfirmation(), nil
@@ -623,6 +628,13 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 		}
 		h.logger.Error("failed to materialize v1 start transaction", "charge_point_id", chargePointID, "connector_id", request.ConnectorId, "error", err)
 		return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusBlocked), 0), nil
+	}
+	if traces, ok := h.v1Store.(store.V1TraceStore); ok {
+		trace, traceErr := traces.EnsureV1TraceForTransaction(context.Background(), tx)
+		if traceErr == nil {
+			_ = traces.BindV1TraceTransaction(context.Background(), trace.TraceID, tx)
+			_ = traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "StartTransaction accepted and materialized", OccurredAt: receivedAt, StateAfter: "ACTIVE", Data: map[string]any{"action": "StartTransaction", "transaction_id": tx.OCPPTransactionID, "connector_id": request.ConnectorId, "meter_wh": request.MeterStart}})
+		}
 	}
 	h.registry.ApplyStartTransaction(chargePointID, request.ConnectorId, tx.OCPPTransactionID, float64(request.MeterStart))
 	return core.NewStartTransactionConfirmation(types.NewIdTagInfo(types.AuthorizationStatusAccepted), int(tx.OCPPTransactionID)), nil

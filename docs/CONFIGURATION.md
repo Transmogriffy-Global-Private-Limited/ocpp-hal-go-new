@@ -32,6 +32,15 @@ development.
 - `LOG_LEVEL`: `debug`, `info`, `warn`/`warning`, or `error`; default `info`.
 - `HAL_V1_FACT_DELIVERY_ENABLED` and `API_DOCS_ENABLED`: strict Go boolean
   syntax; both default to `false` only when absent.
+- `HAL_V1_TRACE_RETENTION_DAYS`: `1..3650`, default `30`; lifetime of durable
+  diagnostic charging-trace evidence. It never controls transaction, command,
+  connector, fact, or billing retention.
+- `HAL_V1_TRACE_RETENTION_INTERVAL_SECONDS`: `60..86400`, default `3600`;
+  bounded trace-cleanup worker interval.
+- `HAL_MIGRATION_APPLICATION_ROLE`: required only by `go run ./cmd/migrate`.
+  This is the deployment-configured application/schema role used for DDL after
+  the privileged migration connection is established. It has no hardcoded
+  value and is never needed for ordinary HAL runtime startup.
 - `HAL_V1_CMS_FACTS_URL`: absolute `http`/`https` URL without credentials or a
   fragment when fact delivery is enabled.
 
@@ -43,3 +52,24 @@ set a valid absolute `DATABASE_URL` or every structured setting
 
 Use `.env.example` as the non-secret local template. A configuration parse is
 not a connectivity test; startup still verifies PostgreSQL before serving.
+
+## Migration ownership guard
+
+Apply one reviewed migration only through the guarded command, for example:
+
+```powershell
+go run ./cmd/migrate -file ./migrations/018_add_v1_charging_trace.sql
+```
+
+The command opens the configured migration connection, enters the configured
+`HAL_MIGRATION_APPLICATION_ROLE`, verifies `current_user`, executes the SQL in
+one transaction with SQL errors fatal, resets the role, verifies each created
+application table is owned by that configured role, then commits. It never
+grants privileges or repairs ownership. A role/owner mismatch leaves the
+migration uncommitted and must be corrected in deployment configuration or by
+an explicitly approved operational repair.
+
+At ordinary startup the HAL performs a non-mutating readiness gate for its
+required v1 relations, including `v1_transaction_completion_fact_keys`. A
+missing relation or missing DML privilege fails startup before OCPP traffic is
+accepted; it never changes database ownership or ACLs.

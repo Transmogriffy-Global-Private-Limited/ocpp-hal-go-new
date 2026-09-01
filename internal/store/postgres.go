@@ -41,8 +41,42 @@ func NewPostgresStore(cfg config.Config) (*PostgresStore, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := verifyV1RuntimePrivileges(ctx, db); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 
 	return &PostgresStore{db: db}, nil
+}
+
+// verifyV1RuntimePrivileges is deliberately read-only. It detects schema
+// ownership/ACL drift before the HAL begins accepting charging traffic; it
+// never grants, repairs, or changes database state.
+func verifyV1RuntimePrivileges(ctx context.Context, db *sql.DB) error {
+	const required = "v1_transactions,v1_remote_commands,v1_fact_outbox,v1_transaction_completion_fact_keys"
+	rows, err := db.QueryContext(ctx, `SELECT required.name, to_regclass('public.' || required.name) IS NOT NULL AS relation_exists, CASE WHEN to_regclass('public.' || required.name) IS NULL THEN false ELSE has_table_privilege(current_user, 'public.' || required.name, 'SELECT') AND has_table_privilege(current_user, 'public.' || required.name, 'INSERT') AND has_table_privilege(current_user, 'public.' || required.name, 'UPDATE') AND has_table_privilege(current_user, 'public.' || required.name, 'DELETE') END AS permitted FROM unnest(string_to_array($1, ',')) AS required(name)`, required)
+	if err != nil {
+		return fmt.Errorf("inspect HAL runtime relation privileges: %w", err)
+	}
+	defer rows.Close()
+	var failures []string
+	for rows.Next() {
+		var name string
+		var exists, permitted bool
+		if err := rows.Scan(&name, &exists, &permitted); err != nil {
+			return fmt.Errorf("scan HAL runtime relation privileges: %w", err)
+		}
+		if !exists || !permitted {
+			failures = append(failures, name)
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("read HAL runtime relation privileges: %w", err)
+	}
+	if len(failures) > 0 {
+		return fmt.Errorf("HAL runtime role lacks required relation privilege or relation is missing: %s", strings.Join(failures, ", "))
+	}
+	return nil
 }
 
 func postgresURL(cfg config.Config) string {

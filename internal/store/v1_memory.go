@@ -11,6 +11,8 @@ type V1MemoryStore struct {
 	commands     map[string]*V1RemoteCommand
 	credentials  map[string]*V1Credential
 	transactions map[string]*V1Transaction
+	traces       map[string]*V1Trace
+	traceEvents  map[string][]V1TraceEvent
 }
 
 func NewV1MemoryStore() *V1MemoryStore {
@@ -18,6 +20,8 @@ func NewV1MemoryStore() *V1MemoryStore {
 		commands:     make(map[string]*V1RemoteCommand),
 		credentials:  make(map[string]*V1Credential),
 		transactions: make(map[string]*V1Transaction),
+		traces:       make(map[string]*V1Trace),
+		traceEvents:  make(map[string][]V1TraceEvent),
 	}
 }
 
