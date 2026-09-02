@@ -1,5 +1,16 @@
 # AI-assisted changelog
 
+## 2026-09-02 - Trace delivery PostgreSQL status typing fix
+
+- Corrected the trace-only `MarkV1TraceDelivery` SQL contract: every use of its
+  reused status argument is explicitly cast to `varchar(32)`, matching the
+  durable outbox column and eliminating the observed `SQLSTATE 42P08` ambiguity.
+- Added source-level regression coverage for explicit typing, delivered/retry/
+  reconciliation update semantics, claim release, and claim-token fencing.
+  PostgreSQL execution proof remains deferred to the separately authorized DEV
+  redeployment; no migration, queue repair, database mutation, restart, commit,
+  or push occurred in this source-fix slice.
+
 ## 2026-09-02 - Diagnostic trace delivery push pipeline
 
 - Added additive migration 019, a trace-only outbox/store, and a standalone

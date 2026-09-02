@@ -1,5 +1,16 @@
 # Project State
 
+## 2026-09-02 - Trace delivery PostgreSQL type fix source verified, not deployed
+
+- `MarkV1TraceDelivery` now explicitly casts every reused status parameter to
+  `varchar(32)`, matching `v1_trace_delivery_outbox.status`. This prevents the
+  PostgreSQL `42P08` type-inference failure observed after a trace-delivery
+  claim. It does not alter claim, retry, delivery, fact, charging, or OCPP
+  semantics.
+- The current pending and expired-delivery-lease rows remain reclaimable by the
+  existing claim predicate. No queue repair, migration, database mutation,
+  deployment, or restart was performed.
+
 ## 2026-09-02 - Diagnostic trace delivery push pipeline source verified, not deployed
 
 - The current source adds additive migration 019 and an independent durable

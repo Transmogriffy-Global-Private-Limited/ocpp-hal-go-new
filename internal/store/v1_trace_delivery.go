@@ -83,6 +83,8 @@ type V1TraceDeliveryStore interface {
 	MarkV1TraceDelivery(context.Context, string, string, int, bool, bool, string, time.Time) error
 }
 
+const markV1TraceDeliverySQL = `UPDATE v1_trace_delivery_outbox SET status=$2::varchar(32),retries=CASE WHEN $2::varchar(32)='DELIVERED' THEN retries ELSE retries+1 END,next_retry_at=$3,claimed_until=NULL,claim_token=NULL,delivery_status_code=$4,last_error=$5,sent_at=CASE WHEN $2::varchar(32)='DELIVERED' THEN NOW() ELSE sent_at END WHERE event_id=$1::uuid AND status='DELIVERING' AND claim_token=$6::uuid`
+
 func (s *PostgresStore) ClaimV1TraceDeliveries(ctx context.Context, now time.Time, limit int) ([]V1TraceDelivery, error) {
 	if limit < 1 {
 		return nil, nil
@@ -140,14 +142,8 @@ func (s *PostgresStore) ClaimV1TraceDeliveries(ctx context.Context, now time.Tim
 }
 
 func (s *PostgresStore) MarkV1TraceDelivery(ctx context.Context, eventID, claimToken string, statusCode int, success, terminal bool, detail string, next time.Time) error {
-	status := "RETRY"
-	if success {
-		status = "DELIVERED"
-	}
-	if terminal {
-		status = "RECONCILIATION_REQUIRED"
-	}
-	result, err := s.db.ExecContext(ctx, `UPDATE v1_trace_delivery_outbox SET status=$2,retries=CASE WHEN $2='DELIVERED' THEN retries ELSE retries+1 END,next_retry_at=$3,claimed_until=NULL,claim_token=NULL,delivery_status_code=$4,last_error=$5,sent_at=CASE WHEN $2='DELIVERED' THEN NOW() ELSE sent_at END WHERE event_id=$1::uuid AND status='DELIVERING' AND claim_token=$6::uuid`, eventID, status, next, statusCode, nullString(detail), claimToken)
+	status := v1TraceDeliveryStatus(success, terminal)
+	result, err := s.db.ExecContext(ctx, markV1TraceDeliverySQL, eventID, status, next, statusCode, nullString(detail), claimToken)
 	if err != nil {
 		return err
 	}
@@ -159,6 +155,17 @@ func (s *PostgresStore) MarkV1TraceDelivery(ctx context.Context, eventID, claimT
 		return errors.New("trace delivery claim lost")
 	}
 	return nil
+}
+
+func v1TraceDeliveryStatus(success, terminal bool) string {
+	status := "RETRY"
+	if success {
+		status = "DELIVERED"
+	}
+	if terminal {
+		status = "RECONCILIATION_REQUIRED"
+	}
+	return status
 }
 
 var _ V1TraceDeliveryStore = (*PostgresStore)(nil)
