@@ -50,6 +50,9 @@ type Config struct {
 	V1FactDeliveryEnabled                    bool
 	V1CMSFactsURL                            string
 	V1CMSFactsBearerToken                    string
+	V1TraceDeliveryEnabled                   bool
+	V1CMSTraceURL                            string
+	V1CMSTraceBearerToken                    string
 	V1TraceRetentionDays                     int
 	V1TraceRetentionIntervalSeconds          int
 	MigrationApplicationRole                 string
@@ -180,6 +183,10 @@ func parse(values map[string]string) (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	traceDelivery, err := parseBool("HAL_V1_TRACE_DELIVERY_ENABLED", value(values, "HAL_V1_TRACE_DELIVERY_ENABLED", "false"))
+	if err != nil {
+		return Config{}, err
+	}
 	docsEnabled, err := parseBool("API_DOCS_ENABLED", value(values, "API_DOCS_ENABLED", "false"))
 	if err != nil {
 		return Config{}, err
@@ -193,7 +200,7 @@ func parse(values map[string]string) (Config, error) {
 		OCPPListenPort: ocppPort, OCPPListenPath: value(values, "OCPP_LISTEN_PATH", defaultOCPPListenPath), OCPPHeartbeatIntervalSeconds: heartbeat, OCPPMeterSampleIntervalSeconds: meterSampleInterval, OCPPConfigurationReconcileTimeoutSeconds: reconcileTimeout, OCPPVendorConfigurationProfile: vendorProfile, OCPPVendorConfigurationVendor: vendorProfileVendor,
 		LogLevel:    level,
 		DatabaseURL: value(values, "DATABASE_URL", ""), DBName: value(values, "DB_NAME", ""), DBUser: value(values, "DB_USER", ""), DBPassword: value(values, "DB_PASSWORD", ""), DBHost: value(values, "DB_HOST", defaultDBHost), DBPort: dbPort, DBSSLMode: value(values, "DB_SSLMODE", defaultDBSSLMode),
-		V1CMSBearerToken: value(values, "HAL_V1_CMS_BEARER_TOKEN", ""), V1FactDeliveryEnabled: factDelivery, V1CMSFactsURL: value(values, "HAL_V1_CMS_FACTS_URL", ""), V1CMSFactsBearerToken: value(values, "HAL_V1_CMS_FACT_BEARER_TOKEN", ""), V1TraceRetentionDays: traceRetentionDays, V1TraceRetentionIntervalSeconds: traceRetentionInterval, MigrationApplicationRole: strings.TrimSpace(value(values, "HAL_MIGRATION_APPLICATION_ROLE", "")), APIDocsEnabled: docsEnabled,
+		V1CMSBearerToken: value(values, "HAL_V1_CMS_BEARER_TOKEN", ""), V1FactDeliveryEnabled: factDelivery, V1CMSFactsURL: value(values, "HAL_V1_CMS_FACTS_URL", ""), V1CMSFactsBearerToken: value(values, "HAL_V1_CMS_FACT_BEARER_TOKEN", ""), V1TraceDeliveryEnabled: traceDelivery, V1CMSTraceURL: value(values, "HAL_V1_CMS_TRACE_URL", ""), V1CMSTraceBearerToken: value(values, "HAL_V1_CMS_TRACE_BEARER_TOKEN", ""), V1TraceRetentionDays: traceRetentionDays, V1TraceRetentionIntervalSeconds: traceRetentionInterval, MigrationApplicationRole: strings.TrimSpace(value(values, "HAL_MIGRATION_APPLICATION_ROLE", "")), APIDocsEnabled: docsEnabled,
 	}
 	if err := cfg.validate(); err != nil {
 		return Config{}, err
@@ -217,6 +224,14 @@ func (c Config) validate() error {
 		}
 		if strings.TrimSpace(c.V1CMSFactsBearerToken) == "" {
 			return fmt.Errorf("HAL_V1_CMS_FACT_BEARER_TOKEN is required when HAL_V1_FACT_DELIVERY_ENABLED=true")
+		}
+	}
+	if c.V1TraceDeliveryEnabled {
+		if err := validateHTTPURL("HAL_V1_CMS_TRACE_URL", c.V1CMSTraceURL); err != nil {
+			return err
+		}
+		if strings.TrimSpace(c.V1CMSTraceBearerToken) == "" {
+			return fmt.Errorf("HAL_V1_CMS_TRACE_BEARER_TOKEN is required when HAL_V1_TRACE_DELIVERY_ENABLED=true")
 		}
 	}
 	if strings.TrimSpace(c.DatabaseURL) != "" {

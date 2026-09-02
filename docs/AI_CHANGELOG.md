@@ -1,5 +1,24 @@
 # AI-assisted changelog
 
+## 2026-09-02 - Diagnostic trace delivery push pipeline
+
+- Added additive migration 019, a trace-only outbox/store, and a standalone
+  bounded worker that posts the existing immutable sanitized trace envelope to
+  CMS `POST /v1/hal-trace-events` under `HAL_V1_TRACE_BEARER_TOKEN`.
+- Delivery has independent claim fencing, retry, terminal-reconciliation, and
+  retention behavior. It neither writes nor claims `v1_fact_outbox`; retained
+  authoritative fact delivery and OCPP protocol outcomes are unchanged.
+- Removed the obsolete private HAL trace GET/OpenAPI surface now that CPO trace
+  static/SSE reads are served from the CMS projection. Local trace append/bind
+  failures are logged as diagnostic failures rather than being acknowledged
+  away or converted into unrelated protocol outcomes.
+
+Verification: focused trace/outbox/worker/store/OCPP/fact/migration tests,
+full `go test -p 1 ./...`, `go vet ./...`, `go build ./...`, OpenAPI JSON
+validation, and `git diff --check` pass locally. PostgreSQL integration remains
+skipped without `TEST_DATABASE_URL`. No migration was applied and no deployment,
+restart, commit, or push occurred.
+
 ## 2026-09-01 - Charging transaction trace and migration-ownership guard
 
 - Added additive trace migration 018, connector-aware HAL trace storage,

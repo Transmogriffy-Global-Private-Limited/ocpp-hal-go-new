@@ -90,8 +90,46 @@ func (s *PostgresStore) AppendV1TraceEvent(ctx context.Context, traceID string, 
 	if len(data) == 0 || string(data) == "null" {
 		data = json.RawMessage(`{}`)
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO v1_charging_trace_events (event_id,trace_id,source,target,category,protocol,phase,summary,occurred_at,state_before,state_after,correlation_id,data) VALUES ($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)`, id, traceID, input.Source, input.Target, input.Category, input.Protocol, input.Phase, input.Summary, when, input.StateBefore, input.StateAfter, input.CorrelationID, data)
-	return err
+	// The trace event and its independent delivery record are one diagnostic
+	// transaction. A failure is returned to the caller for logging, but callers
+	// deliberately do not let it alter OCPP or authoritative fact semantics.
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	trace := &V1Trace{}
+	var ocpp sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT trace_id::text,cpo_id::text,COALESCE(cms_start_intent_id::text,''),COALESCE(cms_charging_session_id::text,''),COALESCE(cms_command_id::text,''),COALESCE(hal_transaction_id::text,''),ocpp_transaction_id,charger_ocpp_identity,ocpp_connector_number,created_at FROM v1_charging_traces WHERE trace_id=$1::uuid FOR SHARE`, traceID).Scan(&trace.TraceID, &trace.CPOID, &trace.CMSStartIntentID, &trace.CMSChargingSessionID, &trace.CMSCommandID, &trace.HALTransactionID, &ocpp, &trace.ChargerOCPPIdentity, &trace.OCPPConnectorNumber, &trace.CreatedAt); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrV1TransactionNotFound
+		}
+		return err
+	}
+	if ocpp.Valid {
+		value := ocpp.Int64
+		trace.OCPPTransactionID = &value
+	}
+	var sanitized map[string]any
+	if err := json.Unmarshal(data, &sanitized); err != nil {
+		return fmt.Errorf("decode sanitized trace data: %w", err)
+	}
+	event := V1TraceEvent{EventID: id, TraceID: traceID, Source: input.Source, Target: input.Target, Category: input.Category, Protocol: input.Protocol, Phase: input.Phase, Summary: input.Summary, OccurredAt: when, StateBefore: input.StateBefore, StateAfter: input.StateAfter, CorrelationID: input.CorrelationID, Data: sanitized}
+	digest, err := traceContentSHA256(*trace, event)
+	if err != nil {
+		return err
+	}
+	payload, err := json.Marshal(V1TraceDelivery{SchemaVersion: 1, Trace: *trace, Event: event, ContentSHA256: digest}.Envelope())
+	if err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO v1_charging_trace_events (event_id,trace_id,source,target,category,protocol,phase,summary,occurred_at,state_before,state_after,correlation_id,data) VALUES ($1,$2::uuid,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13::jsonb)`, id, traceID, input.Source, input.Target, input.Category, input.Protocol, input.Phase, input.Summary, when, input.StateBefore, input.StateAfter, input.CorrelationID, data); err != nil {
+		return err
+	}
+	if _, err = tx.ExecContext(ctx, `INSERT INTO v1_trace_delivery_outbox (event_id,payload,content_sha256) VALUES ($1::uuid,$2::jsonb,$3)`, id, payload, digest); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *PostgresStore) GetV1Trace(ctx context.Context, traceID string) (*V1Trace, error) {
@@ -147,7 +185,7 @@ func (s *PostgresStore) DeleteV1TracesBefore(ctx context.Context, before time.Ti
 	if limit < 1 || limit > 1000 {
 		return 0, ErrV1InvalidEvidence
 	}
-	result, err := s.db.ExecContext(ctx, `DELETE FROM v1_charging_traces WHERE trace_id IN (SELECT trace_id FROM v1_charging_traces WHERE created_at < $1 ORDER BY created_at ASC LIMIT $2)`, before, limit)
+	result, err := s.db.ExecContext(ctx, `DELETE FROM v1_charging_traces t WHERE trace_id IN (SELECT candidate.trace_id FROM v1_charging_traces candidate WHERE candidate.created_at < $1 AND NOT EXISTS (SELECT 1 FROM v1_charging_trace_events e JOIN v1_trace_delivery_outbox o ON o.event_id=e.event_id WHERE e.trace_id=candidate.trace_id AND o.status IN ('PENDING','RETRY','DELIVERING')) ORDER BY candidate.created_at ASC LIMIT $2)`, before, limit)
 	if err != nil {
 		return 0, err
 	}

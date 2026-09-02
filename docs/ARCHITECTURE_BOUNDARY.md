@@ -133,6 +133,11 @@ The contract fixes these logical, service-only paths and payload semantics:
   `charger.connection.updated`, `connector.status.updated`,
   `transaction.started`, `transaction.meter`, `transaction.soc`, `transaction.completed`, and
   required `command.updated` facts.
+- HAL to CMS diagnostic evidence: `POST /v1/hal-trace-events` from a separate
+  trace outbox and worker using a dedicated bearer. It carries sanitized,
+  immutable evidence only and is never used to establish lifecycle, connector,
+  billing, settlement, or command truth. Trace retry or receiver failure cannot
+  consume fact-worker capacity or delay `POST /v1/hal-facts`.
 - Fact identity is a durable HAL `fact_id` plus a canonical immutable-content
   SHA-256. CMS treats repeated identical facts as success and same-ID/different-
   content as a durable integrity violation.

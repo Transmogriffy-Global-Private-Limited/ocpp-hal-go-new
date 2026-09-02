@@ -72,6 +72,17 @@ func TestLoadRequiresFactReceiverConfigurationWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestLoadRequiresIndependentTraceReceiverConfigurationWhenEnabled(t *testing.T) {
+	withTempWorkingDirectory(t)
+	configureValidRuntime(t)
+	t.Setenv("HAL_V1_TRACE_DELIVERY_ENABLED", "true")
+	t.Setenv("HAL_V1_CMS_TRACE_URL", "")
+	t.Setenv("HAL_V1_CMS_TRACE_BEARER_TOKEN", "")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "HAL_V1_CMS_TRACE_URL") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestProductionDoesNotConsumeLocalEnvAndProcessValuesWin(t *testing.T) {
 	temporary := withTempWorkingDirectory(t)
 	if err := os.WriteFile(filepath.Join(temporary, ".env"), []byte("HAL_V1_CMS_BEARER_TOKEN=local-token\nDATABASE_URL=postgres://local:secret@localhost/local\nF_SERVER_PORT=19999\n"), 0600); err != nil {
@@ -117,6 +128,9 @@ func configureValidRuntime(t *testing.T) {
 	t.Setenv("HAL_V1_FACT_DELIVERY_ENABLED", "false")
 	t.Setenv("HAL_V1_CMS_FACTS_URL", "")
 	t.Setenv("HAL_V1_CMS_FACT_BEARER_TOKEN", "")
+	t.Setenv("HAL_V1_TRACE_DELIVERY_ENABLED", "false")
+	t.Setenv("HAL_V1_CMS_TRACE_URL", "")
+	t.Setenv("HAL_V1_CMS_TRACE_BEARER_TOKEN", "")
 }
 
 func unsetEnvironment(t *testing.T, key string) {

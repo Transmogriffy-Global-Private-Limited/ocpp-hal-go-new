@@ -1,5 +1,17 @@
 # Project State
 
+## 2026-09-02 - Diagnostic trace delivery push pipeline source verified, not deployed
+
+- The current source adds additive migration 019 and an independent durable
+  trace-delivery outbox. A dedicated worker posts immutable sanitized trace
+  envelopes to CMS under its own bearer, retry/lease/timeout policy, without
+  sharing `v1_fact_outbox` or changing OCPP acknowledgement semantics.
+- The obsolete private HAL trace read has been retired. HAL keeps diagnostic
+  evidence local until delivery succeeds or reaches explicit reconciliation;
+  trace append/delivery failure is observable but never changes transaction,
+  connector, command, fact, or commercial truth. No migration was applied,
+  service restarted, or deployment performed.
+
 ## 2026-09-01 - Charging transaction trace source implementation verified, not deployed
 
 - The current source adds additive migration 018, durable

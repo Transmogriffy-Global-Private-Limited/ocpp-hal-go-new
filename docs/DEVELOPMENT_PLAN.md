@@ -20,6 +20,18 @@ Current trace/migration-ownership slice:
   including the migration-017 completion ledger. No migration or deployment
   has occurred.
 
+Verified source-only continuation:
+
+- migration 019 adds a diagnostic trace-delivery outbox distinct from
+  `v1_fact_outbox`; a separate worker posts immutable, sanitized trace events
+  to CMS `POST /v1/hal-trace-events` under its own bearer, capacity, claim,
+  retry, and timeout policy. The prior private trace GET is retired because no
+  supported product consumer remains. Delivery is evidence-only, preserves
+  complete valid trace events subject to bounded mechanics/retention, and never
+  changes OCPP or fact behaviour. This source work is not deployed and no
+  migration has been applied; see
+  `docs/work/archive/WI-20260902-trace-delivery-push-pipeline.md`.
+
 Completed in this slice:
 
 - customer-selected/wallet-derived limit contract: existing V1 start,

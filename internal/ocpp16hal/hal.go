@@ -594,7 +594,9 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 	}
 	if traces, ok := h.v1Store.(store.V1TraceStore); ok {
 		if trace, traceErr := traces.FindV1TraceForConnector(context.Background(), chargePointID, request.ConnectorId); traceErr == nil {
-			_ = traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "STATUS", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "Connector status persisted", OccurredAt: observedAt, Data: map[string]any{"status": string(request.Status), "connector_id": request.ConnectorId}})
+			if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "STATUS", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "Connector status persisted", OccurredAt: observedAt, Data: map[string]any{"status": string(request.Status), "connector_id": request.ConnectorId}}); err != nil {
+				h.logger.Warn("failed to persist diagnostic connector status trace", "trace_id", trace.TraceID, "error", err)
+			}
 		}
 	}
 	h.registry.ApplyStatusNotification(chargePointID, request.ConnectorId, string(request.Status), string(request.ErrorCode))
@@ -632,8 +634,12 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 	if traces, ok := h.v1Store.(store.V1TraceStore); ok {
 		trace, traceErr := traces.EnsureV1TraceForTransaction(context.Background(), tx)
 		if traceErr == nil {
-			_ = traces.BindV1TraceTransaction(context.Background(), trace.TraceID, tx)
-			_ = traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "StartTransaction accepted and materialized", OccurredAt: receivedAt, StateAfter: "ACTIVE", Data: map[string]any{"action": "StartTransaction", "transaction_id": tx.OCPPTransactionID, "connector_id": request.ConnectorId, "meter_wh": request.MeterStart}})
+			if err := traces.BindV1TraceTransaction(context.Background(), trace.TraceID, tx); err != nil {
+				h.logger.Warn("failed to bind diagnostic start trace transaction", "trace_id", trace.TraceID, "error", err)
+			}
+			if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "StartTransaction accepted and materialized", OccurredAt: receivedAt, StateAfter: "ACTIVE", Data: map[string]any{"action": "StartTransaction", "transaction_id": tx.OCPPTransactionID, "connector_id": request.ConnectorId, "meter_wh": request.MeterStart}}); err != nil {
+				h.logger.Warn("failed to persist diagnostic start trace event", "trace_id", trace.TraceID, "error", err)
+			}
 		}
 	}
 	h.registry.ApplyStartTransaction(chargePointID, request.ConnectorId, tx.OCPPTransactionID, float64(request.MeterStart))

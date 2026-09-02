@@ -30,7 +30,8 @@ development.
   A non-empty profile also requires the exact `OCPP_VENDOR_CONFIGURATION_VENDOR`.
   Vendor keys are never applied to another vendor or inferred from a URL.
 - `LOG_LEVEL`: `debug`, `info`, `warn`/`warning`, or `error`; default `info`.
-- `HAL_V1_FACT_DELIVERY_ENABLED` and `API_DOCS_ENABLED`: strict Go boolean
+
+- `HAL_V1_FACT_DELIVERY_ENABLED`, `HAL_V1_TRACE_DELIVERY_ENABLED`, and `API_DOCS_ENABLED`: strict Go boolean
   syntax; both default to `false` only when absent.
 - `HAL_V1_TRACE_RETENTION_DAYS`: `1..3650`, default `30`; lifetime of durable
   diagnostic charging-trace evidence. It never controls transaction, command,
@@ -43,12 +44,18 @@ development.
   value and is never needed for ordinary HAL runtime startup.
 - `HAL_V1_CMS_FACTS_URL`: absolute `http`/`https` URL without credentials or a
   fragment when fact delivery is enabled.
+- `HAL_V1_CMS_TRACE_URL`: the same bounded absolute URL validation, but only
+  for the independent diagnostic trace worker.
 
 `HAL_V1_CMS_BEARER_TOKEN` is always required. PostgreSQL is always required:
 set a valid absolute `DATABASE_URL` or every structured setting
 `DB_NAME`, `DB_USER`, `DB_PASSWORD`, and `DB_HOST` (with `DB_PORT`). When
 `HAL_V1_FACT_DELIVERY_ENABLED=true`, both `HAL_V1_CMS_FACTS_URL` and
-`HAL_V1_CMS_FACT_BEARER_TOKEN` are also required.
+`HAL_V1_CMS_FACT_BEARER_TOKEN` are also required. When
+`HAL_V1_TRACE_DELIVERY_ENABLED=true`, both `HAL_V1_CMS_TRACE_URL` and
+`HAL_V1_CMS_TRACE_BEARER_TOKEN` are required. Trace delivery has its own
+outbox, lease, retry, worker capacity, timeout, and bearer; it never shares
+`v1_fact_outbox` or delays authoritative fact delivery.
 
 Use `.env.example` as the non-secret local template. A configuration parse is
 not a connectivity test; startup still verifies PostgreSQL before serving.
@@ -58,7 +65,7 @@ not a connectivity test; startup still verifies PostgreSQL before serving.
 Apply one reviewed migration only through the guarded command, for example:
 
 ```powershell
-go run ./cmd/migrate -file ./migrations/018_add_v1_charging_trace.sql
+go run ./cmd/migrate -file ./migrations/019_add_v1_trace_delivery_outbox.sql
 ```
 
 The command opens the configured migration connection, enters the configured

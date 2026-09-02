@@ -17,6 +17,7 @@ import (
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/state"
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/v1facts"
+	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/v1trace"
 )
 
 func main() {
@@ -73,6 +74,14 @@ func main() {
 	}
 	if factWorker != nil {
 		go factWorker.Start(workerCtx)
+	}
+	traceWorker, err := v1trace.New(cfg, v1Store, logger)
+	if err != nil {
+		logger.Error("failed to initialize v1 trace delivery", "error", err)
+		os.Exit(1)
+	}
+	if traceWorker != nil {
+		go traceWorker.Start(workerCtx)
 	}
 
 	go func() {

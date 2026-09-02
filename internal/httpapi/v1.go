@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -126,10 +127,21 @@ func (s *Server) registerV1Routes(mux *http.ServeMux) {
 	mux.Handle("/v1/remote-commands", guard(http.HandlerFunc(s.v1Command)))
 	mux.Handle("/v1/transactions", guard(http.HandlerFunc(s.v1Transactions)))
 	mux.Handle("/v1/transactions/", guard(http.HandlerFunc(s.v1Transaction)))
-	mux.Handle("/v1/charging-traces/", guard(http.HandlerFunc(s.v1ChargingTrace)))
 	mux.Handle("/v1/facts/", guard(http.HandlerFunc(s.v1FactRequeue)))
 	mux.Handle("/v1/runtime/chargers/", guard(http.HandlerFunc(s.v1ChargerRuntime)))
 	mux.Handle("/v1/runtime/connectors/", guard(http.HandlerFunc(s.v1ConnectorRuntime)))
+}
+
+// sanitizedTraceData is the HAL persistence-side defence for diagnostic
+// evidence. The CMS receiver independently enforces the same small contract.
+func sanitizedTraceData(input map[string]any) map[string]any {
+	output := map[string]any{}
+	for _, key := range []string{"action", "result", "status", "transaction_id", "connector_id", "meter_wh", "reason", "error_class"} {
+		if value, ok := input[key]; ok {
+			output[key] = value
+		}
+	}
+	return output
 }
 
 func (s *Server) requireV1Service(next http.Handler) http.Handler {
@@ -250,7 +262,7 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 		if _, err := traces.EnsureV1Trace(r.Context(), store.V1Trace{TraceID: req.TraceID, CPOID: req.CPOID, CMSStartIntentID: req.CMSStartIntentID, CMSCommandID: req.CMSCommandID, ChargerOCPPIdentity: req.ChargerOCPPIdentity, OCPPConnectorNumber: req.OCPPConnectorNumber}); err != nil {
 			s.logger.Warn("failed to persist diagnostic start trace root", "trace_id", req.TraceID, "error", err)
 		} else {
-			_ = traces.AppendV1TraceEvent(r.Context(), req.TraceID, store.V1TraceEventInput{Source: "CMS", Target: "HAL", Category: "COMMAND", Protocol: "HTTP", Phase: "STARTING", Summary: "CMS start command accepted by HAL", OccurredAt: time.Now().UTC(), CorrelationID: correlation})
+			s.appendV1Trace(r.Context(), traces, req.TraceID, store.V1TraceEventInput{Source: "CMS", Target: "HAL", Category: "COMMAND", Protocol: "HTTP", Phase: "STARTING", Summary: "CMS start command accepted by HAL", OccurredAt: time.Now().UTC(), CorrelationID: correlation})
 		}
 	}
 	command, claimed, err := s.v1Store.ClaimV1StartDelivery(r.Context(), req.CMSCommandID)
@@ -270,7 +282,7 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 			if callErr == nil {
 				outcome = "RemoteStartTransaction response received"
 			}
-			_ = traces.AppendV1TraceEvent(r.Context(), req.TraceID, store.V1TraceEventInput{Source: "HAL", Target: "CHARGER", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: outcome, OccurredAt: time.Now().UTC(), CorrelationID: correlation, Data: sanitizedTraceData(map[string]any{"action": "RemoteStartTransaction", "result": status})})
+			s.appendV1Trace(r.Context(), traces, req.TraceID, store.V1TraceEventInput{Source: "HAL", Target: "CHARGER", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: outcome, OccurredAt: time.Now().UTC(), CorrelationID: correlation, Data: sanitizedTraceData(map[string]any{"action": "RemoteStartTransaction", "result": status})})
 		}
 		if callErr != nil {
 			command, err = s.v1Store.MarkV1CommandDelivery(r.Context(), req.CMSCommandID, "AMBIGUOUS", "", "remote start result unavailable")
@@ -312,14 +324,25 @@ func (s *Server) v1Stop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if traces, ok := s.v1Store.(store.V1TraceStore); ok && req.TraceID != "" {
-		_ = traces.BindV1TraceTransaction(r.Context(), req.TraceID, &store.V1Transaction{HALTransactionID: req.HALTransactionID, OCPPTransactionID: req.OCPPTransactionID})
-		_ = traces.AppendV1TraceEvent(r.Context(), req.TraceID, store.V1TraceEventInput{Source: "CMS", Target: "HAL", Category: "COMMAND", Protocol: "HTTP", Phase: "STOPPING", Summary: "CMS stop command accepted by HAL", OccurredAt: time.Now().UTC(), CorrelationID: correlation})
+		if err := traces.BindV1TraceTransaction(r.Context(), req.TraceID, &store.V1Transaction{HALTransactionID: req.HALTransactionID, OCPPTransactionID: req.OCPPTransactionID}); err != nil {
+			s.logger.Warn("failed to bind diagnostic stop trace transaction", "trace_id", req.TraceID, "error", err)
+		}
+		s.appendV1Trace(r.Context(), traces, req.TraceID, store.V1TraceEventInput{Source: "CMS", Target: "HAL", Category: "COMMAND", Protocol: "HTTP", Phase: "STOPPING", Summary: "CMS stop command accepted by HAL", OccurredAt: time.Now().UTC(), CorrelationID: correlation})
 	}
 	workflow, dispatchErr := s.hal.DispatchV1Stop(r.Context(), req.HALTransactionID)
 	if dispatchErr != nil {
 		s.logger.Warn("v1 stop dispatch did not produce a final command result", "hal_transaction_id", req.HALTransactionID, "error", dispatchErr)
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"command": v1CommandView(command), "stop_workflow": v1StopWorkflowView(workflow), "correlation_id": correlation, "duplicate": duplicate})
+}
+
+// appendV1Trace records diagnostic evidence without changing command semantics.
+// Trace persistence failures must remain observable but cannot turn an otherwise
+// accepted OCPP/CMS command into a different protocol result.
+func (s *Server) appendV1Trace(ctx context.Context, traces store.V1TraceStore, traceID string, input store.V1TraceEventInput) {
+	if err := traces.AppendV1TraceEvent(ctx, traceID, input); err != nil {
+		s.logger.Warn("failed to persist diagnostic v1 trace event", "trace_id", traceID, "error", err)
+	}
 }
 
 func validV1StopInitiator(value string) bool {
