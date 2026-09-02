@@ -1,5 +1,19 @@
 # Project State
 
+## 2026-09-02 - Post-stop connector-status trace phase correction source verified, not deployed
+
+- `OnStatusNotification` now classifies its diagnostic trace evidence from the
+  already-associated durable HAL transaction: a completed transaction emits
+  `POST_STOP`; an active transaction and an unbound pre-materialization trace
+  retain `CHARGING`. It never infers phase from `Finishing`, `Available`, or
+  another connector status string, and skips only the diagnostic append if a
+  bound transaction cannot be read.
+- The trace summary now records the sanitized OCPP status (for example,
+  `Connector status: Available`), while `data.status` and
+  `data.connector_id` are unchanged. Connector runtime persistence, registry
+  updates, fact delivery, and StatusNotification acknowledgement semantics are
+  unchanged. No migration, deployment, restart, or database mutation occurred.
+
 ## 2026-09-02 - Trace delivery PostgreSQL type fix source verified, not deployed
 
 - `MarkV1TraceDelivery` now explicitly casts every reused status parameter to

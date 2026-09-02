@@ -95,22 +95,31 @@ func TestV1TraceConnectorAssociationPrefersActiveAndExpiresOldPostStop(t *testin
 	ctx := context.Background()
 	oldID := "99999999-9999-4999-8999-999999999999"
 	activeID := "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	postStopID := "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee"
 	for _, trace := range []V1Trace{
 		{TraceID: oldID, CPOID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", HALTransactionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", ChargerOCPPIdentity: "cp-a", OCPPConnectorNumber: 1},
 		{TraceID: activeID, CPOID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", HALTransactionID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd", ChargerOCPPIdentity: "cp-a", OCPPConnectorNumber: 1},
+		{TraceID: postStopID, CPOID: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", HALTransactionID: "ffffffff-ffff-4fff-8fff-ffffffffffff", ChargerOCPPIdentity: "cp-a", OCPPConnectorNumber: 1},
 	} {
 		if _, err := s.EnsureV1Trace(ctx, trace); err != nil {
 			t.Fatal(err)
 		}
 	}
-	completed := time.Now().UTC().Add(-v1TracePostStopAssociationWindow - time.Second)
-	s.transactions["cccccccc-cccc-4ccc-8ccc-cccccccccccc"] = &V1Transaction{HALTransactionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", CompletedAt: &completed}
+	expired := time.Now().UTC().Add(-v1TracePostStopAssociationWindow - time.Second)
+	recent := time.Now().UTC()
+	s.transactions["cccccccc-cccc-4ccc-8ccc-cccccccccccc"] = &V1Transaction{HALTransactionID: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", CompletedAt: &expired}
 	s.transactions["dddddddd-dddd-4ddd-8ddd-dddddddddddd"] = &V1Transaction{HALTransactionID: "dddddddd-dddd-4ddd-8ddd-dddddddddddd"}
+	s.transactions["ffffffff-ffff-4fff-8fff-ffffffffffff"] = &V1Transaction{HALTransactionID: "ffffffff-ffff-4fff-8fff-ffffffffffff", CompletedAt: &recent}
 	trace, err := s.FindV1TraceForConnector(ctx, "cp-a", 1)
 	if err != nil || trace.TraceID != activeID {
 		t.Fatalf("active connector association = %#v, %v", trace, err)
 	}
 	delete(s.transactions, "dddddddd-dddd-4ddd-8ddd-dddddddddddd")
+	trace, err = s.FindV1TraceForConnector(ctx, "cp-a", 1)
+	if err != nil || trace.TraceID != postStopID {
+		t.Fatalf("recent post-stop connector association = %#v, %v", trace, err)
+	}
+	s.transactions["ffffffff-ffff-4fff-8fff-ffffffffffff"].CompletedAt = &expired
 	if _, err := s.FindV1TraceForConnector(ctx, "cp-a", 1); err != ErrV1TransactionNotFound {
 		t.Fatalf("expired post-stop association err=%v", err)
 	}

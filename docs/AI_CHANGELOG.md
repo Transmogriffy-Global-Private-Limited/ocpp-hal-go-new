@@ -1,5 +1,22 @@
 # AI-assisted changelog
 
+## 2026-09-02 - Post-stop connector-status trace phase correction
+
+- Corrected diagnostic `StatusNotification` phase selection to read the
+  associated transaction's durable completion state rather than treating the
+  OCPP connector status as lifecycle authority. Completed transactions now
+  emit `POST_STOP`; active transactions and unbound pre-materialization roots
+  retain `CHARGING`; an unreadable bound transaction produces no invented
+  trace phase.
+- Replaced the generic connector-status summary with the sanitized observed
+  status while preserving the existing `data.status` and `data.connector_id`
+  evidence, bounded post-stop association, durable runtime projection,
+  registry update, OCPP acknowledgement, fact, and business semantics.
+
+Verification: focused `go test ./internal/ocpp16hal ./internal/store` and
+full `go test ./...` pass. No migration, deployment, restart, database
+mutation, commit, or push occurred.
+
 ## 2026-09-02 - Trace delivery PostgreSQL status typing fix
 
 - Corrected the trace-only `MarkV1TraceDelivery` SQL contract: every use of its

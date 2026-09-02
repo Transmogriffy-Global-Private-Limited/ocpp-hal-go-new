@@ -594,7 +594,10 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 	}
 	if traces, ok := h.v1Store.(store.V1TraceStore); ok {
 		if trace, traceErr := traces.FindV1TraceForConnector(context.Background(), chargePointID, request.ConnectorId); traceErr == nil {
-			if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "STATUS", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "Connector status persisted", OccurredAt: observedAt, Data: map[string]any{"status": string(request.Status), "connector_id": request.ConnectorId}}); err != nil {
+			phase, phaseErr := h.connectorStatusTracePhase(context.Background(), trace)
+			if phaseErr != nil {
+				h.logger.Warn("failed to classify diagnostic connector status trace", "trace_id", trace.TraceID, "hal_transaction_id", trace.HALTransactionID, "error", phaseErr)
+			} else if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "STATUS", Protocol: "OCPP1.6", Phase: phase, Summary: fmt.Sprintf("Connector status: %s", request.Status), OccurredAt: observedAt, Data: map[string]any{"status": string(request.Status), "connector_id": request.ConnectorId}}); err != nil {
 				h.logger.Warn("failed to persist diagnostic connector status trace", "trace_id", trace.TraceID, "error", err)
 			}
 		}
@@ -602,6 +605,26 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 	h.registry.ApplyStatusNotification(chargePointID, request.ConnectorId, string(request.Status), string(request.ErrorCode))
 
 	return core.NewStatusNotificationConfirmation(), nil
+}
+
+// connectorStatusTracePhase classifies only the diagnostic trace presentation.
+// It never derives lifecycle truth from an OCPP connector status. A pre-start
+// CMS root has no HAL transaction to inspect and retains the existing CHARGING
+// fallback. A bound trace must be classified from the durable transaction; if
+// that transaction cannot be read, no phase is invented and the diagnostic
+// observation is skipped without affecting StatusNotification acknowledgement.
+func (h *HAL) connectorStatusTracePhase(ctx context.Context, trace *store.V1Trace) (string, error) {
+	if trace.HALTransactionID == "" {
+		return "CHARGING", nil
+	}
+	transaction, err := h.v1Store.GetV1Transaction(ctx, trace.HALTransactionID)
+	if err != nil {
+		return "", err
+	}
+	if transaction.CompletedAt != nil {
+		return "POST_STOP", nil
+	}
+	return "CHARGING", nil
 }
 
 func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransactionRequest) (*core.StartTransactionConfirmation, error) {
