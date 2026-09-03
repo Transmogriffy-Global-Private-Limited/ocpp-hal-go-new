@@ -1,13 +1,32 @@
 # Project State
 
+## 2026-09-03 - Charging-trace completeness source work, verified locally and not deployed
+
+- Connector status diagnostics now classify an unbound CMS root as `STARTING`,
+  an active associated HAL transaction as `CHARGING`, and a completed
+  transaction as `POST_STOP`. The durable transaction—not a `Finishing` or
+  `Available` status string—remains the only lifecycle input.
+- The HAL trace now distinguishes RemoteStart/RemoteStop wire requests from
+  charger confirmations, records safely-correlated Authorize request and
+  confirmation evidence without credential material, records automatic-stop
+  creation only for automatic workflow creation, and labels local start/stop
+  persistence as HAL-to-HAL. Successful `transaction.started` and
+  `transaction.completed` fact delivery additionally records the actual
+  HAL-to-CMS boundary after the authoritative fact outbox is marked delivered.
+- Trace append failures remain diagnostic-only and cannot alter OCPP
+  confirmations, runtime projection, command/fact delivery, or transaction
+  authority. No migration, database mutation, deployment, restart, commit, or
+  push occurred in this source worktree.
+
 ## 2026-09-02 - Post-stop connector-status trace phase correction source verified, not deployed
 
-- `OnStatusNotification` now classifies its diagnostic trace evidence from the
-  already-associated durable HAL transaction: a completed transaction emits
-  `POST_STOP`; an active transaction and an unbound pre-materialization trace
-  retain `CHARGING`. It never infers phase from `Finishing`, `Available`, or
-  another connector status string, and skips only the diagnostic append if a
-  bound transaction cannot be read.
+- This historical source pass introduced transaction-based status
+  classification. Its unbound-root `CHARGING` fallback was superseded by the
+  2026-09-03 source correction above: an unbound pre-materialization root is
+  `STARTING`, while active/completed transactions remain `CHARGING`/
+  `POST_STOP`. It never infers phase from `Finishing`, `Available`, or another
+  connector status string, and skips only the diagnostic append if a bound
+  transaction cannot be read.
 - The trace summary now records the sanitized OCPP status (for example,
   `Connector status: Available`), while `data.status` and
   `data.connector_id` are unchanged. Connector runtime persistence, registry

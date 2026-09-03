@@ -525,7 +525,23 @@ func (h *HAL) GetConfiguration(ctx context.Context, chargerID string, keys []str
 func (h *HAL) OnAuthorize(chargePointID string, request *core.AuthorizeRequest) (*core.AuthorizeConfirmation, error) {
 	chargePointID = h.canonicalIdentity(chargePointID)
 	h.registry.Touch(chargePointID)
-	if h.v1Store == nil || h.v1Store.AuthorizeV1Credential(context.Background(), chargePointID, request.IdTag, time.Now().UTC()) != nil {
+	if h.v1Store == nil {
+		return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid)), nil
+	}
+	// Authorize carries credential material, so trace it only after the
+	// credential can be safely correlated to an existing start lifecycle. The
+	// identifier itself never enters diagnostic data.
+	credential, credentialErr := h.v1Store.GetV1Credential(context.Background(), request.IdTag)
+	accepted := credentialErr == nil && h.v1Store.AuthorizeV1Credential(context.Background(), chargePointID, request.IdTag, time.Now().UTC()) == nil
+	if credentialErr == nil {
+		h.recordV1ConnectorTrace(chargePointID, credential.OCPPConnectorNumber, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "Authorize received", OccurredAt: time.Now().UTC(), Data: map[string]any{"action": "Authorize"}})
+		outcome := "Invalid"
+		if accepted {
+			outcome = "Accepted"
+		}
+		h.recordV1ConnectorTrace(chargePointID, credential.OCPPConnectorNumber, store.V1TraceEventInput{Source: "HAL", Target: "CHARGER", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "Authorize confirmation: " + outcome, OccurredAt: time.Now().UTC(), Data: map[string]any{"action": "Authorize", "result": outcome}})
+	}
+	if !accepted {
 		return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusInvalid)), nil
 	}
 	return core.NewAuthorizationConfirmation(types.NewIdTagInfo(types.AuthorizationStatusAccepted)), nil
@@ -609,13 +625,13 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 
 // connectorStatusTracePhase classifies only the diagnostic trace presentation.
 // It never derives lifecycle truth from an OCPP connector status. A pre-start
-// CMS root has no HAL transaction to inspect and retains the existing CHARGING
-// fallback. A bound trace must be classified from the durable transaction; if
+// CMS root has no HAL transaction to inspect, so it remains in the pre-
+// materialization STARTING phase. A bound trace must be classified from the durable transaction; if
 // that transaction cannot be read, no phase is invented and the diagnostic
 // observation is skipped without affecting StatusNotification acknowledgement.
 func (h *HAL) connectorStatusTracePhase(ctx context.Context, trace *store.V1Trace) (string, error) {
 	if trace.HALTransactionID == "" {
-		return "CHARGING", nil
+		return "STARTING", nil
 	}
 	transaction, err := h.v1Store.GetV1Transaction(ctx, trace.HALTransactionID)
 	if err != nil {
@@ -660,8 +676,11 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 			if err := traces.BindV1TraceTransaction(context.Background(), trace.TraceID, tx); err != nil {
 				h.logger.Warn("failed to bind diagnostic start trace transaction", "trace_id", trace.TraceID, "error", err)
 			}
-			if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "StartTransaction accepted and materialized", OccurredAt: receivedAt, StateAfter: "ACTIVE", Data: map[string]any{"action": "StartTransaction", "transaction_id": tx.OCPPTransactionID, "connector_id": request.ConnectorId, "meter_wh": request.MeterStart}}); err != nil {
+			if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "StartTransaction received", OccurredAt: receivedAt, Data: map[string]any{"action": "StartTransaction", "transaction_id": tx.OCPPTransactionID, "connector_id": request.ConnectorId, "meter_wh": request.MeterStart}}); err != nil {
 				h.logger.Warn("failed to persist diagnostic start trace event", "trace_id", trace.TraceID, "error", err)
+			}
+			if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, store.V1TraceEventInput{Source: "HAL", Target: "HAL", Category: "LIFECYCLE", Protocol: "POSTGRES", Phase: "STARTING", Summary: "Transaction materialized", OccurredAt: receivedAt, StateAfter: "ACTIVE", Data: map[string]any{"transaction_id": tx.OCPPTransactionID, "connector_id": request.ConnectorId, "meter_wh": request.MeterStart}}); err != nil {
+				h.logger.Warn("failed to persist diagnostic start materialization trace", "trace_id", trace.TraceID, "error", err)
 			}
 		}
 	}

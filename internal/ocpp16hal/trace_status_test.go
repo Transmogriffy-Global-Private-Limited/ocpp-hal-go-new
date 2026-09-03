@@ -105,13 +105,13 @@ func TestOnStatusNotificationTracePhaseFollowsAssociatedTransactionCompletion(t 
 	}
 }
 
-func TestOnStatusNotificationTracePhaseUsesChargingFallbackOnlyForUnboundTrace(t *testing.T) {
+func TestOnStatusNotificationTracePhaseUsesStartingFallbackOnlyForUnboundTrace(t *testing.T) {
 	traces := &statusTraceStore{
 		trace: &store.V1Trace{TraceID: "33333333-3333-4333-8333-333333333333", ChargerOCPPIdentity: "CP-unbound", OCPPConnectorNumber: 1},
 	}
 	h := New(state.NewRegistry(), traces, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	confirmation, err := h.OnStatusNotification("CP-unbound", &core.StatusNotificationRequest{ConnectorId: 1, Status: core.ChargePointStatusFinishing, ErrorCode: core.NoError})
-	if err != nil || confirmation == nil || len(traces.events) != 1 || traces.events[0].Phase != "CHARGING" {
+	if err != nil || confirmation == nil || len(traces.events) != 1 || traces.events[0].Phase != "STARTING" {
 		t.Fatalf("confirmation=%#v err=%v events=%#v", confirmation, err, traces.events)
 	}
 }
@@ -129,5 +129,23 @@ func TestOnStatusNotificationSkipsTraceWhenBoundTransactionCannotBeRead(t *testi
 	}
 	if charger, ok := registry.Snapshot("CP-missing"); !ok || charger.Connectors["1"].Status != string(core.ChargePointStatusAvailable) {
 		t.Fatalf("connector runtime=%#v ok=%v", charger, ok)
+	}
+}
+
+func TestAutomaticV1StopInitiatorExcludesManualStops(t *testing.T) {
+	for _, test := range []struct {
+		initiator string
+		want      bool
+	}{
+		{initiator: "ENERGY_LIMIT", want: true},
+		{initiator: "TIME_LIMIT", want: true},
+		{initiator: "MONEY_LIMIT", want: true},
+		{initiator: "WALLET_LIMIT", want: true},
+		{initiator: "CUSTOMER", want: false},
+		{initiator: "CPO", want: false},
+	} {
+		if got := automaticV1StopInitiator(test.initiator); got != test.want {
+			t.Fatalf("automaticV1StopInitiator(%q)=%v want %v", test.initiator, got, test.want)
+		}
 	}
 }

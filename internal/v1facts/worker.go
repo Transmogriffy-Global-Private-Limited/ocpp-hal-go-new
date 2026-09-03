@@ -18,6 +18,7 @@ import (
 
 type Worker struct {
 	store  factDeliveryStore
+	traces store.V1TraceStore
 	client *http.Client
 	url    string
 	token  string
@@ -36,7 +37,11 @@ func New(cfg config.Config, v1Store store.V1Store, logger *slog.Logger) (*Worker
 	if strings.TrimSpace(cfg.V1CMSFactsURL) == "" || strings.TrimSpace(cfg.V1CMSFactsBearerToken) == "" {
 		return nil, fmt.Errorf("HAL_V1_CMS_FACTS_URL and HAL_V1_CMS_FACT_BEARER_TOKEN are required when HAL_V1_FACT_DELIVERY_ENABLED=true")
 	}
-	return &Worker{store: v1Store, client: &http.Client{Timeout: 15 * time.Second}, url: cfg.V1CMSFactsURL, token: cfg.V1CMSFactsBearerToken, logger: logger}, nil
+	worker := &Worker{store: v1Store, client: &http.Client{Timeout: 15 * time.Second}, url: cfg.V1CMSFactsURL, token: cfg.V1CMSFactsBearerToken, logger: logger}
+	if traces, ok := v1Store.(store.V1TraceStore); ok {
+		worker.traces = traces
+	}
+	return worker, nil
 }
 
 func (w *Worker) Start(ctx context.Context) {
@@ -111,7 +116,37 @@ func (w *Worker) mark(ctx context.Context, fact store.V1Fact, statusCode int, su
 	if err := w.store.MarkV1FactDelivery(ctx, fact.FactID, fact.ClaimToken, statusCode, success, terminal, detail, next); err != nil {
 		return fmt.Errorf("record fact delivery state for %s: %w", fact.FactID, err)
 	}
+	if success {
+		w.recordDeliveredLifecycleFact(ctx, fact)
+	}
 	return nil
+}
+
+// recordDeliveredLifecycleFact records the service boundary only after CMS
+// acknowledged the immutable fact and the durable outbox has been marked
+// delivered. The trace event is best-effort evidence; it cannot affect fact
+// retry, transaction, or settlement authority.
+func (w *Worker) recordDeliveredLifecycleFact(ctx context.Context, fact store.V1Fact) {
+	if w.traces == nil || (fact.FactType != "transaction.started" && fact.FactType != "transaction.completed") {
+		return
+	}
+	var payload struct {
+		HALTransactionID string `json:"hal_transaction_id"`
+	}
+	if json.Unmarshal(fact.Payload, &payload) != nil || payload.HALTransactionID == "" {
+		return
+	}
+	trace, err := w.traces.FindV1TraceByTransaction(ctx, payload.HALTransactionID)
+	if err != nil {
+		return
+	}
+	phase := "STARTING"
+	if fact.FactType == "transaction.completed" {
+		phase = "POST_STOP"
+	}
+	if err := w.traces.AppendV1TraceEvent(ctx, trace.TraceID, store.V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "FACT", Protocol: "HTTP", Phase: phase, Summary: fact.FactType + " fact delivered to CMS", OccurredAt: time.Now().UTC(), CorrelationID: fact.FactID, Data: map[string]any{"action": fact.FactType}}); err != nil && w.logger != nil {
+		w.logger.Warn("failed to persist delivered fact diagnostic trace", "trace_id", trace.TraceID, "fact_id", fact.FactID, "error", err)
+	}
 }
 
 func readReceiverErrorCode(body io.Reader) string {

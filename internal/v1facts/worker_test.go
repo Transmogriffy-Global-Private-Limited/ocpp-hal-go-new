@@ -28,6 +28,27 @@ type fakeFactDeliveryStore struct {
 	markErr error
 }
 
+type fakeTraceStore struct {
+	store.V1TraceStore
+	trace  *store.V1Trace
+	events []store.V1TraceEventInput
+}
+
+func (s *fakeTraceStore) FindV1TraceByTransaction(_ context.Context, halTransactionID string) (*store.V1Trace, error) {
+	if s.trace == nil || s.trace.HALTransactionID != halTransactionID {
+		return nil, store.ErrV1TransactionNotFound
+	}
+	return s.trace, nil
+}
+
+func (s *fakeTraceStore) AppendV1TraceEvent(_ context.Context, traceID string, event store.V1TraceEventInput) error {
+	if s.trace == nil || s.trace.TraceID != traceID {
+		return store.ErrV1TransactionNotFound
+	}
+	s.events = append(s.events, event)
+	return nil
+}
+
 func (s *fakeFactDeliveryStore) ClaimV1Facts(context.Context, time.Time, int) ([]store.V1Fact, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -128,6 +149,27 @@ func TestWorkerReportsDurableDeliveryStateWriteFailure(t *testing.T) {
 	worker := &Worker{store: fake, client: &http.Client{Timeout: time.Second}, url: "http://127.0.0.1:1", token: "test-token"}
 	if err := worker.RunOnce(context.Background()); err == nil || !strings.Contains(err.Error(), "record fact delivery state") {
 		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestWorkerRecordsHALToCMSOnlyAfterDeliveredLifecycleFact(t *testing.T) {
+	fact := testFact()
+	fact.FactType = "transaction.completed"
+	fact.Payload = []byte(`{"hal_transaction_id":"11111111-1111-4111-8111-111111111111"}`)
+	fake := &fakeFactDeliveryStore{facts: []store.V1Fact{fact}}
+	traces := &fakeTraceStore{trace: &store.V1Trace{TraceID: "22222222-2222-4222-8222-222222222222", HALTransactionID: "11111111-1111-4111-8111-111111111111"}}
+	receiver := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
+	defer receiver.Close()
+	worker := &Worker{store: fake, traces: traces, client: receiver.Client(), url: receiver.URL, token: "test-token"}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fake.marks) != 1 || !fake.marks[0].success || len(traces.events) != 1 {
+		t.Fatalf("marks=%#v events=%#v", fake.marks, traces.events)
+	}
+	event := traces.events[0]
+	if event.Source != "HAL" || event.Target != "CMS" || event.Phase != "POST_STOP" || event.Summary != "transaction.completed fact delivered to CMS" {
+		t.Fatalf("event=%#v", event)
 	}
 }
 

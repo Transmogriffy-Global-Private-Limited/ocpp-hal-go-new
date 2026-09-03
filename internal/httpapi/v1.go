@@ -276,13 +276,12 @@ func (s *Server) v1Start(w http.ResponseWriter, r *http.Request) {
 			s.writeV1StoreError(w, err)
 			return
 		}
-		status, callErr := s.hal.RemoteStartTransaction(r.Context(), req.ChargerOCPPIdentity, req.IDTag, req.OCPPConnectorNumber)
 		if traces, ok := s.v1Store.(store.V1TraceStore); ok && req.TraceID != "" {
-			outcome := "RemoteStartTransaction outcome unavailable"
-			if callErr == nil {
-				outcome = "RemoteStartTransaction response received"
-			}
-			s.appendV1Trace(r.Context(), traces, req.TraceID, store.V1TraceEventInput{Source: "HAL", Target: "CHARGER", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: outcome, OccurredAt: time.Now().UTC(), CorrelationID: correlation, Data: sanitizedTraceData(map[string]any{"action": "RemoteStartTransaction", "result": status})})
+			s.appendV1Trace(r.Context(), traces, req.TraceID, store.V1TraceEventInput{Source: "HAL", Target: "CHARGER", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "RemoteStartTransaction", OccurredAt: time.Now().UTC(), CorrelationID: correlation, Data: sanitizedTraceData(map[string]any{"action": "RemoteStartTransaction"})})
+		}
+		status, callErr := s.hal.RemoteStartTransaction(r.Context(), req.ChargerOCPPIdentity, req.IDTag, req.OCPPConnectorNumber)
+		if traces, ok := s.v1Store.(store.V1TraceStore); ok && req.TraceID != "" && callErr == nil {
+			s.appendV1Trace(r.Context(), traces, req.TraceID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "RemoteStartTransaction confirmation: " + status, OccurredAt: time.Now().UTC(), CorrelationID: correlation, Data: sanitizedTraceData(map[string]any{"action": "RemoteStartTransaction", "result": status})})
 		}
 		if callErr != nil {
 			command, err = s.v1Store.MarkV1CommandDelivery(r.Context(), req.CMSCommandID, "AMBIGUOUS", "", "remote start result unavailable")

@@ -33,12 +33,14 @@ func (h *HAL) DispatchV1Stop(ctx context.Context, halTransactionID string) (*sto
 	if transaction.CompletedAt != nil {
 		return h.v1Store.MarkV1StopDelivery(ctx, halTransactionID, "AMBIGUOUS", "", "transaction completed before dispatch")
 	}
+	h.recordV1Trace(transaction.HALTransactionID, store.V1TraceEventInput{Source: "HAL", Target: "CHARGER", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STOPPING", Summary: "RemoteStopTransaction", OccurredAt: time.Now().UTC(), Data: map[string]any{"action": "RemoteStopTransaction", "transaction_id": transaction.OCPPTransactionID}})
 	callCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
 	status, callErr := h.RemoteStopTransaction(callCtx, transaction.ChargerOCPPIdentity, int(transaction.OCPPTransactionID))
 	if callErr != nil {
 		return h.v1Store.MarkV1StopDelivery(ctx, halTransactionID, "AMBIGUOUS", "", "remote stop result unavailable")
 	}
+	h.recordV1Trace(transaction.HALTransactionID, store.V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "OCPP_CALL", Protocol: "OCPP1.6", Phase: "STOPPING", Summary: "RemoteStopTransaction confirmation: " + status, OccurredAt: time.Now().UTC(), Data: map[string]any{"action": "RemoteStopTransaction", "result": status, "transaction_id": transaction.OCPPTransactionID}})
 	return h.v1Store.MarkV1StopDelivery(ctx, halTransactionID, status, status, "")
 }
 
@@ -90,8 +92,12 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 	}
 	for _, transaction := range transactions {
 		initiator, reason := v1DeadlineStopCause(transaction.DurationLimitSource, transaction.LimitType)
-		if _, _, err := h.v1Store.EnsureV1StopWorkflow(ctx, transaction.HALTransactionID, initiator, reason); err != nil {
+		_, created, err := h.v1Store.EnsureV1StopWorkflow(ctx, transaction.HALTransactionID, initiator, reason)
+		if err != nil {
 			return err
+		}
+		if created {
+			h.recordV1Trace(transaction.HALTransactionID, store.V1TraceEventInput{Source: "HAL", Target: "HAL", Category: "LIFECYCLE", Protocol: "POSTGRES", Phase: "STOPPING", Summary: "Automatic stop condition reached", OccurredAt: time.Now().UTC(), Data: map[string]any{"reason": reason}})
 		}
 		if _, err := h.DispatchV1Stop(ctx, transaction.HALTransactionID); err != nil && !errors.Is(err, store.ErrV1DeliveryNotReady) {
 			h.logger.Warn("failed to dispatch overdue v1 stop", "hal_transaction_id", transaction.HALTransactionID, "error", err)
@@ -142,6 +148,9 @@ func (h *HAL) HandleV1MeterValues(chargePointID string, request *core.MeterValue
 		h.registry.ApplyMeterValue(chargePointID, request.ConnectorId, ptrInt64(transaction.OCPPTransactionID), float64(*telemetry.EnergyWh))
 		workflow, workflowErr := h.v1Store.GetV1StopWorkflow(context.Background(), transaction.HALTransactionID)
 		if workflowErr == nil && workflow.State == "PERSISTED" {
+			if workflow.DeliveryAttempts == 0 && automaticV1StopInitiator(workflow.RequestedStopInitiator) {
+				h.recordV1Trace(transaction.HALTransactionID, store.V1TraceEventInput{Source: "HAL", Target: "HAL", Category: "LIFECYCLE", Protocol: "POSTGRES", Phase: "STOPPING", Summary: "Automatic stop condition reached", OccurredAt: time.Now().UTC(), Data: map[string]any{"reason": workflow.RequestedStopReason}})
+			}
 			if _, err := h.DispatchV1Stop(context.Background(), transaction.HALTransactionID); err != nil {
 				h.logger.Warn("failed to dispatch v1 energy stop", "hal_transaction_id", transaction.HALTransactionID, "error", err)
 			}
@@ -189,7 +198,7 @@ func (h *HAL) HandleV1StopTransaction(chargePointID string, request *core.StopTr
 		h.logger.Info("normalized v1 stop meter quantization evidence", "hal_transaction_id", completed.HALTransactionID, "charge_point_id", chargePointID, "raw_meter_stop_wh", *completed.RawMeterStopWh, "effective_meter_stop_wh", *completed.MeterStopWh, "meter_stop_adjustment_wh", *completed.MeterStopAdjustmentWh, "meter_stop_evidence", completed.MeterStopEvidence)
 	}
 	h.registry.ApplyStopTransaction(chargePointID, completed.OCPPConnectorNumber, float64(*completed.MeterStopWh))
-	h.recordV1Trace(completed.HALTransactionID, store.V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "LIFECYCLE", Protocol: "OCPP1.6", Phase: "POST_STOP", Summary: "Transaction completion persisted", OccurredAt: observedAt, StateBefore: "ACTIVE", StateAfter: "COMPLETED", Data: map[string]any{"transaction_id": completed.OCPPTransactionID, "meter_wh": *completed.MeterStopWh, "reason": completed.OCPPStopReason}})
+	h.recordV1Trace(completed.HALTransactionID, store.V1TraceEventInput{Source: "HAL", Target: "HAL", Category: "LIFECYCLE", Protocol: "POSTGRES", Phase: "POST_STOP", Summary: "Transaction completion persisted", OccurredAt: observedAt, StateBefore: "ACTIVE", StateAfter: "COMPLETED", Data: map[string]any{"transaction_id": completed.OCPPTransactionID, "meter_wh": *completed.MeterStopWh, "reason": completed.OCPPStopReason}})
 	return true
 }
 
@@ -204,6 +213,29 @@ func (h *HAL) recordV1Trace(halTransactionID string, input store.V1TraceEventInp
 	}
 	if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, input); err != nil {
 		h.logger.Warn("failed to persist diagnostic v1 trace event", "trace_id", trace.TraceID, "error", err)
+	}
+}
+
+func (h *HAL) recordV1ConnectorTrace(chargerOCPPIdentity string, connectorNumber int, input store.V1TraceEventInput) {
+	traces, ok := h.v1Store.(store.V1TraceStore)
+	if !ok {
+		return
+	}
+	trace, err := traces.FindV1TraceForConnector(context.Background(), chargerOCPPIdentity, connectorNumber)
+	if err != nil {
+		return
+	}
+	if err := traces.AppendV1TraceEvent(context.Background(), trace.TraceID, input); err != nil {
+		h.logger.Warn("failed to persist diagnostic connector trace event", "trace_id", trace.TraceID, "error", err)
+	}
+}
+
+func automaticV1StopInitiator(initiator string) bool {
+	switch initiator {
+	case "ENERGY_LIMIT", "TIME_LIMIT", "MONEY_LIMIT", "WALLET_LIMIT":
+		return true
+	default:
+		return false
 	}
 }
 func traceMeterData(telemetry store.V1MeterTelemetry) map[string]any {

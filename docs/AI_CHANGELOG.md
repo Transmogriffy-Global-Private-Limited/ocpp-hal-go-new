@@ -1,13 +1,30 @@
 # AI-assisted changelog
 
+## 2026-09-03 - Complete diagnostic trace phase and wire-evidence semantics
+
+- Changed the unbound pre-materialization StatusNotification fallback from
+  `CHARGING` to `STARTING`; active and completed associated transactions still
+  produce `CHARGING` and `POST_STOP` respectively without status-string
+  inference.
+- Split RemoteStart and RemoteStop evidence into request and confirmation
+  arrows, added safely-correlated credential-free Authorize evidence, one
+  automatic-stop creation event, correct HAL-local persistence arrows, and a
+  post-acknowledgement HAL-to-CMS lifecycle-fact delivery event. These are
+  append-only diagnostics and never change OCPP/fact/business behavior.
+
+Verification: focused HAL OCPP/HTTP/fact-worker tests pass locally. The full
+repository verification remains recorded with this uncommitted source slice;
+PostgreSQL integration remains skipped without `TEST_DATABASE_URL`. No
+migration, database mutation, deployment, restart, commit, or push occurred.
+
 ## 2026-09-02 - Post-stop connector-status trace phase correction
 
 - Corrected diagnostic `StatusNotification` phase selection to read the
   associated transaction's durable completion state rather than treating the
-  OCPP connector status as lifecycle authority. Completed transactions now
-  emit `POST_STOP`; active transactions and unbound pre-materialization roots
-  retain `CHARGING`; an unreadable bound transaction produces no invented
-  trace phase.
+  OCPP connector status as lifecycle authority. The unbound-root fallback
+  recorded here was later corrected to `STARTING` by the 2026-09-03 entry;
+  completed/active bound transactions remain `POST_STOP`/`CHARGING`, and an
+  unreadable bound transaction produces no invented trace phase.
 - Replaced the generic connector-status summary with the sanitized observed
   status while preserving the existing `data.status` and `data.connector_id`
   evidence, bounded post-stop association, durable runtime projection,
