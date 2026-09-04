@@ -1,5 +1,26 @@
 # Project State
 
+## 2026-09-04 - CPO charger-operation source vertical, locally verified and not deployed
+
+- The uncommitted new-HAL source adds a dedicated `v1_charger_operations`
+  ledger and typed authenticated REST boundary for CMS-owned Reset,
+  UnlockConnector, ChangeAvailability, ClearCache, Get/ChangeConfiguration,
+  and allowlisted TriggerMessage. It does not reuse Start/Stop records or alter
+  their charging semantics.
+- Mapping validation retains CPO, CMS charger/connector, OCPP identity, and
+  connector-number scope. A durable operation is claimed once before OCPP
+  dispatch; any uncertain physical delivery becomes
+  `RECONCILIATION_REQUIRED` and is never replayed. Exact CMS operation-ID GET
+  is the recovery authority. OCPP results are stored as separate evidence, not
+  a claim of later physical effect.
+- Migration `020_add_v1_charger_operations` is source-only. No migration,
+  database mutation, deployment, restart, commit, or push occurred.
+
+Verification: focused memory-store and v1 HTTP tests, full `go test -p 1
+./...`, and `go vet -p 1 ./...` pass. PostgreSQL lifecycle and a real OCPP
+mapped-charge-point check are unrun because no disposable `TEST_DATABASE_URL`
+or hardware environment was selected.
+
 ## 2026-09-03 - Charging-trace completeness source work, verified locally and not deployed
 
 - Connector status diagnostics now classify an unbound CMS root as `STARTING`,

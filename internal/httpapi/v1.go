@@ -125,6 +125,8 @@ func (s *Server) registerV1Routes(mux *http.ServeMux) {
 	mux.Handle("/v1/remote-commands/start", guard(http.HandlerFunc(s.v1Start)))
 	mux.Handle("/v1/remote-commands/stop", guard(http.HandlerFunc(s.v1Stop)))
 	mux.Handle("/v1/remote-commands", guard(http.HandlerFunc(s.v1Command)))
+	mux.Handle("/v1/charger-operations", guard(http.HandlerFunc(s.v1ChargerOperations)))
+	mux.Handle("/v1/charger-configurations/read", guard(http.HandlerFunc(s.v1ConfigurationRead)))
 	mux.Handle("/v1/transactions", guard(http.HandlerFunc(s.v1Transactions)))
 	mux.Handle("/v1/transactions/", guard(http.HandlerFunc(s.v1Transaction)))
 	mux.Handle("/v1/facts/", guard(http.HandlerFunc(s.v1FactRequeue)))
@@ -494,7 +496,7 @@ func validUUID(value string) bool {
 }
 func (s *Server) writeV1StoreError(w http.ResponseWriter, err error) {
 	switch {
-	case errors.Is(err, store.ErrV1MappingNotFound), errors.Is(err, store.ErrV1CommandNotFound), errors.Is(err, store.ErrV1TransactionNotFound), errors.Is(err, store.ErrV1FactNotFound):
+	case errors.Is(err, store.ErrV1MappingNotFound), errors.Is(err, store.ErrV1CommandNotFound), errors.Is(err, store.ErrV1OperationNotFound), errors.Is(err, store.ErrV1TransactionNotFound), errors.Is(err, store.ErrV1FactNotFound):
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "v1 resource not found"})
 	case errors.Is(err, store.ErrV1MappingConflict), errors.Is(err, store.ErrV1IdempotencyConflict), errors.Is(err, store.ErrV1FactNotReconciliable):
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "v1 idempotency or mapping conflict"})

@@ -931,7 +931,29 @@ legacy remote-only keys are vendor extensions; they apply only when an explicit
 vendor profile and exact vendor gate are configured. A reconnect supersedes the
 older generation before later configuration writes.
 
-## 17. Open Decisions
+## 17. CPO Charger Operations
+
+The authenticated CMS-to-HAL v1 boundary now has a separate typed charger
+operation ledger. It does not share `v1_remote_commands`, because Reset,
+UnlockConnector, ChangeAvailability, ClearCache, ChangeConfiguration, and
+allowlisted TriggerMessage are not charging/session commands.
+
+CMS persists one `cms_operation_id` before provider I/O and sends that same ID
+as `Idempotency-Key` to `POST /v1/charger-operations`. HAL validates the
+durable CPO/changer/(when applicable) connector mapping, persists its own
+operation row, records `DELIVERY_ATTEMPTED` before OCPP dispatch, and records
+either `OCPP_CONFIRMED` with the exact OCPP result or
+`RECONCILIATION_REQUIRED` for ambiguous delivery. It never replays the latter.
+`GET /v1/charger-operations?cms_operation_id=...` is exact recovery only.
+
+`POST /v1/charger-configurations/read` accepts a mapped charger and an
+optional bounded key list. HAL redacts sensitive values, preserves readonly
+metadata and unknown keys, owns HeartbeatInterval, MeterValueSampleInterval,
+and its configured vendor-profile keys, and rejects mutation of those or
+security-sensitive keys. An OCPP acknowledgement is not proof of later charger
+state/effect; normal runtime facts remain authoritative.
+
+## 18. Open Decisions
 
 The following remain deliberately not fixed or not yet implemented:
 

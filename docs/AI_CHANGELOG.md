@@ -1,5 +1,25 @@
 # AI-assisted changelog
 
+## 2026-09-04 - Add source-only typed CPO charger-operation boundary
+
+- Added separate durable v1 operation persistence, exact CMS-operation lookup,
+  CPO/charger/connector/identity mapping validation, and one-time delivery
+  claiming. A conflicting same ID with a different request digest is rejected;
+  no ambiguous physical OCPP operation is replayed.
+- Added explicit OCPP dispatch for Reset, UnlockConnector, ChangeAvailability,
+  ClearCache, Get/ChangeConfiguration, and allowlisted TriggerMessage. The
+  configuration boundary rejects HAL-owned reconciliation and sensitive keys,
+  and outputs an explicitly redacted representation when required.
+- Added source migration `020_add_v1_charger_operations`, v1 HTTP/OpenAPI and
+  cross-service contract updates, plus memory-store idempotency/claim tests.
+  No migration, database mutation, deployment, restart, commit, or push
+  occurred.
+
+Verification: `go test ./internal/store ./internal/httpapi -count=1`, full
+`go test -p 1 ./...`, `go vet -p 1 ./...`, and `git diff --check` pass.
+PostgreSQL lifecycle and hardware checks remain unrun without an explicitly
+selected disposable database and mapped charge point.
+
 ## 2026-09-03 - Complete diagnostic trace phase and wire-evidence semantics
 
 - Changed the unbound pre-materialization StatusNotification fallback from

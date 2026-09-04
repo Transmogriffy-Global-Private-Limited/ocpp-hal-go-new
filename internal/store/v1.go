@@ -13,6 +13,7 @@ import (
 
 var (
 	ErrV1CommandNotFound      = errors.New("v1 remote command not found")
+	ErrV1OperationNotFound    = errors.New("v1 charger operation not found")
 	ErrV1CredentialRejected   = errors.New("v1 start credential rejected")
 	ErrV1TransactionNotFound  = errors.New("v1 transaction not found")
 	ErrV1IdempotencyConflict  = errors.New("v1 command idempotency conflict")
@@ -25,6 +26,42 @@ var (
 	ErrV1FactNotReconciliable = errors.New("v1 fact is not awaiting reconciliation")
 	ErrV1FactClaimLost        = errors.New("v1 fact delivery claim is no longer current")
 )
+
+// V1ChargerOperationInput is deliberately separate from V1RemoteCommand:
+// charger control has no customer, wallet, or transaction lifecycle meaning.
+type V1ChargerOperationInput struct {
+	CMSOperationID      string
+	RequestDigest       string
+	CPOID               string
+	CMSChargerID        string
+	CMSConnectorID      string
+	ChargerOCPPIdentity string
+	OCPPConnectorNumber int
+	Kind                string
+	Parameters          map[string]string
+	CorrelationID       string
+}
+
+type V1ChargerOperation struct {
+	HALOperationID      string
+	CMSOperationID      string
+	RequestDigest       string
+	CPOID               string
+	CMSChargerID        string
+	CMSConnectorID      string
+	ChargerOCPPIdentity string
+	OCPPConnectorNumber int
+	Kind                string
+	Parameters          map[string]string
+	CorrelationID       string
+	State               string
+	DeliveryAttempts    int
+	OCPPResult          string
+	ErrorCategory       string
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
+	CompletedAt         *time.Time
+}
 
 type V1StartCommandInput struct {
 	CMSCommandID        string
@@ -333,6 +370,10 @@ type V1Store interface {
 	CreateV1StartCommand(context.Context, V1StartCommandInput) (*V1RemoteCommand, bool, error)
 	CreateV1StopCommand(context.Context, V1StopCommandInput) (*V1RemoteCommand, bool, error)
 	GetV1Command(context.Context, string) (*V1RemoteCommand, error)
+	CreateV1ChargerOperation(context.Context, V1ChargerOperationInput) (*V1ChargerOperation, bool, error)
+	GetV1ChargerOperation(context.Context, string) (*V1ChargerOperation, error)
+	ClaimV1ChargerOperationDelivery(context.Context, string) (*V1ChargerOperation, bool, error)
+	MarkV1ChargerOperationDelivery(context.Context, string, string, string, string) (*V1ChargerOperation, error)
 	GetV1Credential(context.Context, string) (*V1Credential, error)
 	MaterializeV1Start(context.Context, V1StartMaterialization) (*V1Transaction, bool, error)
 	UpdateV1Meter(context.Context, string, int64, int64, time.Time) (*V1Transaction, error)

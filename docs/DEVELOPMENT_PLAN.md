@@ -9,6 +9,15 @@ no shared database and no supported old-CMS compatibility runtime.
 
 Current phase: v1 consumer-boundary verification and legacy retirement.
 
+Current CPO charger-operations slice:
+
+- implements a separate typed v1 control-operation ledger and authenticated
+  endpoint for Reset, UnlockConnector, ChangeAvailability, ClearCache,
+  ChangeConfiguration, and allowlisted TriggerMessage, plus guarded
+  GetConfiguration. It never reuses charging remote-command records or replays
+  a delivery left ambiguous after physical dispatch; migration 020 is
+  source-only and not applied.
+
 Current trace/migration-ownership slice:
 
 - source implements a connector-aware, durable diagnostic transaction trace

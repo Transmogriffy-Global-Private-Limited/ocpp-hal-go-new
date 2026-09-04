@@ -9,6 +9,7 @@ import (
 type V1MemoryStore struct {
 	mu           sync.Mutex
 	commands     map[string]*V1RemoteCommand
+	operations   map[string]*V1ChargerOperation
 	credentials  map[string]*V1Credential
 	transactions map[string]*V1Transaction
 	traces       map[string]*V1Trace
@@ -18,11 +19,72 @@ type V1MemoryStore struct {
 func NewV1MemoryStore() *V1MemoryStore {
 	return &V1MemoryStore{
 		commands:     make(map[string]*V1RemoteCommand),
+		operations:   make(map[string]*V1ChargerOperation),
 		credentials:  make(map[string]*V1Credential),
 		transactions: make(map[string]*V1Transaction),
 		traces:       make(map[string]*V1Trace),
 		traceEvents:  make(map[string][]V1TraceEvent),
 	}
+}
+
+func (s *V1MemoryStore) CreateV1ChargerOperation(_ context.Context, input V1ChargerOperationInput) (*V1ChargerOperation, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if existing := s.operations[input.CMSOperationID]; existing != nil {
+		if existing.RequestDigest != input.RequestDigest {
+			return nil, false, ErrV1IdempotencyConflict
+		}
+		return cloneV1ChargerOperation(existing), true, nil
+	}
+	id, err := NewSecureUUIDString()
+	if err != nil {
+		return nil, false, err
+	}
+	now := time.Now().UTC()
+	op := &V1ChargerOperation{HALOperationID: id, CMSOperationID: input.CMSOperationID, RequestDigest: input.RequestDigest, CPOID: input.CPOID, CMSChargerID: input.CMSChargerID, CMSConnectorID: input.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, Kind: input.Kind, Parameters: cloneStringMap(input.Parameters), CorrelationID: input.CorrelationID, State: "PERSISTED", CreatedAt: now, UpdatedAt: now}
+	s.operations[input.CMSOperationID] = op
+	return cloneV1ChargerOperation(op), false, nil
+}
+
+func (s *V1MemoryStore) GetV1ChargerOperation(_ context.Context, id string) (*V1ChargerOperation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if operation := s.operations[id]; operation != nil {
+		return cloneV1ChargerOperation(operation), nil
+	}
+	return nil, ErrV1OperationNotFound
+}
+
+func (s *V1MemoryStore) ClaimV1ChargerOperationDelivery(_ context.Context, id string) (*V1ChargerOperation, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op := s.operations[id]
+	if op == nil {
+		return nil, false, ErrV1OperationNotFound
+	}
+	if op.State != "PERSISTED" {
+		return cloneV1ChargerOperation(op), false, nil
+	}
+	op.State, op.DeliveryAttempts, op.UpdatedAt = "DELIVERY_ATTEMPTED", op.DeliveryAttempts+1, time.Now().UTC()
+	return cloneV1ChargerOperation(op), true, nil
+}
+
+func (s *V1MemoryStore) MarkV1ChargerOperationDelivery(_ context.Context, id, state, result, category string) (*V1ChargerOperation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	op := s.operations[id]
+	if op == nil {
+		return nil, ErrV1OperationNotFound
+	}
+	if op.State != "DELIVERY_ATTEMPTED" {
+		return cloneV1ChargerOperation(op), nil
+	}
+	now := time.Now().UTC()
+	op.State, op.OCPPResult, op.ErrorCategory, op.UpdatedAt = state, result, category, now
+	if state == "OCPP_CONFIRMED" || state == "RECONCILIATION_REQUIRED" {
+		op.CompletedAt = &now
+	}
+	return cloneV1ChargerOperation(op), nil
 }
 
 func (s *V1MemoryStore) CreateV1StartCommand(_ context.Context, input V1StartCommandInput) (*V1RemoteCommand, bool, error) {
@@ -291,6 +353,30 @@ func cloneV1Command(command *V1RemoteCommand) *V1RemoteCommand {
 	if command.OCPPTransactionID != nil {
 		value := *command.OCPPTransactionID
 		copy.OCPPTransactionID = &value
+	}
+	return &copy
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
+func cloneV1ChargerOperation(operation *V1ChargerOperation) *V1ChargerOperation {
+	if operation == nil {
+		return nil
+	}
+	copy := *operation
+	copy.Parameters = cloneStringMap(operation.Parameters)
+	if operation.CompletedAt != nil {
+		completed := *operation.CompletedAt
+		copy.CompletedAt = &completed
 	}
 	return &copy
 }
