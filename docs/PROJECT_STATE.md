@@ -1,5 +1,21 @@
 # Project State
 
+## 2026-09-08 - PostgreSQL charger-operation configuration-key regression source fix
+
+- The v1 PostgreSQL operation insert now normalizes an omitted
+  `configuration_keys` Go slice to an explicit empty array before binding it.
+  The database default remains unchanged: PostgreSQL does not apply that
+  default to an explicit SQL `NULL`. Empty continues to mean all keys, while
+  requested keys are retained exactly.
+- The correction is limited to the PostgreSQL persistence boundary. It does
+  not change the CMS contract, OCPP dispatch, operation state machine, trace
+  evidence, migration `021`, or ambiguous-delivery recovery policy.
+
+The DB-free regression test passes. A real PostgreSQL insert/read regression
+test is intentionally gated by `TEST_DATABASE_URL` and was skipped because no
+disposable database was selected. No database mutation, migration, deployment,
+restart, commit, or push occurred.
+
 ## 2026-09-08 - Per-operation OCPP protocol-evidence source slice
 
 - Uncommitted source binds each CMS-owned CPO operation to its trace root and

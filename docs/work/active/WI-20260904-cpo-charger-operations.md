@@ -4,7 +4,7 @@ Status: In Progress
 Owner: Codex
 Collaborators: Anubhab Dey (CMS/HAL boundary owner)
 Started: 2026-09-04
-Last updated: 2026-09-08 (per-operation protocol-evidence source slice implemented; verification and source review in progress; uncommitted and not deployed)
+Last updated: 2026-09-08 (PostgreSQL configuration-key regression fixed in source; uncommitted and not deployed)
 
 Development-plan reference: `docs/DEVELOPMENT_PLAN.md` — v1 consumer boundary
 Detailed-plan reference: `docs/contracts/CMS_HAL_CHARGING_V1.md` (to be extended)
@@ -63,11 +63,18 @@ sanitation, and audited GET_CONFIGURATION with an optional transient safe
 configuration response. The legacy configuration-read endpoint remains
 unmodified.
 
+Implemented but uncommitted/source-only: PostgreSQL normalizes an omitted
+operation `configuration_keys` slice to an explicit empty array before the
+insert binds it. This prevents an explicit SQL `NULL` from violating the
+`NOT NULL` column introduced by migration `021`; it does not alter the
+database schema or any OCPP/CMS operation semantics.
+
 ## Verification
 
-Focused trace-sanitizer tests plus OCPP/store/v1 HTTP compile checks pass.
-PostgreSQL, CMS delivery, and hardware checks remain blocked on an explicitly
-selected disposable environment.
+Focused configuration-key normalization and CMS HAL reconciliation package
+checks pass. The PostgreSQL persistence regression is covered but skipped
+without `TEST_DATABASE_URL`; CMS delivery and hardware checks remain blocked
+on an explicitly selected disposable environment.
 
 ## Handoff
 

@@ -44,7 +44,7 @@ func (s *PostgresStore) CreateV1ChargerOperation(ctx context.Context, input V1Ch
 	if err != nil {
 		return nil, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO v1_charger_operations (id,cms_operation_id,trace_id,request_digest,cpo_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,kind,parameters,configuration_keys,correlation_id,state) VALUES ($1,$2,$3::uuid,$4,$5,$6,NULLIF($7,'')::uuid,$8,$9,$10,$11,$12,$13,'PERSISTED') ON CONFLICT (cms_operation_id) DO NOTHING`, id, input.CMSOperationID, input.TraceID, input.RequestDigest, input.CPOID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.Kind, parameters, input.ConfigurationKeys, input.CorrelationID)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO v1_charger_operations (id,cms_operation_id,trace_id,request_digest,cpo_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,kind,parameters,configuration_keys,correlation_id,state) VALUES ($1,$2,$3::uuid,$4,$5,$6,NULLIF($7,'')::uuid,$8,$9,$10,$11,$12,$13,'PERSISTED') ON CONFLICT (cms_operation_id) DO NOTHING`, id, input.CMSOperationID, input.TraceID, input.RequestDigest, input.CPOID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.Kind, parameters, v1ConfigurationKeysForPersistence(input.ConfigurationKeys), input.CorrelationID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -60,6 +60,16 @@ func (s *PostgresStore) CreateV1ChargerOperation(ctx context.Context, input V1Ch
 	}
 	op, err := s.GetV1ChargerOperation(ctx, input.CMSOperationID)
 	return op, false, err
+}
+
+// v1ConfigurationKeysForPersistence preserves the protocol meaning of an
+// omitted key list: request every configuration key. PostgreSQL defaults do
+// not apply when an explicit nil argument is bound to configuration_keys.
+func v1ConfigurationKeysForPersistence(keys []string) []string {
+	if keys == nil {
+		return []string{}
+	}
+	return keys
 }
 
 func (s *PostgresStore) GetV1ChargerOperation(ctx context.Context, id string) (*V1ChargerOperation, error) {

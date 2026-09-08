@@ -1,5 +1,21 @@
 # AI-assisted changelog
 
+## 2026-09-08 - Normalize nullable charger-operation configuration keys for PostgreSQL
+
+- Corrected the v1 charger-operation PostgreSQL insert boundary: an omitted
+  `configuration_keys` slice is now bound as an explicit empty text array.
+  This preserves the OCPP meaning of requesting all keys while preventing a
+  SQL `NULL` from bypassing migration `021`'s non-null column default.
+- No migration or operation contract changed. Reset, UnlockConnector,
+  ChangeAvailability, ClearCache, ChangeConfiguration, TriggerMessage, and
+  both empty and key-specific GetConfiguration creation paths are covered by
+  a DB-free regression test and a disposable-PostgreSQL-gated persistence
+  test.
+
+Verification: the DB-free regression test passes. The PostgreSQL test is
+skipped without `TEST_DATABASE_URL`; no database, migration, deployment,
+restart, commit, or push occurred.
+
 ## 2026-09-08 - Add source-only per-operation OCPP evidence
 
 - Added operation-root identities and source-only migration `021`, a custom

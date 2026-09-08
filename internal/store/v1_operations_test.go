@@ -3,8 +3,34 @@ package store
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 )
+
+func TestV1ConfigurationKeysForPersistenceNormalizesOnlyNil(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		keys []string
+		want []string
+	}{
+		{name: "reset", want: []string{}},
+		{name: "unlock connector", want: []string{}},
+		{name: "change availability", want: []string{}},
+		{name: "clear cache", want: []string{}},
+		{name: "change configuration", want: []string{}},
+		{name: "trigger message", want: []string{}},
+		{name: "get configuration omitted", want: []string{}},
+		{name: "get configuration explicit empty", keys: []string{}, want: []string{}},
+		{name: "get configuration selected keys", keys: []string{"HeartbeatInterval", "ConnectionTimeOut"}, want: []string{"HeartbeatInterval", "ConnectionTimeOut"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got := v1ConfigurationKeysForPersistence(test.keys)
+			if got == nil || !reflect.DeepEqual(got, test.want) {
+				t.Fatalf("persisted configuration keys = %#v, want non-nil %#v", got, test.want)
+			}
+		})
+	}
+}
 
 func TestV1ChargerOperationIdempotencyAndSingleDeliveryClaim(t *testing.T) {
 	store := NewV1MemoryStore()

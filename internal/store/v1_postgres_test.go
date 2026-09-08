@@ -4,11 +4,52 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/config"
 )
+
+func TestV1PostgresChargerOperationConfigurationKeys(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is required for the disposable PostgreSQL charger-operation configuration-key regression test")
+	}
+	s, err := NewPostgresStore(config.Config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, test := range []struct {
+		name string
+		kind string
+		keys []string
+		want []string
+	}{
+		{name: "reset", kind: "RESET", want: []string{}},
+		{name: "unlock connector", kind: "UNLOCK_CONNECTOR", want: []string{}},
+		{name: "change availability", kind: "CHANGE_AVAILABILITY", want: []string{}},
+		{name: "clear cache", kind: "CLEAR_CACHE", want: []string{}},
+		{name: "change configuration", kind: "CHANGE_CONFIGURATION", want: []string{}},
+		{name: "trigger message", kind: "TRIGGER_MESSAGE", want: []string{}},
+		{name: "get configuration omitted", kind: "GET_CONFIGURATION", want: []string{}},
+		{name: "get configuration explicit empty", kind: "GET_CONFIGURATION", keys: []string{}, want: []string{}},
+		{name: "get configuration selected keys", kind: "GET_CONFIGURATION", keys: []string{"HeartbeatInterval", "ConnectionTimeOut"}, want: []string{"HeartbeatInterval", "ConnectionTimeOut"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			input := V1ChargerOperationInput{CMSOperationID: NewUUIDString(), TraceID: NewUUIDString(), RequestDigest: "configuration-keys-" + NewUUIDString(), CPOID: NewUUIDString(), CMSChargerID: NewUUIDString(), ChargerOCPPIdentity: "CP-V1-CONFIG-" + NewUUIDString()[:8], Kind: test.kind, Parameters: map[string]string{}, ConfigurationKeys: test.keys, CorrelationID: "test-correlation"}
+			created, replay, err := s.CreateV1ChargerOperation(context.Background(), input)
+			if err != nil || replay || created.ConfigurationKeys == nil || !reflect.DeepEqual(created.ConfigurationKeys, test.want) {
+				t.Fatalf("create = %#v, replay=%t, err=%v", created, replay, err)
+			}
+			persisted, err := s.GetV1ChargerOperation(context.Background(), input.CMSOperationID)
+			if err != nil || persisted.ConfigurationKeys == nil || !reflect.DeepEqual(persisted.ConfigurationKeys, test.want) {
+				t.Fatalf("persisted = %#v, err=%v", persisted, err)
+			}
+		})
+	}
+}
 
 func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
