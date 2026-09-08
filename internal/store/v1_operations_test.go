@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-func TestV1ConfigurationKeysForPersistenceNormalizesOnlyNil(t *testing.T) {
+func TestV1ConfigurationKeysNormalization(t *testing.T) {
 	for _, test := range []struct {
 		name string
 		keys []string
@@ -24,11 +24,31 @@ func TestV1ConfigurationKeysForPersistenceNormalizesOnlyNil(t *testing.T) {
 		{name: "get configuration selected keys", keys: []string{"HeartbeatInterval", "ConnectionTimeOut"}, want: []string{"HeartbeatInterval", "ConnectionTimeOut"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			got := v1ConfigurationKeysForPersistence(test.keys)
+			got := normalizeV1ConfigurationKeys(test.keys)
 			if got == nil || !reflect.DeepEqual(got, test.want) {
 				t.Fatalf("persisted configuration keys = %#v, want non-nil %#v", got, test.want)
 			}
 		})
+	}
+}
+
+func TestV1ConfigurationKeysScannerDecodesPostgreSQLTextArrays(t *testing.T) {
+	for _, test := range []struct {
+		value string
+		want  []string
+	}{
+		{value: "{}", want: []string{}},
+		{value: "{HeartbeatInterval}", want: []string{"HeartbeatInterval"}},
+		{value: "{HeartbeatInterval,ConnectionTimeOut}", want: []string{"HeartbeatInterval", "ConnectionTimeOut"}},
+	} {
+		var got []string
+		if err := v1ConfigurationKeysScanner(&got).Scan(test.value); err != nil {
+			t.Fatalf("scan %q: %v", test.value, err)
+		}
+		got = normalizeV1ConfigurationKeys(got)
+		if got == nil || !reflect.DeepEqual(got, test.want) {
+			t.Fatalf("scan %q = %#v, want non-nil %#v", test.value, got, test.want)
+		}
 	}
 }
 

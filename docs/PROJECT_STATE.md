@@ -1,5 +1,20 @@
 # Project State
 
+## 2026-09-08 - PostgreSQL charger-operation array readback source fix
+
+- `GetV1ChargerOperation` now scans the durable `configuration_keys text[]`
+  column through pgx v5's database/sql-compatible `pgtype` scanner rather
+  than directly into a Go slice. A successful empty array remains a usable
+  empty Go slice; selected keys retain their exact ordering and values.
+- The change corrects immediate POST readback, duplicate-request lookup, and
+  exact GET lookup without changing migration `021`, the request digest,
+  mapping validation, OCPP dispatch, or operation-state meanings.
+
+The DB-free pgx scanner regression passes. The create/read PostgreSQL
+regression remains gated by `TEST_DATABASE_URL` and was skipped because no
+disposable database was selected. No database mutation, migration, deployment,
+restart, commit, or push occurred.
+
 ## 2026-09-08 - PostgreSQL charger-operation configuration-key regression source fix
 
 - The v1 PostgreSQL operation insert now normalizes an omitted

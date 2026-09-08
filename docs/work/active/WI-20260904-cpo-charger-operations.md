@@ -4,7 +4,7 @@ Status: In Progress
 Owner: Codex
 Collaborators: Anubhab Dey (CMS/HAL boundary owner)
 Started: 2026-09-04
-Last updated: 2026-09-08 (PostgreSQL configuration-key regression fixed in source; uncommitted and not deployed)
+Last updated: 2026-09-08 (PostgreSQL configuration-key bind and readback regressions fixed in source; uncommitted and not deployed)
 
 Development-plan reference: `docs/DEVELOPMENT_PLAN.md` — v1 consumer boundary
 Detailed-plan reference: `docs/contracts/CMS_HAL_CHARGING_V1.md` (to be extended)
@@ -69,6 +69,11 @@ insert binds it. This prevents an explicit SQL `NULL` from violating the
 `NOT NULL` column introduced by migration `021`; it does not alter the
 database schema or any OCPP/CMS operation semantics.
 
+Implemented but uncommitted/source-only: PostgreSQL operation readback now
+uses pgx v5's database/sql-compatible array scanner for `configuration_keys`.
+This preserves the durable non-null empty-array representation through POST
+readback, duplicate lookup, and exact GET.
+
 ## Verification
 
 Focused configuration-key normalization and CMS HAL reconciliation package
@@ -80,6 +85,11 @@ on an explicitly selected disposable environment.
 
 Never redeliver an operation left ambiguous after physical dispatch. Exact CMS
 operation-ID lookup is the only reconciliation path.
+
+Known follow-up: current source has no recovery route for an operation that
+was persisted but could not be read before its initial claim. `PERSISTED`
+proves no delivery attempt; the state-gated claim is the safe fence, but no
+automatic recovery behavior is introduced by this readback fix.
 
 ## Completion
 

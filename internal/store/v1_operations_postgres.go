@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+
+	"github.com/jackc/pgx/v5/pgtype"
 )
 
 // ValidateV1ChargerOperationMapping protects the operation boundary from a
@@ -44,7 +46,7 @@ func (s *PostgresStore) CreateV1ChargerOperation(ctx context.Context, input V1Ch
 	if err != nil {
 		return nil, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO v1_charger_operations (id,cms_operation_id,trace_id,request_digest,cpo_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,kind,parameters,configuration_keys,correlation_id,state) VALUES ($1,$2,$3::uuid,$4,$5,$6,NULLIF($7,'')::uuid,$8,$9,$10,$11,$12,$13,'PERSISTED') ON CONFLICT (cms_operation_id) DO NOTHING`, id, input.CMSOperationID, input.TraceID, input.RequestDigest, input.CPOID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.Kind, parameters, v1ConfigurationKeysForPersistence(input.ConfigurationKeys), input.CorrelationID)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO v1_charger_operations (id,cms_operation_id,trace_id,request_digest,cpo_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,kind,parameters,configuration_keys,correlation_id,state) VALUES ($1,$2,$3::uuid,$4,$5,$6,NULLIF($7,'')::uuid,$8,$9,$10,$11,$12,$13,'PERSISTED') ON CONFLICT (cms_operation_id) DO NOTHING`, id, input.CMSOperationID, input.TraceID, input.RequestDigest, input.CPOID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.Kind, parameters, normalizeV1ConfigurationKeys(input.ConfigurationKeys), input.CorrelationID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -62,14 +64,19 @@ func (s *PostgresStore) CreateV1ChargerOperation(ctx context.Context, input V1Ch
 	return op, false, err
 }
 
-// v1ConfigurationKeysForPersistence preserves the protocol meaning of an
-// omitted key list: request every configuration key. PostgreSQL defaults do
-// not apply when an explicit nil argument is bound to configuration_keys.
-func v1ConfigurationKeysForPersistence(keys []string) []string {
+// normalizeV1ConfigurationKeys preserves the protocol meaning of an omitted
+// key list: request every configuration key. PostgreSQL defaults do not apply
+// when an explicit nil argument is bound to configuration_keys, and durable
+// reads must not surface an invalid nil representation.
+func normalizeV1ConfigurationKeys(keys []string) []string {
 	if keys == nil {
 		return []string{}
 	}
 	return keys
+}
+
+func v1ConfigurationKeysScanner(keys *[]string) sql.Scanner {
+	return pgtype.NewMap().SQLScanner(keys)
 }
 
 func (s *PostgresStore) GetV1ChargerOperation(ctx context.Context, id string) (*V1ChargerOperation, error) {
@@ -77,7 +84,8 @@ func (s *PostgresStore) GetV1ChargerOperation(ctx context.Context, id string) (*
 	var connector sql.NullString
 	var parameters []byte
 	var completed sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT id::text,cms_operation_id::text,trace_id::text,request_digest,cpo_id::text,cms_charger_id::text,cms_connector_id::text,charger_ocpp_identity,ocpp_connector_number,kind,parameters,configuration_keys,correlation_id,state,delivery_attempts,COALESCE(ocpp_result,''),COALESCE(error_category,''),created_at,updated_at,completed_at FROM v1_charger_operations WHERE cms_operation_id=$1`, id).Scan(&op.HALOperationID, &op.CMSOperationID, &op.TraceID, &op.RequestDigest, &op.CPOID, &op.CMSChargerID, &connector, &op.ChargerOCPPIdentity, &op.OCPPConnectorNumber, &op.Kind, &parameters, &op.ConfigurationKeys, &op.CorrelationID, &op.State, &op.DeliveryAttempts, &op.OCPPResult, &op.ErrorCategory, &op.CreatedAt, &op.UpdatedAt, &completed)
+	var configurationKeys []string
+	err := s.db.QueryRowContext(ctx, `SELECT id::text,cms_operation_id::text,trace_id::text,request_digest,cpo_id::text,cms_charger_id::text,cms_connector_id::text,charger_ocpp_identity,ocpp_connector_number,kind,parameters,configuration_keys,correlation_id,state,delivery_attempts,COALESCE(ocpp_result,''),COALESCE(error_category,''),created_at,updated_at,completed_at FROM v1_charger_operations WHERE cms_operation_id=$1`, id).Scan(&op.HALOperationID, &op.CMSOperationID, &op.TraceID, &op.RequestDigest, &op.CPOID, &op.CMSChargerID, &connector, &op.ChargerOCPPIdentity, &op.OCPPConnectorNumber, &op.Kind, &parameters, v1ConfigurationKeysScanner(&configurationKeys), &op.CorrelationID, &op.State, &op.DeliveryAttempts, &op.OCPPResult, &op.ErrorCategory, &op.CreatedAt, &op.UpdatedAt, &completed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrV1OperationNotFound
 	}
@@ -85,6 +93,7 @@ func (s *PostgresStore) GetV1ChargerOperation(ctx context.Context, id string) (*
 		return nil, err
 	}
 	op.CMSConnectorID = connector.String
+	op.ConfigurationKeys = normalizeV1ConfigurationKeys(configurationKeys)
 	if err := json.Unmarshal(parameters, &op.Parameters); err != nil {
 		return nil, err
 	}

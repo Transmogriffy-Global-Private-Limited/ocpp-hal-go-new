@@ -1,5 +1,20 @@
 # AI-assisted changelog
 
+## 2026-09-08 - Decode charger-operation configuration-key arrays with pgx
+
+- Corrected the PostgreSQL charger-operation read boundary: pgx v5 stdlib
+  returns a PostgreSQL array driver value that cannot be scanned directly into
+  `*[]string`. The operation store now uses pgx's `pgtype.Map` SQL scanner and
+  normalizes the successful durable read to a non-nil empty slice when no keys
+  were selected.
+- Added a DB-free regression over the production scanner for empty, one-key,
+  and two-key PostgreSQL text arrays. The existing disposable-PostgreSQL test
+  continues to cover create followed by immediate operation readback.
+
+Verification: DB-free store coverage passes. PostgreSQL integration remains
+skipped without `TEST_DATABASE_URL`; no database, migration, deployment,
+restart, commit, or push occurred.
+
 ## 2026-09-08 - Normalize nullable charger-operation configuration keys for PostgreSQL
 
 - Corrected the v1 charger-operation PostgreSQL insert boundary: an omitted
