@@ -8,10 +8,12 @@ import (
 	"time"
 
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
+	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
 )
 
 type v1ChargerOperationRequest struct {
 	CMSOperationID      string            `json:"cms_operation_id"`
+	TraceID             string            `json:"trace_id"`
 	CPOID               string            `json:"cpo_id"`
 	CMSChargerID        string            `json:"cms_charger_id"`
 	CMSConnectorID      string            `json:"cms_connector_id,omitempty"`
@@ -19,6 +21,7 @@ type v1ChargerOperationRequest struct {
 	OCPPConnectorNumber int               `json:"ocpp_connector_number"`
 	Kind                string            `json:"kind"`
 	Parameters          map[string]string `json:"parameters"`
+	ConfigurationKeys   []string          `json:"configuration_keys,omitempty"`
 }
 
 type v1ConfigurationReadRequest struct {
@@ -39,7 +42,7 @@ var v1TriggerMessageAllowlist = map[string]bool{
 }
 
 func validV1ChargerOperation(request v1ChargerOperationRequest) bool {
-	if !validUUID(request.CMSOperationID) || !validUUID(request.CPOID) || !validUUID(request.CMSChargerID) || strings.TrimSpace(request.ChargerOCPPIdentity) == "" || len(request.ChargerOCPPIdentity) > 255 || request.OCPPConnectorNumber < 0 {
+	if !validUUID(request.CMSOperationID) || !validUUID(request.TraceID) || !validUUID(request.CPOID) || !validUUID(request.CMSChargerID) || strings.TrimSpace(request.ChargerOCPPIdentity) == "" || len(request.ChargerOCPPIdentity) > 255 || request.OCPPConnectorNumber < 0 {
 		return false
 	}
 	if request.OCPPConnectorNumber == 0 && request.CMSConnectorID != "" {
@@ -61,6 +64,16 @@ func validV1ChargerOperation(request v1ChargerOperationRequest) bool {
 		return request.OCPPConnectorNumber == 0 && validV1ConfigurationChange(request.Parameters)
 	case "TRIGGER_MESSAGE":
 		return v1TriggerMessageAllowlist[request.Parameters["requested_message"]] && len(request.Parameters) == 1
+	case "GET_CONFIGURATION":
+		if request.OCPPConnectorNumber != 0 || len(request.Parameters) != 0 || len(request.ConfigurationKeys) > 64 {
+			return false
+		}
+		for _, key := range request.ConfigurationKeys {
+			if !validV1ConfigurationKey(key) {
+				return false
+			}
+		}
+		return true
 	default:
 		return false
 	}
@@ -138,20 +151,27 @@ func (s *Server) v1ChargerOperations(w http.ResponseWriter, r *http.Request) {
 		s.writeV1StoreError(w, err)
 		return
 	}
-	op, duplicate, err := s.v1Store.CreateV1ChargerOperation(r.Context(), store.V1ChargerOperationInput{CMSOperationID: request.CMSOperationID, RequestDigest: digestJSON(request, idempotency), CPOID: request.CPOID, CMSChargerID: request.CMSChargerID, CMSConnectorID: request.CMSConnectorID, ChargerOCPPIdentity: request.ChargerOCPPIdentity, OCPPConnectorNumber: request.OCPPConnectorNumber, Kind: request.Kind, Parameters: request.Parameters, CorrelationID: correlation})
+	op, duplicate, err := s.v1Store.CreateV1ChargerOperation(r.Context(), store.V1ChargerOperationInput{CMSOperationID: request.CMSOperationID, TraceID: request.TraceID, RequestDigest: digestJSON(request, idempotency), CPOID: request.CPOID, CMSChargerID: request.CMSChargerID, CMSConnectorID: request.CMSConnectorID, ChargerOCPPIdentity: request.ChargerOCPPIdentity, OCPPConnectorNumber: request.OCPPConnectorNumber, Kind: request.Kind, Parameters: request.Parameters, ConfigurationKeys: request.ConfigurationKeys, CorrelationID: correlation})
 	if err != nil {
 		s.writeV1StoreError(w, err)
 		return
 	}
+	var configuration *core.GetConfigurationConfirmation
 	if !duplicate {
+		if traces, ok := s.v1Store.(store.V1TraceStore); ok {
+			// Trace failure is diagnostic-only and cannot change operation delivery semantics.
+			_, _ = traces.EnsureV1Trace(r.Context(), store.V1Trace{TraceID: request.TraceID, CPOID: request.CPOID, CMSChargerOperationID: request.CMSOperationID, HALChargerOperationID: op.HALOperationID, ChargerOCPPIdentity: request.ChargerOCPPIdentity, OCPPConnectorNumber: request.OCPPConnectorNumber})
+		}
 		if _, claimed, claimErr := s.v1Store.ClaimV1ChargerOperationDelivery(r.Context(), request.CMSOperationID); claimErr != nil {
 			s.writeV1StoreError(w, claimErr)
 			return
 		} else if claimed {
-			result, dispatchErr := s.dispatchV1ChargerOperation(r.Context(), request)
+			result, dispatchConfiguration, dispatchErr := s.dispatchV1ChargerOperation(r.Context(), request, op)
+			configuration = dispatchConfiguration
 			state, category := "OCPP_CONFIRMED", ""
 			if dispatchErr != nil {
 				state, category, result = "RECONCILIATION_REQUIRED", "delivery_ambiguous", ""
+				configuration = nil
 			}
 			op, err = s.v1Store.MarkV1ChargerOperationDelivery(r.Context(), request.CMSOperationID, state, result, category)
 			if err != nil {
@@ -160,7 +180,11 @@ func (s *Server) v1ChargerOperations(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusAccepted, map[string]any{"operation": v1ChargerOperationView(op), "correlation_id": correlation, "duplicate": duplicate})
+	response := map[string]any{"operation": v1ChargerOperationView(op), "correlation_id": correlation, "duplicate": duplicate}
+	if configuration != nil {
+		response["configuration"] = v1SafeConfigurationView(configuration)
+	}
+	writeJSON(w, http.StatusAccepted, response)
 }
 
 func (s *Server) v1ChargerOperation(w http.ResponseWriter, r *http.Request) {
@@ -177,25 +201,47 @@ func (s *Server) v1ChargerOperation(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"operation": v1ChargerOperationView(op)})
 }
 
-func (s *Server) dispatchV1ChargerOperation(ctx context.Context, request v1ChargerOperationRequest) (string, error) {
+func (s *Server) dispatchV1ChargerOperation(ctx context.Context, request v1ChargerOperationRequest, operation *store.V1ChargerOperation) (string, *core.GetConfigurationConfirmation, error) {
 	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
 	defer cancel()
+	if operation != nil {
+		return s.hal.DispatchChargerOperation(ctx, operation)
+	}
 	switch request.Kind {
 	case "RESET":
-		return s.hal.Reset(ctx, request.ChargerOCPPIdentity, strings.ToLower(request.Parameters["type"]))
+		result, err := s.hal.Reset(ctx, request.ChargerOCPPIdentity, strings.ToLower(request.Parameters["type"]))
+		return result, nil, err
 	case "UNLOCK_CONNECTOR":
-		return s.hal.UnlockConnector(ctx, request.ChargerOCPPIdentity, request.OCPPConnectorNumber)
+		result, err := s.hal.UnlockConnector(ctx, request.ChargerOCPPIdentity, request.OCPPConnectorNumber)
+		return result, nil, err
 	case "CHANGE_AVAILABILITY":
-		return s.hal.ChangeAvailability(ctx, request.ChargerOCPPIdentity, request.OCPPConnectorNumber, strings.ToLower(request.Parameters["type"]))
+		result, err := s.hal.ChangeAvailability(ctx, request.ChargerOCPPIdentity, request.OCPPConnectorNumber, strings.ToLower(request.Parameters["type"]))
+		return result, nil, err
 	case "CLEAR_CACHE":
-		return s.hal.ClearCache(ctx, request.ChargerOCPPIdentity)
+		result, err := s.hal.ClearCache(ctx, request.ChargerOCPPIdentity)
+		return result, nil, err
 	case "CHANGE_CONFIGURATION":
-		return s.hal.ChangeConfiguration(ctx, request.ChargerOCPPIdentity, request.Parameters["key"], request.Parameters["value"])
+		result, err := s.hal.ChangeConfiguration(ctx, request.ChargerOCPPIdentity, request.Parameters["key"], request.Parameters["value"])
+		return result, nil, err
 	case "TRIGGER_MESSAGE":
-		return s.hal.TriggerMessage(ctx, request.ChargerOCPPIdentity, request.Parameters["requested_message"], request.OCPPConnectorNumber)
+		result, err := s.hal.TriggerMessage(ctx, request.ChargerOCPPIdentity, request.Parameters["requested_message"], request.OCPPConnectorNumber)
+		return result, nil, err
 	default:
-		return "", errors.New("unsupported charger operation")
+		return "", nil, errors.New("unsupported charger operation")
 	}
+}
+
+func v1SafeConfigurationView(confirmation *core.GetConfigurationConfirmation) map[string]any {
+	items := make([]map[string]any, 0, len(confirmation.ConfigurationKey))
+	for _, item := range confirmation.ConfigurationKey {
+		redacted := v1SensitiveConfigurationKey(item.Key)
+		view := map[string]any{"key": item.Key, "readonly": item.Readonly, "redacted": redacted}
+		if !redacted && item.Value != nil {
+			view["value"] = *item.Value
+		}
+		items = append(items, view)
+	}
+	return map[string]any{"configuration_keys": items, "unknown_keys": confirmation.UnknownKey}
 }
 
 func (s *Server) v1ConfigurationRead(w http.ResponseWriter, r *http.Request) {

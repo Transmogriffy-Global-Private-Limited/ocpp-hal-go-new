@@ -1,5 +1,20 @@
 # AI-assisted changelog
 
+## 2026-09-08 - Add source-only per-operation OCPP evidence
+
+- Added operation-root identities and source-only migration `021`, a custom
+  OCPP dispatcher/write observer, strict action-specific trace sanitation, and
+  GET_CONFIGURATION evidence/response support without altering the legacy
+  configuration endpoint.
+- CALL evidence is written after the pinned library's websocket `Write` call
+  returns nil; this establishes only library write-boundary acceptance, not
+  remote socket consumption or physical charger effect.
+
+Verification: focused trace-sanitizer test and no-test-run compile checks for
+store, OCPP, and v1 HTTP packages pass. No migration, database, deployment,
+commit, or push occurred. PostgreSQL/CMS/physical charger verification remains
+unrun without an explicitly selected disposable environment.
+
 ## 2026-09-04 - Add source-only typed CPO charger-operation boundary
 
 - Added separate durable v1 operation persistence, exact CMS-operation lookup,

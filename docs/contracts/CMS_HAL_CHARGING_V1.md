@@ -935,8 +935,9 @@ older generation before later configuration writes.
 
 The authenticated CMS-to-HAL v1 boundary now has a separate typed charger
 operation ledger. It does not share `v1_remote_commands`, because Reset,
-UnlockConnector, ChangeAvailability, ClearCache, ChangeConfiguration, and
-allowlisted TriggerMessage are not charging/session commands.
+UnlockConnector, ChangeAvailability, ClearCache, ChangeConfiguration,
+allowlisted TriggerMessage, and audited GetConfiguration are not
+charging/session commands.
 
 CMS persists one `cms_operation_id` before provider I/O and sends that same ID
 as `Idempotency-Key` to `POST /v1/charger-operations`. HAL validates the
@@ -945,6 +946,17 @@ operation row, records `DELIVERY_ATTEMPTED` before OCPP dispatch, and records
 either `OCPP_CONFIRMED` with the exact OCPP result or
 `RECONCILIATION_REQUIRED` for ambiguous delivery. It never replays the latter.
 `GET /v1/charger-operations?cms_operation_id=...` is exact recovery only.
+Every operation carries a stable CMS trace ID. HAL creates/extends the existing
+trace root with both operation IDs and records only action-specific safe OCPP
+CALL, CALLRESULT, or CALLERROR evidence after the pinned library accepts the
+websocket write. Result pairing uses only the OCPP unique ID; this is protocol
+evidence, not a claim that the charger later effected a physical change.
+
+For audited `GET_CONFIGURATION`, the immediate operation response may include
+a separately redacted configuration projection when the synchronous OCPP
+confirmation arrives. Configuration values remain transient: operation history
+stores only requested key names, and ChangeConfiguration values never enter a
+trace, operation record, or log.
 
 `POST /v1/charger-configurations/read` accepts a mapped charger and an
 optional bounded key list. HAL redacts sensitive values, preserves readonly

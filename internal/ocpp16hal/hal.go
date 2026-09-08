@@ -26,6 +26,7 @@ type HAL struct {
 	connections                             *connectionTracker
 	logger                                  *slog.Logger
 	v1Store                                 store.V1Store
+	operationObserver                       *operationObserver
 	heartbeatIntervalSeconds                int
 	configurationMeterSampleIntervalSeconds int
 	configurationReconcileTimeout           time.Duration
@@ -45,12 +46,15 @@ type pendingRuntimeProjection struct {
 }
 
 func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *HAL {
+	traces, _ := v1Store.(store.V1TraceStore)
+	observer := newOperationObserver(traces)
 	h := &HAL{
-		cs:                                      ocpp16.NewCentralSystem(nil, nil),
+		cs:                                      newObservedCentralSystem(observer),
 		registry:                                registry,
 		connections:                             newConnectionTracker(),
 		logger:                                  logger,
 		v1Store:                                 v1Store,
+		operationObserver:                       observer,
 		heartbeatIntervalSeconds:                defaultHeartbeatIntervalSeconds,
 		configurationMeterSampleIntervalSeconds: defaultMeterValueSampleIntervalSeconds,
 		configurationReconcileTimeout:           20 * time.Second,
@@ -123,6 +127,7 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 		h.registry.MarkOffline(chargePointID)
 		h.persistRuntimeProjection(context.Background(), pendingRuntimeProjection{identity: chargePointID, generation: int64(current.Generation), online: false, observedAt: time.Now().UTC()})
 		h.forgetWireIdentity(wireIdentity)
+		h.operationObserver.forgetCharger(wireIdentity)
 	})
 
 	h.cs.SetCoreHandler(h)

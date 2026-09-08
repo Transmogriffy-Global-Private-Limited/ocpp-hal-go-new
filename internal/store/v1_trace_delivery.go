@@ -38,6 +38,8 @@ func (delivery V1TraceDelivery) Envelope() map[string]any {
 		"cms_start_intent_id":      nullableString(delivery.Trace.CMSStartIntentID),
 		"cms_charging_session_id":  nullableString(delivery.Trace.CMSChargingSessionID),
 		"cms_command_id":           nullableString(delivery.Trace.CMSCommandID),
+		"cms_charger_operation_id": nullableString(delivery.Trace.CMSChargerOperationID),
+		"hal_charger_operation_id": nullableString(delivery.Trace.HALChargerOperationID),
 		"hal_transaction_id":       nullableString(delivery.Trace.HALTransactionID),
 		"ocpp_transaction_id":      delivery.Trace.OCPPTransactionID,
 		"charger_ocpp_identity":    delivery.Trace.ChargerOCPPIdentity,

@@ -9,11 +9,13 @@ import (
 	"time"
 )
 
+const traceSelect = `SELECT trace_id::text,cpo_id::text,COALESCE(cms_start_intent_id::text,''),COALESCE(cms_charging_session_id::text,''),COALESCE(cms_command_id::text,''),COALESCE(cms_charger_operation_id::text,''),COALESCE(hal_charger_operation_id::text,''),COALESCE(hal_transaction_id::text,''),ocpp_transaction_id,charger_ocpp_identity,ocpp_connector_number,created_at FROM v1_charging_traces`
+
 func (s *PostgresStore) EnsureV1Trace(ctx context.Context, trace V1Trace) (*V1Trace, error) {
 	if trace.CreatedAt.IsZero() {
 		trace.CreatedAt = time.Now().UTC()
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO v1_charging_traces (trace_id,cpo_id,cms_start_intent_id,cms_charging_session_id,cms_command_id,hal_transaction_id,ocpp_transaction_id,charger_ocpp_identity,ocpp_connector_number,created_at) VALUES ($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,NULLIF($5,'')::uuid,NULLIF($6,'')::uuid,$7,$8,$9,$10) ON CONFLICT (trace_id) DO NOTHING`, trace.TraceID, trace.CPOID, trace.CMSStartIntentID, trace.CMSChargingSessionID, trace.CMSCommandID, trace.HALTransactionID, trace.OCPPTransactionID, trace.ChargerOCPPIdentity, trace.OCPPConnectorNumber, trace.CreatedAt)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO v1_charging_traces (trace_id,cpo_id,cms_start_intent_id,cms_charging_session_id,cms_command_id,cms_charger_operation_id,hal_charger_operation_id,hal_transaction_id,ocpp_transaction_id,charger_ocpp_identity,ocpp_connector_number,created_at) VALUES ($1,$2,NULLIF($3,'')::uuid,NULLIF($4,'')::uuid,NULLIF($5,'')::uuid,NULLIF($6,'')::uuid,NULLIF($7,'')::uuid,NULLIF($8,'')::uuid,$9,$10,$11,$12) ON CONFLICT (trace_id) DO NOTHING`, trace.TraceID, trace.CPOID, trace.CMSStartIntentID, trace.CMSChargingSessionID, trace.CMSCommandID, trace.CMSChargerOperationID, trace.HALChargerOperationID, trace.HALTransactionID, trace.OCPPTransactionID, trace.ChargerOCPPIdentity, trace.OCPPConnectorNumber, trace.CreatedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -44,7 +46,7 @@ func (s *PostgresStore) EnsureV1TraceForTransaction(ctx context.Context, transac
 		return nil, err
 	}
 	if transaction.CMSStartIntentID != "" {
-		trace, err = s.scanV1Trace(s.db.QueryRowContext(ctx, `SELECT trace_id::text,cpo_id::text,COALESCE(cms_start_intent_id::text,''),COALESCE(cms_charging_session_id::text,''),COALESCE(cms_command_id::text,''),COALESCE(hal_transaction_id::text,''),ocpp_transaction_id,charger_ocpp_identity,ocpp_connector_number,created_at FROM v1_charging_traces WHERE cms_start_intent_id=$1::uuid`, transaction.CMSStartIntentID))
+		trace, err = s.scanV1Trace(s.db.QueryRowContext(ctx, traceSelect+` WHERE cms_start_intent_id=$1::uuid`, transaction.CMSStartIntentID))
 		if err == nil {
 			if err := s.BindV1TraceTransaction(ctx, trace.TraceID, transaction); err != nil {
 				return nil, err
@@ -64,14 +66,14 @@ func (s *PostgresStore) EnsureV1TraceForTransaction(ctx context.Context, transac
 }
 
 func (s *PostgresStore) FindV1TraceByTransaction(ctx context.Context, transactionID string) (*V1Trace, error) {
-	return s.scanV1Trace(s.db.QueryRowContext(ctx, `SELECT trace_id::text,cpo_id::text,COALESCE(cms_start_intent_id::text,''),COALESCE(cms_charging_session_id::text,''),COALESCE(cms_command_id::text,''),COALESCE(hal_transaction_id::text,''),ocpp_transaction_id,charger_ocpp_identity,ocpp_connector_number,created_at FROM v1_charging_traces WHERE hal_transaction_id=$1::uuid`, transactionID))
+	return s.scanV1Trace(s.db.QueryRowContext(ctx, traceSelect+` WHERE hal_transaction_id=$1::uuid`, transactionID))
 }
 
 // Correlation is connector-aware. It prefers an active transaction, then a
 // most-recent pending CMS start. This deliberately never uses charger-only
 // mutable state.
 func (s *PostgresStore) FindV1TraceForConnector(ctx context.Context, identity string, connector int) (*V1Trace, error) {
-	return s.scanV1Trace(s.db.QueryRowContext(ctx, `SELECT t.trace_id::text,t.cpo_id::text,COALESCE(t.cms_start_intent_id::text,''),COALESCE(t.cms_charging_session_id::text,''),COALESCE(t.cms_command_id::text,''),COALESCE(t.hal_transaction_id::text,''),t.ocpp_transaction_id,t.charger_ocpp_identity,t.ocpp_connector_number,t.created_at FROM v1_charging_traces t LEFT JOIN v1_transactions x ON x.hal_transaction_id=t.hal_transaction_id WHERE t.charger_ocpp_identity=$1 AND t.ocpp_connector_number=$2 AND (t.hal_transaction_id IS NULL OR x.completed_at IS NULL OR x.completed_at >= NOW() - INTERVAL '15 minutes') ORDER BY CASE WHEN x.completed_at IS NULL AND x.hal_transaction_id IS NOT NULL THEN 0 WHEN t.hal_transaction_id IS NULL THEN 1 ELSE 2 END,t.created_at DESC LIMIT 1`, identity, connector))
+	return s.scanV1Trace(s.db.QueryRowContext(ctx, `SELECT t.trace_id::text,t.cpo_id::text,COALESCE(t.cms_start_intent_id::text,''),COALESCE(t.cms_charging_session_id::text,''),COALESCE(t.cms_command_id::text,''),COALESCE(t.cms_charger_operation_id::text,''),COALESCE(t.hal_charger_operation_id::text,''),COALESCE(t.hal_transaction_id::text,''),t.ocpp_transaction_id,t.charger_ocpp_identity,t.ocpp_connector_number,t.created_at FROM v1_charging_traces t LEFT JOIN v1_transactions x ON x.hal_transaction_id=t.hal_transaction_id WHERE t.charger_ocpp_identity=$1 AND t.ocpp_connector_number=$2 AND (t.hal_transaction_id IS NULL OR x.completed_at IS NULL OR x.completed_at >= NOW() - INTERVAL '15 minutes') ORDER BY CASE WHEN x.completed_at IS NULL AND x.hal_transaction_id IS NOT NULL THEN 0 WHEN t.hal_transaction_id IS NULL THEN 1 ELSE 2 END,t.created_at DESC LIMIT 1`, identity, connector))
 }
 
 func (s *PostgresStore) AppendV1TraceEvent(ctx context.Context, traceID string, input V1TraceEventInput) error {
@@ -100,7 +102,7 @@ func (s *PostgresStore) AppendV1TraceEvent(ctx context.Context, traceID string, 
 	defer tx.Rollback()
 	trace := &V1Trace{}
 	var ocpp sql.NullInt64
-	if err := tx.QueryRowContext(ctx, `SELECT trace_id::text,cpo_id::text,COALESCE(cms_start_intent_id::text,''),COALESCE(cms_charging_session_id::text,''),COALESCE(cms_command_id::text,''),COALESCE(hal_transaction_id::text,''),ocpp_transaction_id,charger_ocpp_identity,ocpp_connector_number,created_at FROM v1_charging_traces WHERE trace_id=$1::uuid FOR SHARE`, traceID).Scan(&trace.TraceID, &trace.CPOID, &trace.CMSStartIntentID, &trace.CMSChargingSessionID, &trace.CMSCommandID, &trace.HALTransactionID, &ocpp, &trace.ChargerOCPPIdentity, &trace.OCPPConnectorNumber, &trace.CreatedAt); err != nil {
+	if err := tx.QueryRowContext(ctx, traceSelect+` WHERE trace_id=$1::uuid FOR SHARE`, traceID).Scan(&trace.TraceID, &trace.CPOID, &trace.CMSStartIntentID, &trace.CMSChargingSessionID, &trace.CMSCommandID, &trace.CMSChargerOperationID, &trace.HALChargerOperationID, &trace.HALTransactionID, &ocpp, &trace.ChargerOCPPIdentity, &trace.OCPPConnectorNumber, &trace.CreatedAt); err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return ErrV1TransactionNotFound
 		}
@@ -133,12 +135,12 @@ func (s *PostgresStore) AppendV1TraceEvent(ctx context.Context, traceID string, 
 }
 
 func (s *PostgresStore) GetV1Trace(ctx context.Context, traceID string) (*V1Trace, error) {
-	return s.scanV1Trace(s.db.QueryRowContext(ctx, `SELECT trace_id::text,cpo_id::text,COALESCE(cms_start_intent_id::text,''),COALESCE(cms_charging_session_id::text,''),COALESCE(cms_command_id::text,''),COALESCE(hal_transaction_id::text,''),ocpp_transaction_id,charger_ocpp_identity,ocpp_connector_number,created_at FROM v1_charging_traces WHERE trace_id=$1::uuid`, traceID))
+	return s.scanV1Trace(s.db.QueryRowContext(ctx, traceSelect+` WHERE trace_id=$1::uuid`, traceID))
 }
 func (s *PostgresStore) scanV1Trace(row *sql.Row) (*V1Trace, error) {
 	trace := &V1Trace{}
 	var ocpp sql.NullInt64
-	err := row.Scan(&trace.TraceID, &trace.CPOID, &trace.CMSStartIntentID, &trace.CMSChargingSessionID, &trace.CMSCommandID, &trace.HALTransactionID, &ocpp, &trace.ChargerOCPPIdentity, &trace.OCPPConnectorNumber, &trace.CreatedAt)
+	err := row.Scan(&trace.TraceID, &trace.CPOID, &trace.CMSStartIntentID, &trace.CMSChargingSessionID, &trace.CMSCommandID, &trace.CMSChargerOperationID, &trace.HALChargerOperationID, &trace.HALTransactionID, &ocpp, &trace.ChargerOCPPIdentity, &trace.OCPPConnectorNumber, &trace.CreatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrV1TransactionNotFound
 	}

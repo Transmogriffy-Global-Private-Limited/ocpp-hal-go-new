@@ -44,7 +44,7 @@ func (s *PostgresStore) CreateV1ChargerOperation(ctx context.Context, input V1Ch
 	if err != nil {
 		return nil, false, err
 	}
-	result, err := s.db.ExecContext(ctx, `INSERT INTO v1_charger_operations (id,cms_operation_id,request_digest,cpo_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,kind,parameters,correlation_id,state) VALUES ($1,$2,$3,$4,$5,NULLIF($6,'')::uuid,$7,$8,$9,$10,$11,'PERSISTED') ON CONFLICT (cms_operation_id) DO NOTHING`, id, input.CMSOperationID, input.RequestDigest, input.CPOID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.Kind, parameters, input.CorrelationID)
+	result, err := s.db.ExecContext(ctx, `INSERT INTO v1_charger_operations (id,cms_operation_id,trace_id,request_digest,cpo_id,cms_charger_id,cms_connector_id,charger_ocpp_identity,ocpp_connector_number,kind,parameters,configuration_keys,correlation_id,state) VALUES ($1,$2,$3::uuid,$4,$5,$6,NULLIF($7,'')::uuid,$8,$9,$10,$11,$12,$13,'PERSISTED') ON CONFLICT (cms_operation_id) DO NOTHING`, id, input.CMSOperationID, input.TraceID, input.RequestDigest, input.CPOID, input.CMSChargerID, input.CMSConnectorID, input.ChargerOCPPIdentity, input.OCPPConnectorNumber, input.Kind, parameters, input.ConfigurationKeys, input.CorrelationID)
 	if err != nil {
 		return nil, false, err
 	}
@@ -67,7 +67,7 @@ func (s *PostgresStore) GetV1ChargerOperation(ctx context.Context, id string) (*
 	var connector sql.NullString
 	var parameters []byte
 	var completed sql.NullTime
-	err := s.db.QueryRowContext(ctx, `SELECT id::text,cms_operation_id::text,request_digest,cpo_id::text,cms_charger_id::text,cms_connector_id::text,charger_ocpp_identity,ocpp_connector_number,kind,parameters,correlation_id,state,delivery_attempts,COALESCE(ocpp_result,''),COALESCE(error_category,''),created_at,updated_at,completed_at FROM v1_charger_operations WHERE cms_operation_id=$1`, id).Scan(&op.HALOperationID, &op.CMSOperationID, &op.RequestDigest, &op.CPOID, &op.CMSChargerID, &connector, &op.ChargerOCPPIdentity, &op.OCPPConnectorNumber, &op.Kind, &parameters, &op.CorrelationID, &op.State, &op.DeliveryAttempts, &op.OCPPResult, &op.ErrorCategory, &op.CreatedAt, &op.UpdatedAt, &completed)
+	err := s.db.QueryRowContext(ctx, `SELECT id::text,cms_operation_id::text,trace_id::text,request_digest,cpo_id::text,cms_charger_id::text,cms_connector_id::text,charger_ocpp_identity,ocpp_connector_number,kind,parameters,configuration_keys,correlation_id,state,delivery_attempts,COALESCE(ocpp_result,''),COALESCE(error_category,''),created_at,updated_at,completed_at FROM v1_charger_operations WHERE cms_operation_id=$1`, id).Scan(&op.HALOperationID, &op.CMSOperationID, &op.TraceID, &op.RequestDigest, &op.CPOID, &op.CMSChargerID, &connector, &op.ChargerOCPPIdentity, &op.OCPPConnectorNumber, &op.Kind, &parameters, &op.ConfigurationKeys, &op.CorrelationID, &op.State, &op.DeliveryAttempts, &op.OCPPResult, &op.ErrorCategory, &op.CreatedAt, &op.UpdatedAt, &completed)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrV1OperationNotFound
 	}

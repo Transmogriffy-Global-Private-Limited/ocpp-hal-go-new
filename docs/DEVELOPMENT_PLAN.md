@@ -18,6 +18,13 @@ Current CPO charger-operations slice:
   a delivery left ambiguous after physical dispatch; migration 020 is
   source-only and not applied.
 
+Current per-operation protocol-evidence slice:
+
+- binds each durable CPO operation to a CMS-generated trace UUID, records only
+  safe OCPP CALL/CALLRESULT/CALLERROR evidence through the existing trace
+  outbox, and keeps OCPP acknowledgement distinct from physical-effect truth;
+  migration 021 is source-only and not applied.
+
 Current trace/migration-ownership slice:
 
 - source implements a connector-aware, durable diagnostic transaction trace

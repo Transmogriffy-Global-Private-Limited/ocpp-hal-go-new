@@ -31,6 +31,7 @@ var (
 // charger control has no customer, wallet, or transaction lifecycle meaning.
 type V1ChargerOperationInput struct {
 	CMSOperationID      string
+	TraceID             string
 	RequestDigest       string
 	CPOID               string
 	CMSChargerID        string
@@ -39,12 +40,14 @@ type V1ChargerOperationInput struct {
 	OCPPConnectorNumber int
 	Kind                string
 	Parameters          map[string]string
+	ConfigurationKeys   []string
 	CorrelationID       string
 }
 
 type V1ChargerOperation struct {
 	HALOperationID      string
 	CMSOperationID      string
+	TraceID             string
 	RequestDigest       string
 	CPOID               string
 	CMSChargerID        string
@@ -53,6 +56,7 @@ type V1ChargerOperation struct {
 	OCPPConnectorNumber int
 	Kind                string
 	Parameters          map[string]string
+	ConfigurationKeys   []string
 	CorrelationID       string
 	State               string
 	DeliveryAttempts    int

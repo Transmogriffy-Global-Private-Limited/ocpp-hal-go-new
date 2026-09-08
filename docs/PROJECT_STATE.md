@@ -1,5 +1,23 @@
 # Project State
 
+## 2026-09-08 - Per-operation OCPP protocol-evidence source slice
+
+- Uncommitted source binds each CMS-owned CPO operation to its trace root and
+  writes action-specific, bounded OCPP CALL/CALLRESULT/CALLERROR evidence only
+  after the pinned OCPP library accepts the websocket write. Pairing is solely
+  by OCPP unique ID; trace rows remain diagnostic and never assert a later
+  physical charger effect.
+- `GET_CONFIGURATION` now uses the same audited operation path. Its immediate
+  v1 response can include a safe, redacted configuration projection only when
+  the synchronous OCPP confirmation arrives. ChangeConfiguration values cannot
+  cross the final trace persistence boundary.
+- Migration `021_add_charger_operation_trace_evidence` is source-only. No
+  migration, database mutation, deployment, restart, commit, or push occurred.
+
+Focused trace-sanitizer tests and compile checks pass. PostgreSQL lifecycle,
+CMS delivery, websocket write behaviour, and a physical mapped-charge-point
+check remain unrun because no disposable environment or charger was selected.
+
 ## 2026-09-04 - CPO charger-operation source vertical, locally verified and not deployed
 
 - The uncommitted new-HAL source adds a dedicated `v1_charger_operations`

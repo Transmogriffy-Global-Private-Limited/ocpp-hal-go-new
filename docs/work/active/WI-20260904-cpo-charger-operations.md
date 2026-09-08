@@ -4,7 +4,7 @@ Status: In Progress
 Owner: Codex
 Collaborators: Anubhab Dey (CMS/HAL boundary owner)
 Started: 2026-09-04
-Last updated: 2026-09-04 (source implementation complete; environment validation pending)
+Last updated: 2026-09-08 (per-operation protocol-evidence source slice implemented; verification and source review in progress; uncommitted and not deployed)
 
 Development-plan reference: `docs/DEVELOPMENT_PLAN.md` — v1 consumer boundary
 Detailed-plan reference: `docs/contracts/CMS_HAL_CHARGING_V1.md` (to be extended)
@@ -20,6 +20,8 @@ the CMS CPO control vertical without altering charging Start/Stop semantics.
 - Dedicated durable operation identity/delivery state, exact lookup, mapping
   validation, typed OCPP dispatch, guarded configuration reads/mutations, and
   bounded TriggerMessage allowlist.
+- Stable trace roots for durable operations plus narrow CALL/CALLRESULT/
+  CALLERROR evidence tied by the library-generated OCPP unique ID.
 
 ## Non-goals
 
@@ -45,7 +47,8 @@ confirmation, and later charger evidence are deliberately distinct.
 
 ## Data and migration impact
 
-Adds a source-only forward migration for `v1_charger_operations`.
+Adds source-only forward migrations for `v1_charger_operations` and operation
+trace-root evidence (`021`); neither is applied.
 
 ## Current state
 
@@ -54,11 +57,17 @@ scoped mapping validation, typed OCPP dispatch, guarded configuration reads and
 changes, and an allowlisted TriggerMessage. Existing remote-command records
 remain Start/Stop-only.
 
+Implemented but uncommitted/source-only: operation trace-root identities, a
+unique-ID-only OCPP observer, strict action-specific durable evidence
+sanitation, and audited GET_CONFIGURATION with an optional transient safe
+configuration response. The legacy configuration-read endpoint remains
+unmodified.
+
 ## Verification
 
-Memory-store idempotency/one-time-claim tests and focused v1 HTTP checks pass;
-repository vet and diff checks pass. PostgreSQL and hardware checks remain
-blocked on an explicitly selected disposable environment.
+Focused trace-sanitizer tests plus OCPP/store/v1 HTTP compile checks pass.
+PostgreSQL, CMS delivery, and hardware checks remain blocked on an explicitly
+selected disposable environment.
 
 ## Handoff
 

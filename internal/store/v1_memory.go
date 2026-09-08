@@ -41,7 +41,7 @@ func (s *V1MemoryStore) CreateV1ChargerOperation(_ context.Context, input V1Char
 		return nil, false, err
 	}
 	now := time.Now().UTC()
-	op := &V1ChargerOperation{HALOperationID: id, CMSOperationID: input.CMSOperationID, RequestDigest: input.RequestDigest, CPOID: input.CPOID, CMSChargerID: input.CMSChargerID, CMSConnectorID: input.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, Kind: input.Kind, Parameters: cloneStringMap(input.Parameters), CorrelationID: input.CorrelationID, State: "PERSISTED", CreatedAt: now, UpdatedAt: now}
+	op := &V1ChargerOperation{HALOperationID: id, CMSOperationID: input.CMSOperationID, TraceID: input.TraceID, RequestDigest: input.RequestDigest, CPOID: input.CPOID, CMSChargerID: input.CMSChargerID, CMSConnectorID: input.CMSConnectorID, ChargerOCPPIdentity: input.ChargerOCPPIdentity, OCPPConnectorNumber: input.OCPPConnectorNumber, Kind: input.Kind, Parameters: cloneStringMap(input.Parameters), ConfigurationKeys: append([]string(nil), input.ConfigurationKeys...), CorrelationID: input.CorrelationID, State: "PERSISTED", CreatedAt: now, UpdatedAt: now}
 	s.operations[input.CMSOperationID] = op
 	return cloneV1ChargerOperation(op), false, nil
 }
