@@ -51,6 +51,45 @@ func TestV1PostgresChargerOperationConfigurationKeys(t *testing.T) {
 	}
 }
 
+func TestV1PostgresTriggerMessageFollowOnWindowIndexesAndDurability(t *testing.T) {
+	dsn := os.Getenv("TEST_DATABASE_URL")
+	if dsn == "" {
+		t.Skip("TEST_DATABASE_URL is required for the disposable PostgreSQL TriggerMessage follow-on-window regression")
+	}
+	s, err := NewPostgresStore(config.Config{DatabaseURL: dsn})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"ix_v1_trigger_message_follow_on_match", "ix_v1_trigger_message_follow_on_due"} {
+		var present bool
+		if err := s.db.QueryRow(`SELECT to_regclass($1) IS NOT NULL`, name).Scan(&present); err != nil || !present {
+			t.Fatalf("index %s present=%t err=%v", name, present, err)
+		}
+	}
+	acceptedAt := time.Now().UTC().Add(-time.Minute)
+	traceID := NewUUIDString()
+	if _, err := s.EnsureV1Trace(context.Background(), V1Trace{TraceID: traceID, CPOID: NewUUIDString(), ChargerOCPPIdentity: "CP-WINDOW-" + traceID[:8], OCPPConnectorNumber: 1}); err != nil {
+		t.Fatal(err)
+	}
+	trace, err := s.GetV1Trace(context.Background(), traceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.OpenV1TriggerMessageFollowOnWindow(context.Background(), traceID, "Heartbeat", acceptedAt); err != nil {
+		t.Fatal(err)
+	}
+	if closed, err := s.CloseV1TriggerMessageFollowOnWindows(context.Background(), acceptedAt.Add(time.Minute), 1); err != nil || closed != 1 {
+		t.Fatalf("closed=%d err=%v", closed, err)
+	}
+	if matched, err := s.RecordV1TriggerMessageFollowOn(context.Background(), trace.ChargerOCPPIdentity, "Heartbeat", 0, acceptedAt.Add(time.Second)); err != nil || matched != 1 {
+		t.Fatalf("matched=%d err=%v", matched, err)
+	}
+	events, err := s.ListV1TraceEvents(context.Background(), traceID, time.Time{}, "", 10)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("events=%#v err=%v", events, err)
+	}
+}
+
 func TestV1PostgresStoreDurabilityAndRuntime(t *testing.T) {
 	dsn := os.Getenv("TEST_DATABASE_URL")
 	if dsn == "" {

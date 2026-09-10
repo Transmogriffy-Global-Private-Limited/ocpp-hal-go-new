@@ -35,3 +35,18 @@ func TestSanitizeV1TriggerMessageFollowOnRejectsUnsafePayload(t *testing.T) {
 		t.Fatalf("safe follow-on data=%#v", safe)
 	}
 }
+
+func TestSanitizeV1TriggerMessageFollowOnClosureRejectsUnsafePayload(t *testing.T) {
+	safe := sanitizeV1TraceData(map[string]any{
+		"follow_on_closed": true, "expected_message": "Heartbeat", "charger_ocpp_identity": "CP-1", "accepted_at": "2026-09-10T10:00:00Z", "id_tag": "must-not-persist",
+	})
+	if len(safe) != 0 {
+		t.Fatalf("unsafe follow-on closure reached trace persistence: %#v", safe)
+	}
+	safe = sanitizeV1TraceData(map[string]any{
+		"follow_on_closed": true, "expected_message": "StatusNotification", "charger_ocpp_identity": "CP-1", "accepted_at": "2026-09-10T10:00:00Z", "connector_number": 2,
+	})
+	if safe["connector_number"] != 2 || safe["accepted_at"] != "2026-09-10T10:00:00Z" || len(safe) != 4 {
+		t.Fatalf("safe follow-on closure=%#v", safe)
+	}
+}

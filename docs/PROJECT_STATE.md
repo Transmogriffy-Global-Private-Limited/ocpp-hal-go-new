@@ -1,22 +1,27 @@
 # Project State
 
-## 2026-09-10 - Accepted TriggerMessage follow-on diagnostic source change
+## 2026-09-10 - TriggerMessage follow-on race/closure source correction
 
-- After a durable v1 charger operation records an allowlisted TriggerMessage
-  `Accepted` OCPP response, HAL now searches the following 60 seconds for
+- After HAL persists an allowlisted TriggerMessage `CALLRESULT` `Accepted`
+  trace, it opens migration `022`'s indexed durable 60-second window before
+  later operation bookkeeping and searches that window for
   matching charger-originated BootNotification, DiagnosticsStatusNotification,
   FirmwareStatusNotification, Heartbeat, MeterValues, or StatusNotification
   traffic. MeterValues and StatusNotification require the matching connector.
 - Each match produces only a separately sanitized
-  `CHARGER_OPERATION_FOLLOW_ON` trace event. It is temporal rather than causal:
-  overlapping acceptance windows may record the same incoming frame. Trace
-  append/delivery failure is logged and never changes the OCPP acknowledgement,
-  durable operation result, transaction, connector, worker, or CMS fact path.
+  `CHARGER_OPERATION_FOLLOW_ON` trace event. The existing trace worker writes
+  `CHARGER_OPERATION_FOLLOW_ON_CLOSED` for an expired unmatched window. An
+  inbound positive does not skip a concurrently closing window, so it wins over
+  closure. This is temporal rather than causal: overlapping acceptance windows
+  may record the same incoming frame. Trace append/delivery failure is logged
+  and never changes the OCPP acknowledgement, durable operation result,
+  transaction, connector, worker, or CMS fact path.
 
-Focused store/OCPP/sanitizer tests pass. No migration, database mutation,
-deployment, restart, commit, or push occurred. PostgreSQL, paired CMS, and
-physical charger validation remain unrun without `TEST_DATABASE_URL` and a
-mapped test charger.
+Focused store/OCPP/worker/sanitizer tests and full Go test, vet, build, and
+diff checks pass. Migration `022` is source-only and unapplied; no database
+mutation, deployment, restart, commit, or push occurred. PostgreSQL, paired
+CMS, and physical charger validation remain unrun without `TEST_DATABASE_URL`
+and a mapped test charger.
 
 ## 2026-09-08 - PostgreSQL charger-operation array readback source fix
 

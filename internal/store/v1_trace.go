@@ -47,20 +47,23 @@ type V1TraceEventInput struct {
 	Data                                               any
 }
 
-// V1TriggerMessageFollowOnExpectation is reconstructed from durable accepted
-// TriggerMessage operation evidence. It is diagnostic-only: it never changes
-// the operation result or any charger business state.
-type V1TriggerMessageFollowOnExpectation struct {
-	TraceID          string
-	RequestedMessage string
-	AcceptedAt       time.Time
+// V1TriggerMessageFollowOnWindow is durable diagnostic coverage for one
+// accepted TriggerMessage. It is intentionally separate from charger-operation
+// state: OPEN, OBSERVED, and CLOSED describe only evidence coverage.
+type V1TriggerMessageFollowOnWindow struct {
+	TraceID, RequestedMessage, ChargerOCPPIdentity string
+	OCPPConnectorNumber                            int
+	AcceptedAt, DeadlineAt                         time.Time
+	State                                          string
 }
 
-// V1TriggerMessageFollowOnExpectationStore deliberately remains separate from
-// V1TraceStore. Existing trace-only callers do not need follow-on lookup
-// authority, and diagnostic persistence failures remain isolated.
-type V1TriggerMessageFollowOnExpectationStore interface {
-	ListV1TriggerMessageFollowOnExpectations(context.Context, string, string, int, bool, time.Time, time.Time) ([]V1TriggerMessageFollowOnExpectation, error)
+// V1TriggerMessageFollowOnWindowStore keeps inbound matching bounded and
+// restart-safe. It is intentionally separate from V1TraceStore so diagnostic
+// failure cannot become OCPP or business authority.
+type V1TriggerMessageFollowOnWindowStore interface {
+	OpenV1TriggerMessageFollowOnWindow(context.Context, string, string, time.Time) error
+	RecordV1TriggerMessageFollowOn(context.Context, string, string, int, time.Time) (int, error)
+	CloseV1TriggerMessageFollowOnWindows(context.Context, time.Time, int) (int, error)
 }
 
 func V1TriggerMessageAction(action string) bool {
@@ -88,6 +91,9 @@ func sanitizeV1TraceData(data any) map[string]any {
 	if _, followOn := input["follow_on"]; followOn {
 		return sanitizeV1TriggerMessageFollowOn(input)
 	}
+	if _, closed := input["follow_on_closed"]; closed {
+		return sanitizeV1TriggerMessageFollowOnClosure(input)
+	}
 	if _, operationEvidence := input["message_type"]; operationEvidence {
 		return sanitizeV1OperationEvidence(input)
 	}
@@ -98,6 +104,30 @@ func sanitizeV1TraceData(data any) map[string]any {
 		}
 	}
 	return output
+}
+
+func sanitizeV1TriggerMessageFollowOnClosure(input map[string]any) map[string]any {
+	closed, closedOK := input["follow_on_closed"].(bool)
+	expected, expectedOK := v1SafeText(input["expected_message"], 64)
+	identity, identityOK := v1SafeText(input["charger_ocpp_identity"], 255)
+	acceptedAt, acceptedOK := input["accepted_at"].(string)
+	parsed, parseErr := time.Parse(time.RFC3339Nano, acceptedAt)
+	if !closedOK || !closed || !expectedOK || !identityOK || !acceptedOK || parseErr != nil || !V1TriggerMessageAction(expected) {
+		return map[string]any{}
+	}
+	safe := map[string]any{"expected_message": expected, "charger_ocpp_identity": identity, "accepted_at": parsed.UTC().Format(time.RFC3339Nano)}
+	if V1TriggerMessageConnectorScoped(expected) {
+		connector, connectorOK := v1SafeConnector(input["connector_number"])
+		if !connectorOK || connector < 1 || len(input) != 5 {
+			return map[string]any{}
+		}
+		safe["connector_number"] = connector
+		return safe
+	}
+	if len(input) != 4 {
+		return map[string]any{}
+	}
+	return safe
 }
 
 func sanitizeV1TriggerMessageFollowOn(input map[string]any) map[string]any {

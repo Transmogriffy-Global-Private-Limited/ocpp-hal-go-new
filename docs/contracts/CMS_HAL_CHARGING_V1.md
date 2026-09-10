@@ -952,16 +952,19 @@ CALL, CALLRESULT, or CALLERROR evidence after the pinned library accepts the
 websocket write. Result pairing uses only the OCPP unique ID; this is protocol
 evidence, not a claim that the charger later effected a physical change.
 
-For an allowlisted `TriggerMessage` whose exact OCPP result is durably recorded
-as `Accepted`, HAL additionally has a diagnostic-only 60-second observation
-window anchored to that durable acceptance record. A later matching
+For an allowlisted `TriggerMessage` whose `CALLRESULT` is durably persisted as
+`Accepted`, HAL opens an indexed, diagnostic-only 60-second observation window
+before later operation completion bookkeeping. A later matching
 charger-originated BootNotification, DiagnosticsStatusNotification,
 FirmwareStatusNotification, Heartbeat, MeterValues, or StatusNotification can
 append a separate `CHARGER_OPERATION_FOLLOW_ON` trace event. Matching requires
 the same OCPP identity and requested action; MeterValues and StatusNotification
-also require the requested connector. The relation is temporal, not causal, so
-overlapping accepted TriggerMessages may all observe one frame. This event
-never changes the operation result, transaction/connector state, OCPP outcome,
+also require the requested connector. The existing trace worker appends
+`CHARGER_OPERATION_FOLLOW_ON_CLOSED` for an expired unmatched window. A
+positive inbound match waits for a concurrent closer and becomes observed, so
+positive evidence dominates closure. The relation is temporal, not causal, so
+overlapping accepted TriggerMessages may all observe one frame. These events
+never change the operation result, transaction/connector state, OCPP outcome,
 facts, workers, or CMS business/financial state; trace append/delivery failure
 is non-fatal to the OCPP handler.
 

@@ -23,6 +23,7 @@ type fakeTraceDeliveryStore struct {
 	mu         sync.Mutex
 	deliveries []store.V1TraceDelivery
 	marks      []traceMark
+	closed     int
 }
 
 func (s *fakeTraceDeliveryStore) ClaimV1TraceDeliveries(context.Context, time.Time, int) ([]store.V1TraceDelivery, error) {
@@ -36,6 +37,34 @@ func (s *fakeTraceDeliveryStore) MarkV1TraceDelivery(_ context.Context, eventID,
 	defer s.mu.Unlock()
 	s.marks = append(s.marks, traceMark{eventID: eventID, status: status, success: success, terminal: terminal})
 	return nil
+}
+
+func (*fakeTraceDeliveryStore) OpenV1TriggerMessageFollowOnWindow(context.Context, string, string, time.Time) error {
+	return nil
+}
+
+func (*fakeTraceDeliveryStore) RecordV1TriggerMessageFollowOn(context.Context, string, string, int, time.Time) (int, error) {
+	return 0, nil
+}
+
+func (s *fakeTraceDeliveryStore) CloseV1TriggerMessageFollowOnWindows(context.Context, time.Time, int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closed++
+	return 0, nil
+}
+
+func TestWorkerClosesFollowOnCoverageBeforeDeliveryClaim(t *testing.T) {
+	fake := &fakeTraceDeliveryStore{}
+	worker := &Worker{store: fake}
+	if err := worker.RunOnce(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.closed != 1 {
+		t.Fatalf("closed=%d", fake.closed)
+	}
 }
 
 func TestWorkerDeliversObjectDataAndUsesTraceEventIdempotency(t *testing.T) {

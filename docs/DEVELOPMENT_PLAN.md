@@ -25,12 +25,14 @@ Current per-operation protocol-evidence slice:
   outbox, and keeps OCPP acknowledgement distinct from physical-effect truth;
   migration 021 is source-only and not applied.
 
-- after HAL durably records an allowlisted TriggerMessage `Accepted` response,
-  it may append a separate sanitized follow-on diagnostic event for matching
-  later charger traffic in a 60-second window. It is temporal, non-causal
-  evidence only: it does not alter operation/transaction/connector state,
-  OCPP dispatch, facts, workers, or CMS commercial authority. No migration is
-  required for this source-only extension.
+- after HAL persists an allowlisted TriggerMessage `CALLRESULT` `Accepted`
+  trace, migration `022` opens an indexed durable 60-second window before
+  later operation completion. Inbound OCPP matching uses that bounded table;
+  the existing trace worker writes unmatched-window closure, and a positive
+  waits for a concurrent closer so it dominates closure. It remains temporal,
+  non-causal evidence only: it does not alter operation/transaction/connector
+  state, OCPP dispatch, facts, workers, or CMS commercial authority. Migration
+  `022` is source-only and unapplied.
 
 Current trace/migration-ownership slice:
 

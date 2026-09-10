@@ -7,23 +7,25 @@ import (
 )
 
 type V1MemoryStore struct {
-	mu           sync.Mutex
-	commands     map[string]*V1RemoteCommand
-	operations   map[string]*V1ChargerOperation
-	credentials  map[string]*V1Credential
-	transactions map[string]*V1Transaction
-	traces       map[string]*V1Trace
-	traceEvents  map[string][]V1TraceEvent
+	mu              sync.Mutex
+	commands        map[string]*V1RemoteCommand
+	operations      map[string]*V1ChargerOperation
+	credentials     map[string]*V1Credential
+	transactions    map[string]*V1Transaction
+	traces          map[string]*V1Trace
+	traceEvents     map[string][]V1TraceEvent
+	followOnWindows map[string]*V1TriggerMessageFollowOnWindow
 }
 
 func NewV1MemoryStore() *V1MemoryStore {
 	return &V1MemoryStore{
-		commands:     make(map[string]*V1RemoteCommand),
-		operations:   make(map[string]*V1ChargerOperation),
-		credentials:  make(map[string]*V1Credential),
-		transactions: make(map[string]*V1Transaction),
-		traces:       make(map[string]*V1Trace),
-		traceEvents:  make(map[string][]V1TraceEvent),
+		commands:        make(map[string]*V1RemoteCommand),
+		operations:      make(map[string]*V1ChargerOperation),
+		credentials:     make(map[string]*V1Credential),
+		transactions:    make(map[string]*V1Transaction),
+		traces:          make(map[string]*V1Trace),
+		traceEvents:     make(map[string][]V1TraceEvent),
+		followOnWindows: make(map[string]*V1TriggerMessageFollowOnWindow),
 	}
 }
 

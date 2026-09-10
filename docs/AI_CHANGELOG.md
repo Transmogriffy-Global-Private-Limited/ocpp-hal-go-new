@@ -1,21 +1,25 @@
 # AI-assisted changelog
 
-## 2026-09-10 - Add accepted TriggerMessage follow-on diagnostic evidence (source only)
+## 2026-09-10 - Close TriggerMessage follow-on acceptance and negative-proof races (source only)
 
-- HAL uses the already durable v1 charger-operation completion record as the
-  acceptance anchor. An allowlisted TriggerMessage with exact OCPP result
-  `Accepted` has a 60-second observation window for a matching later
-  charger-originated message; connector-scoped MeterValues and
-  StatusNotification also require the requested connector.
-- Matches append a strictly sanitized diagnostic trace event only. They do not
-  prove causation or a physical effect, and overlapping windows may all observe
-  the same frame. Trace append failure does not affect protocol acknowledgement,
-  operation state, transaction/connector state, facts, or worker behavior.
+- HAL migration `022` introduces an indexed durable diagnostic window opened
+  immediately after the persisted `TriggerMessage` `CALLRESULT` `Accepted`
+  trace and before ordinary operation completion bookkeeping. Inbound OCPP
+  matching queries that bounded window table rather than the growing operation
+  ledger; connector-scoped MeterValues and StatusNotification require the
+  requested connector.
+- Positive matches append a strictly sanitized diagnostic trace event. The
+  existing trace worker writes durable closure for expired unmatched windows;
+  an inbound positive waits for a concurrent closer and turns the same window
+  observed, so positive evidence dominates closure. This remains non-causal
+  and cannot affect protocol acknowledgement, operation, transaction,
+  connector, fact, or CMS business state.
 
 Verification: focused `internal/store` and `internal/ocpp16hal` tests plus
-`go test -p 1 ./...`, `go vet -p 1 ./...`, and `go build ./...` pass. No
-migration, database mutation, deployment, restart, commit, or push occurred.
-PostgreSQL, CMS, and hardware checks remain unavailable without
+`go test -p 1 ./...`, `go vet -p 1 ./...`, `go build ./...`, and `git diff
+--check` pass. Migration `022` is source-only and unapplied; no database
+mutation, deployment, restart, commit, or push occurred. PostgreSQL, CMS, and
+hardware checks remain unavailable without
 `TEST_DATABASE_URL` and a mapped test charger.
 
 ## 2026-09-08 - Decode charger-operation configuration-key arrays with pgx

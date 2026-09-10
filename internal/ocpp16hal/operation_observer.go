@@ -39,9 +39,9 @@ type operationObserver struct {
 	byUnique  map[string]*observedOperation
 }
 type observedOperation struct {
-	traceID, cmsOperationID, halOperationID, chargerID, action, uniqueID string
-	connector                                                            int
-	sentPayload                                                          map[string]any
+	traceID, cmsOperationID, halOperationID, chargerID, action, uniqueID, requestedMessage string
+	connector                                                                              int
+	sentPayload                                                                            map[string]any
 }
 
 func newOperationObserver(traces store.V1TraceStore) *operationObserver {
@@ -72,7 +72,7 @@ func (o *operationObserver) register(request ocpp.Request, operation *store.V1Ch
 	}
 	o.mu.Lock()
 	defer o.mu.Unlock()
-	o.byRequest[key] = &observedOperation{traceID: operation.TraceID, cmsOperationID: operation.CMSOperationID, halOperationID: operation.HALOperationID, chargerID: operation.ChargerOCPPIdentity, action: operationAction(operation.Kind), connector: operation.OCPPConnectorNumber, sentPayload: safeOperationCall(operation)}
+	o.byRequest[key] = &observedOperation{traceID: operation.TraceID, cmsOperationID: operation.CMSOperationID, halOperationID: operation.HALOperationID, chargerID: operation.ChargerOCPPIdentity, action: operationAction(operation.Kind), requestedMessage: operation.Parameters["requested_message"], connector: operation.OCPPConnectorNumber, sentPayload: safeOperationCall(operation)}
 }
 func (o *operationObserver) bind(request ocpp.Request, uniqueID string) {
 	if o == nil || uniqueID == "" {
@@ -95,14 +95,23 @@ func (o *operationObserver) sent(uniqueID string) {
 	if entry == nil {
 		return
 	}
-	o.append(entry, "CALL", entry.sentPayload)
+	_ = o.append(entry, "CALL", entry.sentPayload, time.Now().UTC())
 }
 func (o *operationObserver) received(uniqueID, messageType string, payload map[string]any) {
 	entry := o.lookup(uniqueID)
 	if entry == nil {
 		return
 	}
-	o.append(entry, messageType, safeOperationResponse(entry.action, messageType, payload))
+	observedAt := time.Now().UTC()
+	safePayload := safeOperationResponse(entry.action, messageType, payload)
+	if err := o.append(entry, messageType, safePayload, observedAt); err == nil && entry.action == "TriggerMessage" && messageType == "CALLRESULT" && safePayload["status"] == "Accepted" && store.V1TriggerMessageAction(entry.requestedMessage) {
+		if windows, ok := o.traces.(store.V1TriggerMessageFollowOnWindowStore); ok {
+			// This happens before the normal HTTP operation bookkeeping can run,
+			// closing the Accepted-to-follow-on race without granting diagnostics
+			// any operation-state authority.
+			_ = windows.OpenV1TriggerMessageFollowOnWindow(context.Background(), entry.traceID, entry.requestedMessage, observedAt)
+		}
+	}
 	o.mu.Lock()
 	delete(o.byUnique, uniqueID)
 	o.mu.Unlock()
@@ -140,11 +149,11 @@ func (o *operationObserver) lookup(uniqueID string) *observedOperation {
 	defer o.mu.Unlock()
 	return o.byUnique[uniqueID]
 }
-func (o *operationObserver) append(entry *observedOperation, messageType string, payload map[string]any) {
+func (o *operationObserver) append(entry *observedOperation, messageType string, payload map[string]any, occurredAt time.Time) error {
 	if o.traces == nil {
-		return
+		return store.ErrV1TransactionNotFound
 	}
-	_ = o.traces.AppendV1TraceEvent(context.Background(), entry.traceID, store.V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "CHARGER_OPERATION_OCPP", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "CPO operation OCPP " + messageType, OccurredAt: time.Now().UTC(), Data: map[string]any{"unique_id": entryUnique(entry, messageType), "action": entry.action, "message_type": messageType, "direction": operationDirection(messageType), "payload": payload}})
+	return o.traces.AppendV1TraceEvent(context.Background(), entry.traceID, store.V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "CHARGER_OPERATION_OCPP", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "CPO operation OCPP " + messageType, OccurredAt: occurredAt, Data: map[string]any{"unique_id": entryUnique(entry, messageType), "action": entry.action, "message_type": messageType, "direction": operationDirection(messageType), "payload": payload}})
 }
 
 // unique identity is installed by append caller below through this transient map-free field.

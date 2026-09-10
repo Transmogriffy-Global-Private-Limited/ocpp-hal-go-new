@@ -60,9 +60,17 @@ func (w *Worker) RunOnce(ctx context.Context) error {
 	if w == nil {
 		return nil
 	}
+	now := time.Now().UTC()
+	if windows, ok := w.store.(store.V1TriggerMessageFollowOnWindowStore); ok {
+		// Closure is diagnostic coverage, delivered through this existing trace
+		// worker. It cannot consume fact-worker capacity or affect OCPP state.
+		if _, err := windows.CloseV1TriggerMessageFollowOnWindows(ctx, now, 32); err != nil {
+			return err
+		}
+	}
 	// Deliberately separate claim/lease and capacity from v1 facts. One event at
 	// a time keeps the diagnostic worker bounded without starving fact delivery.
-	deliveries, err := w.store.ClaimV1TraceDeliveries(ctx, time.Now().UTC(), 1)
+	deliveries, err := w.store.ClaimV1TraceDeliveries(ctx, now, 1)
 	if err != nil {
 		return err
 	}
