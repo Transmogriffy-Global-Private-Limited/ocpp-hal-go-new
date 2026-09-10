@@ -76,12 +76,12 @@ uses pgx v5's database/sql-compatible array scanner for `configuration_keys`.
 This preserves the durable non-null empty-array representation through POST
 readback, duplicate lookup, and exact GET.
 
-Implemented but uncommitted/source-only: HAL migration `022` holds indexed,
-durable diagnostic windows immediately after persisted TriggerMessage
-`CALLRESULT` `Accepted` evidence and before later operation completion. Later
-matching traffic appends sanitized follow-on evidence; the existing trace
-worker closes unmatched windows, while a positive waits for a concurrent closer
-and dominates closure. This remains non-causal diagnostic evidence; overlapping
+Implemented but uncommitted/source-only: HAL commits migration `022`'s indexed
+durable diagnostic window atomically with persisted TriggerMessage `CALLRESULT`
+`Accepted` evidence and its trace outbox record, before later operation
+completion. Later matching traffic and the existing trace worker's closure
+serialize only while a window is `OPEN`, committing one final `OBSERVED` or
+`CLOSED` state. This remains non-causal diagnostic evidence; overlapping
 windows are allowed and trace failure cannot alter operation, OCPP,
 transaction, connector, fact, or worker behavior. Migration `022` is
 unapplied.

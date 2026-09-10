@@ -75,18 +75,25 @@ func TestV1PostgresTriggerMessageFollowOnWindowIndexesAndDurability(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.OpenV1TriggerMessageFollowOnWindow(context.Background(), traceID, "Heartbeat", acceptedAt); err != nil {
+	if err := s.AppendV1AcceptedTriggerMessageTrace(context.Background(), traceID, acceptedTriggerMessageTraceInput(acceptedAt), "Heartbeat"); err != nil {
 		t.Fatal(err)
+	}
+	var state string
+	if err := s.db.QueryRow(`SELECT state FROM v1_trigger_message_follow_on_windows WHERE trace_id=$1::uuid`, traceID).Scan(&state); err != nil || state != "OPEN" {
+		t.Fatalf("atomic window state=%q err=%v", state, err)
 	}
 	if closed, err := s.CloseV1TriggerMessageFollowOnWindows(context.Background(), acceptedAt.Add(time.Minute), 1); err != nil || closed != 1 {
 		t.Fatalf("closed=%d err=%v", closed, err)
 	}
-	if matched, err := s.RecordV1TriggerMessageFollowOn(context.Background(), trace.ChargerOCPPIdentity, "Heartbeat", 0, acceptedAt.Add(time.Second)); err != nil || matched != 1 {
-		t.Fatalf("matched=%d err=%v", matched, err)
+	if matched, err := s.RecordV1TriggerMessageFollowOn(context.Background(), trace.ChargerOCPPIdentity, "Heartbeat", 0, acceptedAt.Add(time.Second)); err != nil || matched != 0 {
+		t.Fatalf("closed window matched=%d err=%v", matched, err)
 	}
 	events, err := s.ListV1TraceEvents(context.Background(), traceID, time.Time{}, "", 10)
 	if err != nil || len(events) != 2 {
 		t.Fatalf("events=%#v err=%v", events, err)
+	}
+	if events[0].Category != "CHARGER_OPERATION_FOLLOW_ON_CLOSED" || events[1].Category != "CHARGER_OPERATION_OCPP" {
+		t.Fatalf("non-monotonic event sequence=%#v", events)
 	}
 }
 

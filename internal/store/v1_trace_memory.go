@@ -109,6 +109,38 @@ func traceAssociationPriority(transaction *V1Transaction) int {
 func (s *V1MemoryStore) AppendV1TraceEvent(_ context.Context, traceID string, input V1TraceEventInput) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.appendV1TraceEventLocked(traceID, input)
+}
+
+// AppendV1AcceptedTriggerMessageTrace models the PostgreSQL all-or-nothing
+// trace-event/outbox/window transaction used in production.
+func (s *V1MemoryStore) AppendV1AcceptedTriggerMessageTrace(_ context.Context, traceID string, input V1TraceEventInput, requestedMessage string) error {
+	if !validV1AcceptedTriggerMessageTrace(input, requestedMessage) {
+		return ErrV1InvalidEvidence
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.followOnWindowErr != nil {
+		return s.followOnWindowErr
+	}
+	if s.traces[traceID] == nil {
+		return ErrV1TransactionNotFound
+	}
+	// The trace/window pair is idempotent. Do not append another Accepted event
+	// after the durable window already anchors the first one.
+	if s.followOnWindows[traceID] != nil {
+		return nil
+	}
+	if err := s.appendV1TraceEventLocked(traceID, input); err != nil {
+		return err
+	}
+	acceptedAt := input.OccurredAt.UTC()
+	trace := s.traces[traceID]
+	s.followOnWindows[traceID] = &V1TriggerMessageFollowOnWindow{TraceID: traceID, RequestedMessage: requestedMessage, ChargerOCPPIdentity: trace.ChargerOCPPIdentity, OCPPConnectorNumber: trace.OCPPConnectorNumber, AcceptedAt: acceptedAt, DeadlineAt: acceptedAt.Add(v1TriggerMessageFollowOnWindow), State: "OPEN"}
+	return nil
+}
+
+func (s *V1MemoryStore) appendV1TraceEventLocked(traceID string, input V1TraceEventInput) error {
 	if s.traces[traceID] == nil {
 		return ErrV1TransactionNotFound
 	}

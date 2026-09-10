@@ -7,14 +7,15 @@ import (
 )
 
 type V1MemoryStore struct {
-	mu              sync.Mutex
-	commands        map[string]*V1RemoteCommand
-	operations      map[string]*V1ChargerOperation
-	credentials     map[string]*V1Credential
-	transactions    map[string]*V1Transaction
-	traces          map[string]*V1Trace
-	traceEvents     map[string][]V1TraceEvent
-	followOnWindows map[string]*V1TriggerMessageFollowOnWindow
+	mu                sync.Mutex
+	commands          map[string]*V1RemoteCommand
+	operations        map[string]*V1ChargerOperation
+	credentials       map[string]*V1Credential
+	transactions      map[string]*V1Transaction
+	traces            map[string]*V1Trace
+	traceEvents       map[string][]V1TraceEvent
+	followOnWindows   map[string]*V1TriggerMessageFollowOnWindow
+	followOnWindowErr error // test-only atomic-window failure injection
 }
 
 func NewV1MemoryStore() *V1MemoryStore {

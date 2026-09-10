@@ -58,10 +58,9 @@ type V1TriggerMessageFollowOnWindow struct {
 }
 
 // V1TriggerMessageFollowOnWindowStore keeps inbound matching bounded and
-// restart-safe. It is intentionally separate from V1TraceStore so diagnostic
-// failure cannot become OCPP or business authority.
+// restart-safe. Window creation belongs to V1TraceStore because it must commit
+// atomically with its Accepted OCPP trace event and outbox record.
 type V1TriggerMessageFollowOnWindowStore interface {
-	OpenV1TriggerMessageFollowOnWindow(context.Context, string, string, time.Time) error
 	RecordV1TriggerMessageFollowOn(context.Context, string, string, int, time.Time) (int, error)
 	CloseV1TriggerMessageFollowOnWindows(context.Context, time.Time, int) (int, error)
 }
@@ -77,6 +76,18 @@ func V1TriggerMessageAction(action string) bool {
 
 func V1TriggerMessageConnectorScoped(action string) bool {
 	return action == "MeterValues" || action == "StatusNotification"
+}
+
+func validV1AcceptedTriggerMessageTrace(input V1TraceEventInput, requestedMessage string) bool {
+	if !V1TriggerMessageAction(requestedMessage) || input.OccurredAt.IsZero() || input.Category != "CHARGER_OPERATION_OCPP" {
+		return false
+	}
+	safe := sanitizeV1TraceData(input.Data)
+	action, _ := safe["action"].(string)
+	messageType, _ := safe["message_type"].(string)
+	payload, _ := safe["payload"].(map[string]any)
+	status, _ := payload["status"].(string)
+	return action == "TriggerMessage" && messageType == "CALLRESULT" && status == "Accepted"
 }
 
 // sanitizeV1TraceData is the final persistence boundary for diagnostic data.
@@ -309,6 +320,7 @@ type V1TraceStore interface {
 	FindV1TraceByTransaction(context.Context, string) (*V1Trace, error)
 	FindV1TraceForConnector(context.Context, string, int) (*V1Trace, error)
 	AppendV1TraceEvent(context.Context, string, V1TraceEventInput) error
+	AppendV1AcceptedTriggerMessageTrace(context.Context, string, V1TraceEventInput, string) error
 	GetV1Trace(context.Context, string) (*V1Trace, error)
 	ListV1TraceEvents(context.Context, string, time.Time, string, int) ([]V1TraceEvent, error)
 	DeleteV1TracesBefore(context.Context, time.Time, int) (int64, error)

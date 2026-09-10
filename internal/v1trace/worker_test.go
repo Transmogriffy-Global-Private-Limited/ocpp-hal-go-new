@@ -39,10 +39,6 @@ func (s *fakeTraceDeliveryStore) MarkV1TraceDelivery(_ context.Context, eventID,
 	return nil
 }
 
-func (*fakeTraceDeliveryStore) OpenV1TriggerMessageFollowOnWindow(context.Context, string, string, time.Time) error {
-	return nil
-}
-
 func (*fakeTraceDeliveryStore) RecordV1TriggerMessageFollowOn(context.Context, string, string, int, time.Time) (int, error) {
 	return 0, nil
 }

@@ -47,7 +47,7 @@ type pendingRuntimeProjection struct {
 
 func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *HAL {
 	traces, _ := v1Store.(store.V1TraceStore)
-	observer := newOperationObserver(traces)
+	observer := newOperationObserver(traces, logger)
 	h := &HAL{
 		cs:                                      newObservedCentralSystem(observer),
 		registry:                                registry,

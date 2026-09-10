@@ -23,10 +23,6 @@ func (s *followOnTraceStore) RecordV1TriggerMessageFollowOn(_ context.Context, _
 	return 1, s.recordErr
 }
 
-func (*followOnTraceStore) OpenV1TriggerMessageFollowOnWindow(context.Context, string, string, time.Time) error {
-	return nil
-}
-
 func (*followOnTraceStore) CloseV1TriggerMessageFollowOnWindows(context.Context, time.Time, int) (int, error) {
 	return 0, nil
 }
@@ -45,7 +41,7 @@ func TestAcceptedTriggerMessageOpensWindowBeforeOperationCompletion(t *testing.T
 	if _, err := traces.EnsureV1Trace(context.Background(), store.V1Trace{TraceID: "trace-1", ChargerOCPPIdentity: "CP-1"}); err != nil {
 		t.Fatal(err)
 	}
-	observer := newOperationObserver(traces)
+	observer := newOperationObserver(traces, nil)
 	observer.byUnique["call-1"] = &observedOperation{traceID: "trace-1", chargerID: "CP-1", action: "TriggerMessage", uniqueID: "call-1", requestedMessage: "Heartbeat"}
 	observer.received("call-1", "CALLRESULT", map[string]any{"status": "Accepted"})
 

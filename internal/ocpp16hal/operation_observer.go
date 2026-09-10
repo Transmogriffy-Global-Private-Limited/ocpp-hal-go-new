@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 	"sync"
@@ -34,6 +35,7 @@ import (
 // and persists only the action-specific public-safe evidence.
 type operationObserver struct {
 	traces    store.V1TraceStore
+	logger    *slog.Logger
 	mu        sync.Mutex
 	byRequest map[uintptr]*observedOperation
 	byUnique  map[string]*observedOperation
@@ -44,8 +46,8 @@ type observedOperation struct {
 	sentPayload                                                                            map[string]any
 }
 
-func newOperationObserver(traces store.V1TraceStore) *operationObserver {
-	return &operationObserver{traces: traces, byRequest: map[uintptr]*observedOperation{}, byUnique: map[string]*observedOperation{}}
+func newOperationObserver(traces store.V1TraceStore, logger *slog.Logger) *operationObserver {
+	return &operationObserver{traces: traces, logger: logger, byRequest: map[uintptr]*observedOperation{}, byUnique: map[string]*observedOperation{}}
 }
 func newObservedCentralSystem(observer *operationObserver) ocpp16.CentralSystem {
 	transport := &observedWsServer{WsServer: ws.NewServer(), observer: observer}
@@ -104,13 +106,16 @@ func (o *operationObserver) received(uniqueID, messageType string, payload map[s
 	}
 	observedAt := time.Now().UTC()
 	safePayload := safeOperationResponse(entry.action, messageType, payload)
-	if err := o.append(entry, messageType, safePayload, observedAt); err == nil && entry.action == "TriggerMessage" && messageType == "CALLRESULT" && safePayload["status"] == "Accepted" && store.V1TriggerMessageAction(entry.requestedMessage) {
-		if windows, ok := o.traces.(store.V1TriggerMessageFollowOnWindowStore); ok {
-			// This happens before the normal HTTP operation bookkeeping can run,
-			// closing the Accepted-to-follow-on race without granting diagnostics
-			// any operation-state authority.
-			_ = windows.OpenV1TriggerMessageFollowOnWindow(context.Background(), entry.traceID, entry.requestedMessage, observedAt)
-		}
+	var err error
+	if entry.action == "TriggerMessage" && messageType == "CALLRESULT" && safePayload["status"] == "Accepted" && store.V1TriggerMessageAction(entry.requestedMessage) {
+		// Accepted evidence, its independent trace-delivery record, and the
+		// matching window are one transaction before HTTP bookkeeping can run.
+		err = o.appendAcceptedTriggerMessage(entry, safePayload, observedAt)
+	} else {
+		err = o.append(entry, messageType, safePayload, observedAt)
+	}
+	if err != nil && o.logger != nil {
+		o.logger.Warn("failed to persist charger-operation diagnostic evidence", "action", entry.action, "error", err)
 	}
 	o.mu.Lock()
 	delete(o.byUnique, uniqueID)
@@ -154,6 +159,13 @@ func (o *operationObserver) append(entry *observedOperation, messageType string,
 		return store.ErrV1TransactionNotFound
 	}
 	return o.traces.AppendV1TraceEvent(context.Background(), entry.traceID, store.V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "CHARGER_OPERATION_OCPP", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "CPO operation OCPP " + messageType, OccurredAt: occurredAt, Data: map[string]any{"unique_id": entryUnique(entry, messageType), "action": entry.action, "message_type": messageType, "direction": operationDirection(messageType), "payload": payload}})
+}
+
+func (o *operationObserver) appendAcceptedTriggerMessage(entry *observedOperation, payload map[string]any, occurredAt time.Time) error {
+	if o.traces == nil {
+		return store.ErrV1TransactionNotFound
+	}
+	return o.traces.AppendV1AcceptedTriggerMessageTrace(context.Background(), entry.traceID, store.V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "CHARGER_OPERATION_OCPP", Protocol: "OCPP1.6", Phase: "STARTING", Summary: "CPO operation OCPP CALLRESULT", OccurredAt: occurredAt, Data: map[string]any{"unique_id": entryUnique(entry, "CALLRESULT"), "action": entry.action, "message_type": "CALLRESULT", "direction": operationDirection("CALLRESULT"), "payload": payload}}, entry.requestedMessage)
 }
 
 // unique identity is installed by append caller below through this transient map-free field.

@@ -1,21 +1,22 @@
 # Project State
 
-## 2026-09-10 - TriggerMessage follow-on race/closure source correction
+## 2026-09-10 - TriggerMessage Accepted atomicity and final-closure source correction
 
-- After HAL persists an allowlisted TriggerMessage `CALLRESULT` `Accepted`
-  trace, it opens migration `022`'s indexed durable 60-second window before
-  later operation bookkeeping and searches that window for
+- HAL commits an allowlisted TriggerMessage `CALLRESULT` `Accepted` trace,
+  its trace-delivery outbox record, and migration `022`'s indexed durable
+  60-second window in one transaction before later operation bookkeeping. It
+  searches that window for
   matching charger-originated BootNotification, DiagnosticsStatusNotification,
   FirmwareStatusNotification, Heartbeat, MeterValues, or StatusNotification
   traffic. MeterValues and StatusNotification require the matching connector.
 - Each match produces only a separately sanitized
   `CHARGER_OPERATION_FOLLOW_ON` trace event. The existing trace worker writes
-  `CHARGER_OPERATION_FOLLOW_ON_CLOSED` for an expired unmatched window. An
-  inbound positive does not skip a concurrently closing window, so it wins over
-  closure. This is temporal rather than causal: overlapping acceptance windows
-  may record the same incoming frame. Trace append/delivery failure is logged
-  and never changes the OCPP acknowledgement, durable operation result,
-  transaction, connector, worker, or CMS fact path.
+  `CHARGER_OPERATION_FOLLOW_ON_CLOSED` for an expired unmatched window. Positive
+  matching and closure serialize on an `OPEN` row, producing exactly one final
+  transition: `OBSERVED` or `CLOSED`. This is temporal rather than causal:
+  overlapping acceptance windows may record the same incoming frame. Trace
+  append/delivery failure is logged and never changes the OCPP acknowledgement,
+  durable operation result, transaction, connector, worker, or CMS fact path.
 
 Focused store/OCPP/worker/sanitizer tests and full Go test, vet, build, and
 diff checks pass. Migration `022` is source-only and unapplied; no database

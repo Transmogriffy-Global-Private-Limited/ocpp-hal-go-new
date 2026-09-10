@@ -8,24 +8,6 @@ import (
 
 const v1TriggerMessageFollowOnWindow = time.Minute
 
-func (s *V1MemoryStore) OpenV1TriggerMessageFollowOnWindow(_ context.Context, traceID, requestedMessage string, acceptedAt time.Time) error {
-	if !V1TriggerMessageAction(requestedMessage) || acceptedAt.IsZero() {
-		return ErrV1InvalidEvidence
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	trace := s.traces[traceID]
-	if trace == nil {
-		return ErrV1TransactionNotFound
-	}
-	if existing := s.followOnWindows[traceID]; existing != nil {
-		return nil
-	}
-	acceptedAt = acceptedAt.UTC()
-	s.followOnWindows[traceID] = &V1TriggerMessageFollowOnWindow{TraceID: traceID, RequestedMessage: requestedMessage, ChargerOCPPIdentity: trace.ChargerOCPPIdentity, OCPPConnectorNumber: trace.OCPPConnectorNumber, AcceptedAt: acceptedAt, DeadlineAt: acceptedAt.Add(v1TriggerMessageFollowOnWindow), State: "OPEN"}
-	return nil
-}
-
 func (s *V1MemoryStore) RecordV1TriggerMessageFollowOn(_ context.Context, identity, action string, connector int, observedAt time.Time) (int, error) {
 	if !V1TriggerMessageAction(action) || (V1TriggerMessageConnectorScoped(action) && connector < 1) || observedAt.IsZero() {
 		return 0, ErrV1InvalidEvidence
@@ -34,7 +16,7 @@ func (s *V1MemoryStore) RecordV1TriggerMessageFollowOn(_ context.Context, identi
 	defer s.mu.Unlock()
 	ids := make([]string, 0)
 	for traceID, window := range s.followOnWindows {
-		if window.RequestedMessage != action || window.ChargerOCPPIdentity != identity || window.State == "OBSERVED" || !window.AcceptedAt.Before(observedAt) || window.DeadlineAt.Before(observedAt) {
+		if window.RequestedMessage != action || window.ChargerOCPPIdentity != identity || window.State != "OPEN" || !window.AcceptedAt.Before(observedAt) || window.DeadlineAt.Before(observedAt) {
 			continue
 		}
 		if V1TriggerMessageConnectorScoped(action) && window.OCPPConnectorNumber > 0 && window.OCPPConnectorNumber != connector {

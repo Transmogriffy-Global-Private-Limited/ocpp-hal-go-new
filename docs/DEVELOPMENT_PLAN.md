@@ -25,14 +25,14 @@ Current per-operation protocol-evidence slice:
   outbox, and keeps OCPP acknowledgement distinct from physical-effect truth;
   migration 021 is source-only and not applied.
 
-- after HAL persists an allowlisted TriggerMessage `CALLRESULT` `Accepted`
-  trace, migration `022` opens an indexed durable 60-second window before
-  later operation completion. Inbound OCPP matching uses that bounded table;
-  the existing trace worker writes unmatched-window closure, and a positive
-  waits for a concurrent closer so it dominates closure. It remains temporal,
-  non-causal evidence only: it does not alter operation/transaction/connector
-  state, OCPP dispatch, facts, workers, or CMS commercial authority. Migration
-  `022` is source-only and unapplied.
+- HAL commits an allowlisted TriggerMessage `CALLRESULT` `Accepted` trace, its
+  outbox record, and migration `022`'s indexed durable 60-second window in one
+  transaction before later operation completion. Inbound OCPP matching and the
+  existing worker's unmatched-window closure serialize only on `OPEN`: one
+  commits `OBSERVED`, or one commits final `CLOSED`; neither can reverse the
+  other. It remains temporal, non-causal evidence only: it does not alter
+  operation/transaction/connector state, OCPP dispatch, facts, workers, or CMS
+  commercial authority. Migration `022` is source-only and unapplied.
 
 Current trace/migration-ownership slice:
 

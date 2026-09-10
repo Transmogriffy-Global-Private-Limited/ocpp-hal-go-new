@@ -1,19 +1,18 @@
 # AI-assisted changelog
 
-## 2026-09-10 - Close TriggerMessage follow-on acceptance and negative-proof races (source only)
+## 2026-09-10 - Make TriggerMessage Accepted coverage atomic and closure final (source only)
 
-- HAL migration `022` introduces an indexed durable diagnostic window opened
-  immediately after the persisted `TriggerMessage` `CALLRESULT` `Accepted`
-  trace and before ordinary operation completion bookkeeping. Inbound OCPP
-  matching queries that bounded window table rather than the growing operation
-  ledger; connector-scoped MeterValues and StatusNotification require the
-  requested connector.
-- Positive matches append a strictly sanitized diagnostic trace event. The
-  existing trace worker writes durable closure for expired unmatched windows;
-  an inbound positive waits for a concurrent closer and turns the same window
-  observed, so positive evidence dominates closure. This remains non-causal
-  and cannot affect protocol acknowledgement, operation, transaction,
-  connector, fact, or CMS business state.
+- HAL migration `022` commits an indexed durable diagnostic window in the same
+  transaction as the persisted `TriggerMessage` `CALLRESULT` `Accepted` trace
+  and its outbox record. Inbound OCPP matching queries that bounded window
+  table rather than the growing operation ledger; connector-scoped MeterValues
+  and StatusNotification require the requested connector.
+- `OPEN` is the only matchable state. Positive matching and the existing trace
+  worker's closure serialize on the same row: the winner commits either
+  `OPEN -> OBSERVED` with positive evidence or `OPEN -> CLOSED` with closure.
+  `CLOSED` is final and cannot later emit contradictory positive evidence.
+  This remains non-causal and cannot affect protocol acknowledgement,
+  operation, transaction, connector, fact, or CMS business state.
 
 Verification: focused `internal/store` and `internal/ocpp16hal` tests plus
 `go test -p 1 ./...`, `go vet -p 1 ./...`, `go build ./...`, and `git diff

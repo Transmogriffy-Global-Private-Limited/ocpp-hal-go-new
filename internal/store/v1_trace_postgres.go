@@ -76,15 +76,6 @@ func (s *PostgresStore) FindV1TraceForConnector(ctx context.Context, identity st
 	return s.scanV1Trace(s.db.QueryRowContext(ctx, `SELECT t.trace_id::text,t.cpo_id::text,COALESCE(t.cms_start_intent_id::text,''),COALESCE(t.cms_charging_session_id::text,''),COALESCE(t.cms_command_id::text,''),COALESCE(t.cms_charger_operation_id::text,''),COALESCE(t.hal_charger_operation_id::text,''),COALESCE(t.hal_transaction_id::text,''),t.ocpp_transaction_id,t.charger_ocpp_identity,t.ocpp_connector_number,t.created_at FROM v1_charging_traces t LEFT JOIN v1_transactions x ON x.hal_transaction_id=t.hal_transaction_id WHERE t.charger_ocpp_identity=$1 AND t.ocpp_connector_number=$2 AND (t.hal_transaction_id IS NULL OR x.completed_at IS NULL OR x.completed_at >= NOW() - INTERVAL '15 minutes') ORDER BY CASE WHEN x.completed_at IS NULL AND x.hal_transaction_id IS NOT NULL THEN 0 WHEN t.hal_transaction_id IS NULL THEN 1 ELSE 2 END,t.created_at DESC LIMIT 1`, identity, connector))
 }
 
-func (s *PostgresStore) OpenV1TriggerMessageFollowOnWindow(ctx context.Context, traceID, requestedMessage string, acceptedAt time.Time) error {
-	if !V1TriggerMessageAction(requestedMessage) || acceptedAt.IsZero() {
-		return ErrV1InvalidEvidence
-	}
-	acceptedAt = acceptedAt.UTC()
-	_, err := s.db.ExecContext(ctx, `INSERT INTO v1_trigger_message_follow_on_windows (trace_id,expected_message,charger_ocpp_identity,ocpp_connector_number,accepted_at,deadline_at) SELECT trace_id,$2,charger_ocpp_identity,ocpp_connector_number,$3,$3+INTERVAL '60 seconds' FROM v1_charging_traces WHERE trace_id=$1::uuid ON CONFLICT (trace_id) DO NOTHING`, traceID, requestedMessage, acceptedAt)
-	return err
-}
-
 func (s *PostgresStore) RecordV1TriggerMessageFollowOn(ctx context.Context, identity, action string, connector int, observedAt time.Time) (int, error) {
 	if !V1TriggerMessageAction(action) || (V1TriggerMessageConnectorScoped(action) && connector < 1) || observedAt.IsZero() {
 		return 0, ErrV1InvalidEvidence
@@ -94,10 +85,9 @@ func (s *PostgresStore) RecordV1TriggerMessageFollowOn(ctx context.Context, iden
 		return 0, err
 	}
 	defer tx.Rollback()
-	// Do not skip a window the closer has just locked: the inbound positive
-	// evidence must wait briefly, then turn that closed window OBSERVED rather
-	// than allowing a closure to win a real in-window observation.
-	rows, err := tx.QueryContext(ctx, `SELECT trace_id::text,expected_message,charger_ocpp_identity,ocpp_connector_number,accepted_at,deadline_at,state FROM v1_trigger_message_follow_on_windows WHERE charger_ocpp_identity=$1 AND expected_message=$2 AND state IN ('OPEN','CLOSED') AND accepted_at < $4 AND deadline_at >= $4 AND (NOT $3 OR ocpp_connector_number=0 OR ocpp_connector_number=$5) ORDER BY accepted_at,trace_id FOR UPDATE`, identity, action, V1TriggerMessageConnectorScoped(action), observedAt.UTC(), connector)
+	// Positive evidence and closure serialize on OPEN rows. A closer that owns
+	// the row first makes closure final; a positive owner makes it OBSERVED.
+	rows, err := tx.QueryContext(ctx, `SELECT trace_id::text,expected_message,charger_ocpp_identity,ocpp_connector_number,accepted_at,deadline_at,state FROM v1_trigger_message_follow_on_windows WHERE charger_ocpp_identity=$1 AND expected_message=$2 AND state='OPEN' AND accepted_at < $4 AND deadline_at >= $4 AND (NOT $3 OR ocpp_connector_number=0 OR ocpp_connector_number=$5) ORDER BY accepted_at,trace_id FOR UPDATE`, identity, action, V1TriggerMessageConnectorScoped(action), observedAt.UTC(), connector)
 	if err != nil {
 		return 0, err
 	}
@@ -117,10 +107,14 @@ func (s *PostgresStore) RecordV1TriggerMessageFollowOn(ctx context.Context, iden
 		return 0, err
 	}
 	for _, window := range windows {
-		if err := s.appendV1TraceEventTx(ctx, tx, window.TraceID, V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "CHARGER_OPERATION_FOLLOW_ON", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "TriggerMessage follow-on observed", OccurredAt: observedAt, Data: v1TriggerMessageFollowOnData(&window, action, connector)}); err != nil {
+		result, err := tx.ExecContext(ctx, `UPDATE v1_trigger_message_follow_on_windows SET state='OBSERVED',observed_at=$2 WHERE trace_id=$1::uuid AND state='OPEN'`, window.TraceID, observedAt.UTC())
+		if err != nil {
 			return 0, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE v1_trigger_message_follow_on_windows SET state='OBSERVED',observed_at=$2,closed_at=NULL WHERE trace_id=$1::uuid`, window.TraceID, observedAt.UTC()); err != nil {
+		if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+			return 0, ErrV1InvalidEvidence
+		}
+		if err := s.appendV1TraceEventTx(ctx, tx, window.TraceID, V1TraceEventInput{Source: "CHARGER", Target: "HAL", Category: "CHARGER_OPERATION_FOLLOW_ON", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "TriggerMessage follow-on observed", OccurredAt: observedAt, Data: v1TriggerMessageFollowOnData(&window, action, connector)}); err != nil {
 			return 0, err
 		}
 	}
@@ -159,10 +153,14 @@ func (s *PostgresStore) CloseV1TriggerMessageFollowOnWindows(ctx context.Context
 		return 0, err
 	}
 	for _, window := range windows {
-		if err := s.appendV1TraceEventTx(ctx, tx, window.TraceID, V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "CHARGER_OPERATION_FOLLOW_ON_CLOSED", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "TriggerMessage follow-on window closed", OccurredAt: now, Data: v1TriggerMessageFollowOnClosureData(&window)}); err != nil {
+		result, err := tx.ExecContext(ctx, `UPDATE v1_trigger_message_follow_on_windows SET state='CLOSED',closed_at=$2 WHERE trace_id=$1::uuid AND state='OPEN'`, window.TraceID, now.UTC())
+		if err != nil {
 			return 0, err
 		}
-		if _, err := tx.ExecContext(ctx, `UPDATE v1_trigger_message_follow_on_windows SET state='CLOSED',closed_at=$2 WHERE trace_id=$1::uuid AND state='OPEN'`, window.TraceID, now.UTC()); err != nil {
+		if changed, err := result.RowsAffected(); err != nil || changed != 1 {
+			return 0, ErrV1InvalidEvidence
+		}
+		if err := s.appendV1TraceEventTx(ctx, tx, window.TraceID, V1TraceEventInput{Source: "HAL", Target: "CMS", Category: "CHARGER_OPERATION_FOLLOW_ON_CLOSED", Protocol: "OCPP1.6", Phase: "CHARGING", Summary: "TriggerMessage follow-on window closed", OccurredAt: now, Data: v1TriggerMessageFollowOnClosureData(&window)}); err != nil {
 			return 0, err
 		}
 	}
@@ -183,6 +181,44 @@ func (s *PostgresStore) AppendV1TraceEvent(ctx context.Context, traceID string, 
 	defer tx.Rollback()
 	if err := s.appendV1TraceEventTx(ctx, tx, traceID, input); err != nil {
 		return err
+	}
+	return tx.Commit()
+}
+
+// AppendV1AcceptedTriggerMessageTrace makes the Accepted evidence, immutable
+// delivery outbox row, and its matching window one diagnostic transaction.
+func (s *PostgresStore) AppendV1AcceptedTriggerMessageTrace(ctx context.Context, traceID string, input V1TraceEventInput, requestedMessage string) error {
+	if !validV1AcceptedTriggerMessageTrace(input, requestedMessage) {
+		return ErrV1InvalidEvidence
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var lockedTraceID string
+	if err := tx.QueryRowContext(ctx, `SELECT trace_id::text FROM v1_charging_traces WHERE trace_id=$1::uuid FOR UPDATE`, traceID).Scan(&lockedTraceID); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrV1TransactionNotFound
+		}
+		return err
+	}
+	var windowExists bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM v1_trigger_message_follow_on_windows WHERE trace_id=$1::uuid)`, traceID).Scan(&windowExists); err != nil {
+		return err
+	}
+	if windowExists {
+		return tx.Commit()
+	}
+	if err := s.appendV1TraceEventTx(ctx, tx, traceID, input); err != nil {
+		return err
+	}
+	result, err := tx.ExecContext(ctx, `INSERT INTO v1_trigger_message_follow_on_windows (trace_id,expected_message,charger_ocpp_identity,ocpp_connector_number,accepted_at,deadline_at) SELECT trace_id,$2,charger_ocpp_identity,ocpp_connector_number,$3,$3+INTERVAL '60 seconds' FROM v1_charging_traces WHERE trace_id=$1::uuid ON CONFLICT (trace_id) DO NOTHING`, traceID, requestedMessage, input.OccurredAt.UTC())
+	if err != nil {
+		return err
+	}
+	if inserted, err := result.RowsAffected(); err != nil || inserted != 1 {
+		return ErrV1InvalidEvidence
 	}
 	return tx.Commit()
 }
