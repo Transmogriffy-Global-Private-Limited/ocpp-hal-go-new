@@ -47,6 +47,35 @@ type V1TraceEventInput struct {
 	Data                                               any
 }
 
+// V1TriggerMessageFollowOnExpectation is reconstructed from durable accepted
+// TriggerMessage operation evidence. It is diagnostic-only: it never changes
+// the operation result or any charger business state.
+type V1TriggerMessageFollowOnExpectation struct {
+	TraceID          string
+	RequestedMessage string
+	AcceptedAt       time.Time
+}
+
+// V1TriggerMessageFollowOnExpectationStore deliberately remains separate from
+// V1TraceStore. Existing trace-only callers do not need follow-on lookup
+// authority, and diagnostic persistence failures remain isolated.
+type V1TriggerMessageFollowOnExpectationStore interface {
+	ListV1TriggerMessageFollowOnExpectations(context.Context, string, string, int, bool, time.Time, time.Time) ([]V1TriggerMessageFollowOnExpectation, error)
+}
+
+func V1TriggerMessageAction(action string) bool {
+	switch action {
+	case "BootNotification", "DiagnosticsStatusNotification", "FirmwareStatusNotification", "Heartbeat", "MeterValues", "StatusNotification":
+		return true
+	default:
+		return false
+	}
+}
+
+func V1TriggerMessageConnectorScoped(action string) bool {
+	return action == "MeterValues" || action == "StatusNotification"
+}
+
 // sanitizeV1TraceData is the final persistence boundary for diagnostic data.
 // Call sites may annotate evidence, but unsupported fields (in particular
 // idTags, credentials, authorization material and raw OCPP payloads) cannot
@@ -55,6 +84,9 @@ func sanitizeV1TraceData(data any) map[string]any {
 	input, ok := data.(map[string]any)
 	if !ok {
 		return map[string]any{}
+	}
+	if _, followOn := input["follow_on"]; followOn {
+		return sanitizeV1TriggerMessageFollowOn(input)
 	}
 	if _, operationEvidence := input["message_type"]; operationEvidence {
 		return sanitizeV1OperationEvidence(input)
@@ -66,6 +98,29 @@ func sanitizeV1TraceData(data any) map[string]any {
 		}
 	}
 	return output
+}
+
+func sanitizeV1TriggerMessageFollowOn(input map[string]any) map[string]any {
+	followOn, followOnOK := input["follow_on"].(bool)
+	expected, expectedOK := v1SafeText(input["expected_message"], 64)
+	observed, observedOK := v1SafeText(input["observed_action"], 64)
+	identity, identityOK := v1SafeText(input["charger_ocpp_identity"], 255)
+	if !followOnOK || !followOn || !expectedOK || !observedOK || !identityOK || expected != observed || !V1TriggerMessageAction(expected) {
+		return map[string]any{}
+	}
+	safe := map[string]any{"expected_message": expected, "observed_action": observed, "charger_ocpp_identity": identity}
+	if V1TriggerMessageConnectorScoped(expected) {
+		connector, connectorOK := v1SafeConnector(input["connector_number"])
+		if !connectorOK || connector < 1 || len(input) != 5 {
+			return map[string]any{}
+		}
+		safe["connector_number"] = connector
+		return safe
+	}
+	if len(input) != 4 {
+		return map[string]any{}
+	}
+	return safe
 }
 
 // sanitizeV1OperationEvidence is deliberately repeated at the durable HAL

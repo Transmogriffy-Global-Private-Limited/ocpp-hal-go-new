@@ -554,6 +554,7 @@ func (h *HAL) OnAuthorize(chargePointID string, request *core.AuthorizeRequest) 
 
 func (h *HAL) OnBootNotification(chargePointID string, request *core.BootNotificationRequest) (*core.BootNotificationConfirmation, error) {
 	chargePointID = h.canonicalIdentity(chargePointID)
+	h.recordTriggerMessageFollowOn(chargePointID, "BootNotification", 0, time.Now().UTC())
 	h.registry.Touch(chargePointID)
 	if h.v1Store != nil && request != nil {
 		evidence := store.V1BootEvidence{ChargeBoxSerialNumber: request.ChargeBoxSerialNumber, ChargePointSerialNumber: request.ChargePointSerialNumber, ChargePointVendor: request.ChargePointVendor, ChargePointModel: request.ChargePointModel, FirmwareVersion: request.FirmwareVersion, ObservedAt: time.Now().UTC()}
@@ -583,6 +584,7 @@ func (h *HAL) OnDataTransfer(chargePointID string, request *core.DataTransferReq
 
 func (h *HAL) OnHeartbeat(chargePointID string, request *core.HeartbeatRequest) (*core.HeartbeatConfirmation, error) {
 	chargePointID = h.canonicalIdentity(chargePointID)
+	h.recordTriggerMessageFollowOn(chargePointID, "Heartbeat", 0, time.Now().UTC())
 	h.registry.Touch(chargePointID)
 	if h.v1Store != nil {
 		if current, ok := h.connections.current(chargePointID); ok {
@@ -600,6 +602,7 @@ func (h *HAL) OnStatusNotification(chargePointID string, request *core.StatusNot
 		return nil, errors.New("StatusNotification requires durable v1 storage")
 	}
 	observedAt := time.Now().UTC()
+	h.recordTriggerMessageFollowOn(chargePointID, "StatusNotification", request.ConnectorId, observedAt)
 	err := h.v1Store.RecordV1ConnectorStatus(context.Background(), store.V1ConnectorRuntime{
 		ChargerOCPPIdentity: chargePointID, OCPPConnectorNumber: request.ConnectorId, Status: string(request.Status), ErrorCode: string(request.ErrorCode), Info: request.Info, VendorID: request.VendorId, VendorErrorCode: request.VendorErrorCode, ObservedAt: &observedAt,
 	})
@@ -695,6 +698,7 @@ func (h *HAL) OnStartTransaction(chargePointID string, request *core.StartTransa
 
 func (h *HAL) OnMeterValues(chargePointID string, request *core.MeterValuesRequest) (*core.MeterValuesConfirmation, error) {
 	chargePointID = h.canonicalIdentity(chargePointID)
+	h.recordTriggerMessageFollowOn(chargePointID, "MeterValues", request.ConnectorId, time.Now().UTC())
 	h.registry.Touch(chargePointID)
 	if h.HandleV1MeterValues(chargePointID, request) == meterPersistenceFailed {
 		return nil, errors.New("MeterValues was not durably persisted")

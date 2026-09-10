@@ -952,6 +952,19 @@ CALL, CALLRESULT, or CALLERROR evidence after the pinned library accepts the
 websocket write. Result pairing uses only the OCPP unique ID; this is protocol
 evidence, not a claim that the charger later effected a physical change.
 
+For an allowlisted `TriggerMessage` whose exact OCPP result is durably recorded
+as `Accepted`, HAL additionally has a diagnostic-only 60-second observation
+window anchored to that durable acceptance record. A later matching
+charger-originated BootNotification, DiagnosticsStatusNotification,
+FirmwareStatusNotification, Heartbeat, MeterValues, or StatusNotification can
+append a separate `CHARGER_OPERATION_FOLLOW_ON` trace event. Matching requires
+the same OCPP identity and requested action; MeterValues and StatusNotification
+also require the requested connector. The relation is temporal, not causal, so
+overlapping accepted TriggerMessages may all observe one frame. This event
+never changes the operation result, transaction/connector state, OCPP outcome,
+facts, workers, or CMS business/financial state; trace append/delivery failure
+is non-fatal to the OCPP handler.
+
 For audited `GET_CONFIGURATION`, the immediate operation response may include
 a separately redacted configuration projection when the synchronous OCPP
 confirmation arrives. Configuration values remain transient: operation history

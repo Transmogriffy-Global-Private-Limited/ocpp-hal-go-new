@@ -97,6 +97,34 @@ func (s *V1MemoryStore) FindV1TraceForConnector(_ context.Context, identity stri
 	return cloneV1Trace(candidate), nil
 }
 
+func (s *V1MemoryStore) ListV1TriggerMessageFollowOnExpectations(_ context.Context, identity, requestedMessage string, observedConnector int, connectorScoped bool, windowStart, observedAt time.Time) ([]V1TriggerMessageFollowOnExpectation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	expectations := []V1TriggerMessageFollowOnExpectation{}
+	for _, operation := range s.operations {
+		if operation.Kind != "TRIGGER_MESSAGE" || operation.State != "OCPP_CONFIRMED" || operation.OCPPResult != "Accepted" || operation.CompletedAt == nil || operation.ChargerOCPPIdentity != identity || operation.Parameters["requested_message"] != requestedMessage || !V1TriggerMessageAction(requestedMessage) {
+			continue
+		}
+		if operation.CompletedAt.Before(windowStart) || !operation.CompletedAt.Before(observedAt) {
+			continue
+		}
+		if connectorScoped && operation.OCPPConnectorNumber > 0 && operation.OCPPConnectorNumber != observedConnector {
+			continue
+		}
+		if s.traces[operation.TraceID] == nil {
+			continue
+		}
+		expectations = append(expectations, V1TriggerMessageFollowOnExpectation{TraceID: operation.TraceID, RequestedMessage: requestedMessage, AcceptedAt: *operation.CompletedAt})
+	}
+	sort.Slice(expectations, func(i, j int) bool {
+		if expectations[i].AcceptedAt.Equal(expectations[j].AcceptedAt) {
+			return expectations[i].TraceID < expectations[j].TraceID
+		}
+		return expectations[i].AcceptedAt.Before(expectations[j].AcceptedAt)
+	})
+	return expectations, nil
+}
+
 func traceAssociationPriority(transaction *V1Transaction) int {
 	if transaction == nil {
 		return 1 // A CMS RemoteStart root has not yet materialized.

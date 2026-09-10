@@ -76,6 +76,24 @@ func (s *PostgresStore) FindV1TraceForConnector(ctx context.Context, identity st
 	return s.scanV1Trace(s.db.QueryRowContext(ctx, `SELECT t.trace_id::text,t.cpo_id::text,COALESCE(t.cms_start_intent_id::text,''),COALESCE(t.cms_charging_session_id::text,''),COALESCE(t.cms_command_id::text,''),COALESCE(t.cms_charger_operation_id::text,''),COALESCE(t.hal_charger_operation_id::text,''),COALESCE(t.hal_transaction_id::text,''),t.ocpp_transaction_id,t.charger_ocpp_identity,t.ocpp_connector_number,t.created_at FROM v1_charging_traces t LEFT JOIN v1_transactions x ON x.hal_transaction_id=t.hal_transaction_id WHERE t.charger_ocpp_identity=$1 AND t.ocpp_connector_number=$2 AND (t.hal_transaction_id IS NULL OR x.completed_at IS NULL OR x.completed_at >= NOW() - INTERVAL '15 minutes') ORDER BY CASE WHEN x.completed_at IS NULL AND x.hal_transaction_id IS NOT NULL THEN 0 WHEN t.hal_transaction_id IS NULL THEN 1 ELSE 2 END,t.created_at DESC LIMIT 1`, identity, connector))
 }
 
+func (s *PostgresStore) ListV1TriggerMessageFollowOnExpectations(ctx context.Context, identity, requestedMessage string, observedConnector int, connectorScoped bool, windowStart, observedAt time.Time) ([]V1TriggerMessageFollowOnExpectation, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT t.trace_id::text,o.completed_at FROM v1_charger_operations o JOIN v1_charging_traces t ON t.trace_id=o.trace_id WHERE o.kind='TRIGGER_MESSAGE' AND o.state='OCPP_CONFIRMED' AND o.ocpp_result='Accepted' AND o.charger_ocpp_identity=$1 AND o.parameters ->> 'requested_message'=$2 AND o.completed_at >= $5 AND o.completed_at < $6 AND (NOT $4 OR o.ocpp_connector_number=0 OR o.ocpp_connector_number=$3) ORDER BY o.completed_at ASC,t.trace_id ASC`, identity, requestedMessage, observedConnector, connectorScoped, windowStart, observedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	expectations := []V1TriggerMessageFollowOnExpectation{}
+	for rows.Next() {
+		var expectation V1TriggerMessageFollowOnExpectation
+		if err := rows.Scan(&expectation.TraceID, &expectation.AcceptedAt); err != nil {
+			return nil, err
+		}
+		expectation.RequestedMessage = requestedMessage
+		expectations = append(expectations, expectation)
+	}
+	return expectations, rows.Err()
+}
+
 func (s *PostgresStore) AppendV1TraceEvent(ctx context.Context, traceID string, input V1TraceEventInput) error {
 	id, err := NewSecureUUIDString()
 	if err != nil {

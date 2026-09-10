@@ -4,7 +4,7 @@ Status: In Progress
 Owner: Codex
 Collaborators: Anubhab Dey (CMS/HAL boundary owner)
 Started: 2026-09-04
-Last updated: 2026-09-08 (PostgreSQL configuration-key bind and readback regressions fixed in source; uncommitted and not deployed)
+Last updated: 2026-09-10 (source-only accepted TriggerMessage follow-on diagnostics added; not deployed)
 
 Development-plan reference: `docs/DEVELOPMENT_PLAN.md` — v1 consumer boundary
 Detailed-plan reference: `docs/contracts/CMS_HAL_CHARGING_V1.md` (to be extended)
@@ -22,6 +22,8 @@ the CMS CPO control vertical without altering charging Start/Stop semantics.
   bounded TriggerMessage allowlist.
 - Stable trace roots for durable operations plus narrow CALL/CALLRESULT/
   CALLERROR evidence tied by the library-generated OCPP unique ID.
+- A separate 60-second accepted TriggerMessage follow-on diagnostic lane,
+  matched only by identity/action/time/(when scoped) connector.
 
 ## Non-goals
 
@@ -74,12 +76,23 @@ uses pgx v5's database/sql-compatible array scanner for `configuration_keys`.
 This preserves the durable non-null empty-array representation through POST
 readback, duplicate lookup, and exact GET.
 
+Implemented but uncommitted/source-only: HAL records a separate sanitized
+follow-on trace event for later matching allowed charger traffic in the exact
+60 seconds after its durable TriggerMessage `Accepted` record. This is
+non-causal diagnostic evidence; overlapping windows are allowed and trace
+failure cannot alter operation, OCPP, transaction, connector, fact, or worker
+behavior. No migration is added.
+
 ## Verification
 
 Focused configuration-key normalization and CMS HAL reconciliation package
 checks pass. The PostgreSQL persistence regression is covered but skipped
 without `TEST_DATABASE_URL`; CMS delivery and hardware checks remain blocked
 on an explicitly selected disposable environment.
+
+Focused DB-free TriggerMessage follow-on store/OCPP/sanitizer tests pass.
+PostgreSQL, paired CMS, and mapped-charger verification remain blocked on an
+explicit disposable environment; no deployment/restart occurred.
 
 ## Handoff
 

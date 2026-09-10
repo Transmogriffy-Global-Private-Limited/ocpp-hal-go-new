@@ -211,6 +211,7 @@ func (h *HAL) TriggerMessage(ctx context.Context, chargerID string, requestedMes
 
 func (h *HAL) OnDiagnosticsStatusNotification(chargePointID string, request *firmware.DiagnosticsStatusNotificationRequest) (*firmware.DiagnosticsStatusNotificationConfirmation, error) {
 	chargePointID = h.canonicalIdentity(chargePointID)
+	h.recordTriggerMessageFollowOn(chargePointID, "DiagnosticsStatusNotification", 0, time.Now().UTC())
 	h.registry.Touch(chargePointID)
 	h.logger.Info("diagnostics status notification", "charge_point_id", chargePointID, "status", request.Status)
 	return firmware.NewDiagnosticsStatusNotificationConfirmation(), nil
@@ -218,6 +219,7 @@ func (h *HAL) OnDiagnosticsStatusNotification(chargePointID string, request *fir
 
 func (h *HAL) OnFirmwareStatusNotification(chargePointID string, request *firmware.FirmwareStatusNotificationRequest) (*firmware.FirmwareStatusNotificationConfirmation, error) {
 	chargePointID = h.canonicalIdentity(chargePointID)
+	h.recordTriggerMessageFollowOn(chargePointID, "FirmwareStatusNotification", 0, time.Now().UTC())
 	h.registry.Touch(chargePointID)
 	h.logger.Info("firmware status notification", "charge_point_id", chargePointID, "status", request.Status)
 	return firmware.NewFirmwareStatusNotificationConfirmation(), nil
