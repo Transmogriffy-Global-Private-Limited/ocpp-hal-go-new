@@ -40,13 +40,18 @@ type chargerOperationRecoveryDispatcher struct {
 	mu       sync.Mutex
 	calls    map[string]int
 	failures map[string]error
+	after    func()
 }
 
 func (d *chargerOperationRecoveryDispatcher) DispatchChargerOperation(_ context.Context, operation *store.V1ChargerOperation) (string, *core.GetConfigurationConfirmation, error) {
 	d.mu.Lock()
-	defer d.mu.Unlock()
 	d.calls[operation.CMSOperationID]++
-	return "Accepted", nil, d.failures[operation.CMSOperationID]
+	after, failure := d.after, d.failures[operation.CMSOperationID]
+	d.mu.Unlock()
+	if after != nil {
+		after()
+	}
+	return "Accepted", nil, failure
 }
 
 func (d *chargerOperationRecoveryDispatcher) count(id string) int {
@@ -56,21 +61,39 @@ func (d *chargerOperationRecoveryDispatcher) count(id string) int {
 }
 
 func newRecoveryOperation(t *testing.T, operations *store.V1MemoryStore) *store.V1ChargerOperation {
+	return newRecoveryOperationForCharger(t, operations, "")
+}
+
+func newRecoveryOperationForCharger(t *testing.T, operations *store.V1MemoryStore, chargerOCPPIdentity string) *store.V1ChargerOperation {
 	t.Helper()
 	suffix := randomRecoverySuffix(t)
+	if chargerOCPPIdentity == "" {
+		chargerOCPPIdentity = "recovery-" + suffix
+	}
 	op, duplicate, err := operations.CreateV1ChargerOperation(context.Background(), store.V1ChargerOperationInput{
 		CMSOperationID:      "00000000-0000-4000-8000-" + suffix,
 		RequestDigest:       "digest-" + suffix,
 		CPOID:               "00000000-0000-4000-8000-000000000001",
 		CMSChargerID:        "00000000-0000-4000-8000-000000000002",
 		TraceID:             "00000000-0000-4000-8000-000000000003",
-		ChargerOCPPIdentity: "recovery-" + suffix,
+		ChargerOCPPIdentity: chargerOCPPIdentity,
 		Kind:                "CLEAR_CACHE",
 	})
 	if err != nil || duplicate {
 		t.Fatalf("create operation duplicate=%t err=%v", duplicate, err)
 	}
 	return op
+}
+
+type contextAwareOperationStore struct {
+	*store.V1MemoryStore
+}
+
+func (s *contextAwareOperationStore) MarkV1ChargerOperationDelivery(ctx context.Context, id, state, result, category string) (*store.V1ChargerOperation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.V1MemoryStore.MarkV1ChargerOperationDelivery(ctx, id, state, result, category)
 }
 
 func randomRecoverySuffix(t *testing.T) string {
@@ -86,7 +109,7 @@ func TestV1ChargerOperationRecoverySafety(t *testing.T) {
 	t.Run("persisted operation dispatches exactly once after recovery", func(t *testing.T) {
 		op := newRecoveryOperation(t, operations)
 		for range 2 {
-			if err := recoverDispatchableV1ChargerOperations(ctx, operations, dispatcher, "", func(*store.V1ChargerOperation) bool { return true }, nil); err != nil {
+			if err := recoverDispatchableV1ChargerOperations(ctx, ctx, operations, dispatcher, "", func(*store.V1ChargerOperation) bool { return true }, nil); err != nil {
 				t.Fatal(err)
 			}
 		}
@@ -103,7 +126,7 @@ func TestV1ChargerOperationRecoverySafety(t *testing.T) {
 			group.Add(1)
 			go func() {
 				defer group.Done()
-				if _, _, _, err := dispatchClaimedV1ChargerOperation(ctx, operations, dispatcher, op.CMSOperationID); err != nil {
+				if _, _, _, err := dispatchClaimedV1ChargerOperation(ctx, ctx, operations, dispatcher, op.CMSOperationID); err != nil {
 					t.Error(err)
 				}
 			}()
@@ -123,10 +146,10 @@ func TestV1ChargerOperationRecoverySafety(t *testing.T) {
 			t.Fatal(err)
 		}
 		confirmed := newRecoveryOperation(t, operations)
-		if _, _, _, err := dispatchClaimedV1ChargerOperation(ctx, operations, dispatcher, confirmed.CMSOperationID); err != nil {
+		if _, _, _, err := dispatchClaimedV1ChargerOperation(ctx, ctx, operations, dispatcher, confirmed.CMSOperationID); err != nil {
 			t.Fatal(err)
 		}
-		if err := recoverDispatchableV1ChargerOperations(ctx, operations, dispatcher, "", func(*store.V1ChargerOperation) bool { return true }, nil); err != nil {
+		if err := recoverDispatchableV1ChargerOperations(ctx, ctx, operations, dispatcher, "", func(*store.V1ChargerOperation) bool { return true }, nil); err != nil {
 			t.Fatal(err)
 		}
 		stored, err := operations.GetV1ChargerOperation(ctx, attempted.CMSOperationID)
@@ -138,7 +161,7 @@ func TestV1ChargerOperationRecoverySafety(t *testing.T) {
 	t.Run("mixed batch isolates bad and offline operations", func(t *testing.T) {
 		good, bad, offline := newRecoveryOperation(t, operations), newRecoveryOperation(t, operations), newRecoveryOperation(t, operations)
 		dispatcher.failures[bad.CMSOperationID] = errors.New("result unavailable")
-		if err := recoverDispatchableV1ChargerOperations(ctx, operations, dispatcher, "", func(operation *store.V1ChargerOperation) bool {
+		if err := recoverDispatchableV1ChargerOperations(ctx, ctx, operations, dispatcher, "", func(operation *store.V1ChargerOperation) bool {
 			return operation.CMSOperationID != offline.CMSOperationID
 		}, nil); err != nil {
 			t.Fatal(err)
@@ -153,7 +176,7 @@ func TestV1ChargerOperationRecoverySafety(t *testing.T) {
 
 	t.Run("connection-specific scan reaches its own queued operation", func(t *testing.T) {
 		offline, connected := newRecoveryOperation(t, operations), newRecoveryOperation(t, operations)
-		if err := recoverDispatchableV1ChargerOperations(ctx, operations, dispatcher, connected.ChargerOCPPIdentity, func(operation *store.V1ChargerOperation) bool {
+		if err := recoverDispatchableV1ChargerOperations(ctx, ctx, operations, dispatcher, connected.ChargerOCPPIdentity, func(operation *store.V1ChargerOperation) bool {
 			return operation.ChargerOCPPIdentity == connected.ChargerOCPPIdentity
 		}, nil); err != nil {
 			t.Fatal(err)
@@ -164,6 +187,110 @@ func TestV1ChargerOperationRecoverySafety(t *testing.T) {
 			t.Fatalf("offline=%s connected=%s connected_calls=%d", offlineStored.State, connectedStored.State, dispatcher.count(connected.CMSOperationID))
 		}
 	})
+}
+
+func TestV1ChargerOperationFinalizationSurvivesRequestCancellation(t *testing.T) {
+	memory := store.NewV1MemoryStore()
+	operations := &contextAwareOperationStore{V1MemoryStore: memory}
+	op := newRecoveryOperation(t, memory)
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	dispatcher := &chargerOperationRecoveryDispatcher{calls: map[string]int{}, failures: map[string]error{}, after: cancelRequest}
+
+	completed, _, claimed, err := dispatchClaimedV1ChargerOperation(requestCtx, context.Background(), operations, dispatcher, op.CMSOperationID)
+	if err != nil || !claimed || completed.State != "OCPP_CONFIRMED" || dispatcher.count(op.CMSOperationID) != 1 {
+		t.Fatalf("completed=%#v claimed=%t calls=%d err=%v", completed, claimed, dispatcher.count(op.CMSOperationID), err)
+	}
+}
+
+func TestV1ChargerOperationFinalizationFailureNeverReplays(t *testing.T) {
+	memory := store.NewV1MemoryStore()
+	operations := &contextAwareOperationStore{V1MemoryStore: memory}
+	op := newRecoveryOperation(t, memory)
+	dispatcher := &chargerOperationRecoveryDispatcher{calls: map[string]int{}, failures: map[string]error{}}
+	stopped, stop := context.WithCancel(context.Background())
+	stop()
+
+	if _, _, claimed, err := dispatchClaimedV1ChargerOperation(context.Background(), stopped, operations, dispatcher, op.CMSOperationID); !claimed || !errors.Is(err, context.Canceled) {
+		t.Fatalf("claimed=%t err=%v", claimed, err)
+	}
+	stored, err := memory.GetV1ChargerOperation(context.Background(), op.CMSOperationID)
+	if err != nil || stored.State != "DELIVERY_ATTEMPTED" {
+		t.Fatalf("operation=%#v err=%v", stored, err)
+	}
+	if err := recoverDispatchableV1ChargerOperations(context.Background(), context.Background(), operations, dispatcher, "", func(*store.V1ChargerOperation) bool { return true }, nil); err != nil {
+		t.Fatal(err)
+	}
+	if calls := dispatcher.count(op.CMSOperationID); calls != 1 {
+		t.Fatalf("physical dispatches=%d, want 1", calls)
+	}
+}
+
+func TestV1ChargerOperationRecoveryDrainsBoundedBatches(t *testing.T) {
+	operations := store.NewV1MemoryStore()
+	dispatcher := &chargerOperationRecoveryDispatcher{calls: map[string]int{}, failures: map[string]error{}}
+	const identity = "connected-batch"
+	created := make([]*store.V1ChargerOperation, 0, v1ChargerOperationRecoveryBatch+1)
+	for range v1ChargerOperationRecoveryBatch + 1 {
+		created = append(created, newRecoveryOperationForCharger(t, operations, identity))
+	}
+	for range 2 {
+		if err := recoverDispatchableV1ChargerOperations(context.Background(), context.Background(), operations, dispatcher, identity, func(*store.V1ChargerOperation) bool { return true }, nil); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, operation := range created {
+		stored, err := operations.GetV1ChargerOperation(context.Background(), operation.CMSOperationID)
+		if err != nil || stored.State != "OCPP_CONFIRMED" || dispatcher.count(operation.CMSOperationID) != 1 {
+			t.Fatalf("operation=%#v calls=%d err=%v", stored, dispatcher.count(operation.CMSOperationID), err)
+		}
+	}
+}
+
+func TestV1ChargerOperationRecoveryLeavesOfflineRowsUntilConnected(t *testing.T) {
+	operations := store.NewV1MemoryStore()
+	dispatcher := &chargerOperationRecoveryDispatcher{calls: map[string]int{}, failures: map[string]error{}}
+	op := newRecoveryOperationForCharger(t, operations, "offline-then-connected")
+	if err := recoverDispatchableV1ChargerOperations(context.Background(), context.Background(), operations, dispatcher, op.ChargerOCPPIdentity, func(*store.V1ChargerOperation) bool { return false }, nil); err != nil {
+		t.Fatal(err)
+	}
+	stored, err := operations.GetV1ChargerOperation(context.Background(), op.CMSOperationID)
+	if err != nil || stored.State != "PERSISTED" || dispatcher.count(op.CMSOperationID) != 0 {
+		t.Fatalf("offline operation=%#v calls=%d err=%v", stored, dispatcher.count(op.CMSOperationID), err)
+	}
+	if err := recoverDispatchableV1ChargerOperations(context.Background(), context.Background(), operations, dispatcher, op.ChargerOCPPIdentity, func(*store.V1ChargerOperation) bool { return true }, nil); err != nil {
+		t.Fatal(err)
+	}
+	stored, err = operations.GetV1ChargerOperation(context.Background(), op.CMSOperationID)
+	if err != nil || stored.State != "OCPP_CONFIRMED" || dispatcher.count(op.CMSOperationID) != 1 {
+		t.Fatalf("connected operation=%#v calls=%d err=%v", stored, dispatcher.count(op.CMSOperationID), err)
+	}
+}
+
+func TestV1ChargerOperationRecoveryRespectsCancellation(t *testing.T) {
+	operations := store.NewV1MemoryStore()
+	dispatcher := &chargerOperationRecoveryDispatcher{calls: map[string]int{}, failures: map[string]error{}}
+	op := newRecoveryOperation(t, operations)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := recoverDispatchableV1ChargerOperations(ctx, context.Background(), operations, dispatcher, "", func(*store.V1ChargerOperation) bool { return true }, nil); !errors.Is(err, context.Canceled) {
+		t.Fatalf("err=%v, want cancellation", err)
+	}
+	if calls := dispatcher.count(op.CMSOperationID); calls != 0 {
+		t.Fatalf("physical dispatches=%d, want 0", calls)
+	}
+}
+
+func TestV1ChargerOperationRecoveryRotatesActiveConnections(t *testing.T) {
+	hal := New(state.NewRegistry(), &lifecycleRecoveryStoreSpy{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	hal.connections.register("charger-b", "key-b", "")
+	hal.connections.register("charger-a", "key-a", "")
+	want := []string{"charger-a", "charger-b", "charger-a"}
+	for _, expected := range want {
+		identity, ok := hal.nextV1ChargerOperationRecoveryIdentity()
+		if !ok || identity != expected {
+			t.Fatalf("identity=%q ok=%t, want %q", identity, ok, expected)
+		}
+	}
 }
 
 func TestRecoverV1LifecycleIncludesChargerOperationRecovery(t *testing.T) {

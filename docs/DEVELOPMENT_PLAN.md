@@ -18,12 +18,14 @@ Current CPO charger-operations slice:
   a delivery left ambiguous after physical dispatch; migration 020 is
   source-only and not applied.
 
-- restart recovery now converts every possibly sent `DELIVERY_ATTEMPTED`
-  operation to `RECONCILIATION_REQUIRED` without replay. A bounded indexed
-  scan dispatches only durable `PERSISTED` rows when their mapped charger
-  reconnects; the state-gated claim remains the multi-process delivery fence.
-  Migration `023` adds the source-only dispatchable-row index and is not
-  applied.
+- restart recovery converts every possibly sent `DELIVERY_ATTEMPTED` operation
+  to `RECONCILIATION_REQUIRED` without replay. A bounded indexed scan
+  dispatches only durable `PERSISTED` rows when their mapped charger reconnects,
+  while the lifecycle worker fairly revisits one active charger per pass to
+  drain later batches. Final bookkeeping is request-detached but shutdown-
+  cancelled; failed bookkeeping stays ambiguous. The state-gated claim remains
+  the multi-process delivery fence. Migration `023` adds the source-only
+  dispatchable-row index and is not applied.
 
 Current per-operation protocol-evidence slice:
 

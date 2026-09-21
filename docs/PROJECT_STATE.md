@@ -1,21 +1,27 @@
 # Project State
 
-## 2026-09-21 - Charger-operation restart recovery source hardening
+## 2026-09-21 - Charger-operation delivery liveness source hardening
 
 - HAL startup converts `DELIVERY_ATTEMPTED` operation rows to
   `RECONCILIATION_REQUIRED`, preserving the fact that their OCPP call may have
   crossed the network boundary. It never replays them.
 - A mapped charger connection triggers a bounded scan of only durable
-  `PERSISTED` rows. Each candidate uses the same atomic claim and typed OCPP
-  dispatcher as HTTP acceptance. Offline rows remain `PERSISTED`; an operation
-  that cannot be safely classified as pre-delivery is never sent by recovery.
+  `PERSISTED` rows. The existing lifecycle worker then rotates one active
+  charger per bounded pass, draining later batches and operations created after
+  connection without polling offline rows. Each candidate uses the same atomic
+  claim and typed OCPP dispatcher as HTTP acceptance.
+- Final operation bookkeeping has a five-second context detached from the CMS
+  request but cancelled during HAL shutdown. If it cannot persist, the durable
+  `DELIVERY_ATTEMPTED` fence remains and startup classifies it for
+  reconciliation; no path retries that possibly sent OCPP call. A duplicate
+  POST may retry only an existing `PERSISTED` row through the same claim.
 - Migration `023_add_v1_charger_operation_recovery_index` adds the partial
   dispatchable-row index. It is source-only and unapplied.
 
-Focused store and HAL recovery tests pass. PostgreSQL lifecycle, paired CMS,
-and physical charger checks remain unrun without `TEST_DATABASE_URL` and a
-mapped test charger. No database mutation, deployment, restart, commit, or
-push occurred.
+Focused store, HAL recovery, and HTTP duplicate-state tests pass. PostgreSQL
+lifecycle, paired CMS, and physical charger checks remain unrun without
+`TEST_DATABASE_URL` and a mapped test charger. No database mutation,
+deployment, or restart occurred.
 
 ## 2026-09-10 - TriggerMessage Accepted atomicity and final-closure source correction
 

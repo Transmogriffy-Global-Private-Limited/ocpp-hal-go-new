@@ -155,7 +155,7 @@ func (s *Server) v1ChargerOperations(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var configuration *core.GetConfigurationConfirmation
-	if !duplicate {
+	if shouldDispatchV1ChargerOperation(duplicate, op) {
 		var dispatchErr error
 		op, configuration, _, dispatchErr = s.hal.DispatchV1ChargerOperation(r.Context(), request.CMSOperationID)
 		if dispatchErr != nil {
@@ -168,6 +168,10 @@ func (s *Server) v1ChargerOperations(w http.ResponseWriter, r *http.Request) {
 		response["configuration"] = v1SafeConfigurationView(configuration)
 	}
 	writeJSON(w, http.StatusAccepted, response)
+}
+
+func shouldDispatchV1ChargerOperation(duplicate bool, operation *store.V1ChargerOperation) bool {
+	return !duplicate || (operation != nil && operation.State == "PERSISTED")
 }
 
 func (s *Server) v1ChargerOperation(w http.ResponseWriter, r *http.Request) {

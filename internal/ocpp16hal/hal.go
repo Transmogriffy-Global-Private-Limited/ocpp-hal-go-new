@@ -34,6 +34,8 @@ type HAL struct {
 	vendorConfigurationVendor               string
 	operationRecoveryCtx                    context.Context
 	cancelOperationRecovery                 context.CancelFunc
+	operationRecoveryMu                     sync.Mutex
+	operationRecoveryNext                   uint64
 	runtimeMu                               sync.Mutex
 	pendingRuntime                          map[string]pendingRuntimeProjection
 	identityMu                              sync.RWMutex
@@ -164,6 +166,18 @@ func (h *HAL) Stop() {
 		h.cancelOperationRecovery()
 	}
 	h.cs.Stop()
+}
+
+func (h *HAL) nextV1ChargerOperationRecoveryIdentity() (string, bool) {
+	identities := h.connections.identities()
+	if len(identities) == 0 {
+		return "", false
+	}
+	h.operationRecoveryMu.Lock()
+	defer h.operationRecoveryMu.Unlock()
+	identity := identities[h.operationRecoveryNext%uint64(len(identities))]
+	h.operationRecoveryNext++
+	return identity, true
 }
 
 func (h *HAL) Errors() <-chan error {

@@ -87,12 +87,17 @@ windows are allowed and trace failure cannot alter operation, OCPP,
 transaction, connector, fact, or worker behavior. Migration `022` is
 unapplied.
 
-Implemented but uncommitted/source-only: startup turns only possibly sent
+Implemented source-only: startup turns only possibly sent
 `DELIVERY_ATTEMPTED` rows into `RECONCILIATION_REQUIRED`. A mapped charger
-connection then performs a bounded, indexed scan of definitely unattempted
-`PERSISTED` rows and uses the same state-gated claim and typed dispatcher as
-HTTP acceptance. Offline rows remain `PERSISTED`; recovery never blindly
-replays ambiguity. Migration `023` is unapplied.
+connection performs a bounded, indexed scan of definitely unattempted
+`PERSISTED` rows; the lifecycle worker fairly revisits one active charger per
+pass so batches drain and post-connect rows get a later opportunity. Offline
+rows remain `PERSISTED`; recovery never blindly replays ambiguity. Final
+operation persistence survives CMS request cancellation only within a bounded,
+HAL-shutdown-cancelled context. A failed final write intentionally remains
+ambiguous. Duplicate `PERSISTED` POSTs reuse the same state-gated claim;
+attempted and terminal duplicate rows never resend. Migration `023` is
+unapplied.
 
 ## Verification
 
@@ -107,15 +112,18 @@ mapped-charger verification remain blocked on an explicit disposable
 environment; no deployment/restart occurred.
 
 Focused DB-free charger-operation recovery tests cover persisted restart,
-racing claimants, attempted/terminal non-replay, mixed-batch isolation, and
-lifecycle wiring. PostgreSQL lifecycle and hardware checks remain blocked on a
-selected disposable environment.
+racing claimants, attempted/terminal non-replay, mixed-batch isolation,
+request-cancelled finalization, bounded-batch draining, offline-to-connected
+recovery, cancellation, duplicate state gating, and lifecycle wiring.
+PostgreSQL lifecycle and hardware checks remain blocked on a selected
+disposable environment.
 
 ## Handoff
 
 Never redeliver an operation left ambiguous after physical dispatch. Exact CMS
-operation-ID lookup is the only reconciliation path. The prior `PERSISTED`
-restart-recovery gap is resolved by the bounded connection-triggered scan.
+operation-ID lookup is the only reconciliation path. The `PERSISTED` recovery
+path is bounded per pass but eventually revisits active chargers; it is not an
+offline poll or a replay path for ambiguous delivery.
 
 ## Completion
 

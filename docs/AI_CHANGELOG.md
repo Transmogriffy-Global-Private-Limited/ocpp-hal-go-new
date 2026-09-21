@@ -1,6 +1,6 @@
 # AI-assisted changelog
 
-## 2026-09-21 - Recover only definitely unattempted charger operations (source only)
+## 2026-09-21 - Converge only definitely unattempted charger operations (source only)
 
 - Added startup conversion of HAL charger operations from
   `DELIVERY_ATTEMPTED` to `RECONCILIATION_REQUIRED`; a possibly sent OCPP call
@@ -9,8 +9,15 @@
   state-gated delivery claims, a partial PostgreSQL recovery index in migration
   `023`, and focused tests for restart, racing claimants, ambiguity, terminal
   rows, mixed batches, and lifecycle wiring.
+- The lifecycle worker now rotates across active charger identities so bounded
+  batches drain eventually, including rows accepted after a charger connected.
+  Final operation persistence is bounded and detached from CMS request
+  cancellation, but remains cancelled by HAL shutdown. A failed final write
+  leaves `DELIVERY_ATTEMPTED` for reconciliation rather than risking resend;
+  duplicate `PERSISTED` requests reuse the same safe claim path.
 
-Verification: focused `internal/store` and `internal/ocpp16hal` tests pass.
+Verification: focused `internal/store`, `internal/ocpp16hal`, and
+`internal/httpapi` tests pass.
 PostgreSQL integration remains skipped without `TEST_DATABASE_URL`; migration
 `023` is source-only and unapplied. No database, deployment, restart, commit,
 or push occurred.

@@ -14,6 +14,7 @@ import (
 )
 
 const v1ChargerOperationRecoveryBatch = 100
+const v1ChargerOperationFinalizationTimeout = 5 * time.Second
 
 type v1ChargerOperationRecoveryStore interface {
 	ClaimV1ChargerOperationDelivery(context.Context, string) (*store.V1ChargerOperation, bool, error)
@@ -27,8 +28,11 @@ type v1ChargerOperationDispatcher interface {
 
 // dispatchClaimedV1ChargerOperation is the one state-gated physical dispatch
 // path for both HTTP acceptance and recovery. Its claim commits the possible
-// delivery boundary before it can invoke OCPP.
-func dispatchClaimedV1ChargerOperation(ctx context.Context, operations v1ChargerOperationRecoveryStore, dispatcher v1ChargerOperationDispatcher, cmsOperationID string) (*store.V1ChargerOperation, *core.GetConfigurationConfirmation, bool, error) {
+// delivery boundary before it can invoke OCPP. Finalization has a separate,
+// shutdown-cancelled lifetime so a CMS request timeout cannot leave a known
+// OCPP result in DELIVERY_ATTEMPTED. A finalization failure deliberately leaves
+// that state for startup reconciliation instead of risking a second send.
+func dispatchClaimedV1ChargerOperation(ctx, finalizationParent context.Context, operations v1ChargerOperationRecoveryStore, dispatcher v1ChargerOperationDispatcher, cmsOperationID string) (*store.V1ChargerOperation, *core.GetConfigurationConfirmation, bool, error) {
 	op, claimed, err := operations.ClaimV1ChargerOperationDelivery(ctx, cmsOperationID)
 	if err != nil || !claimed {
 		return op, nil, false, err
@@ -40,7 +44,9 @@ func dispatchClaimedV1ChargerOperation(ctx context.Context, operations v1Charger
 	if dispatchErr != nil {
 		state, category, result, configuration = "RECONCILIATION_REQUIRED", "delivery_ambiguous", "", nil
 	}
-	completed, err := operations.MarkV1ChargerOperationDelivery(ctx, cmsOperationID, state, result, category)
+	finalizationCtx, finalizationCancel := context.WithTimeout(finalizationParent, v1ChargerOperationFinalizationTimeout)
+	defer finalizationCancel()
+	completed, err := operations.MarkV1ChargerOperationDelivery(finalizationCtx, cmsOperationID, state, result, category)
 	return completed, configuration, true, err
 }
 
@@ -48,7 +54,7 @@ func dispatchClaimedV1ChargerOperation(ctx context.Context, operations v1Charger
 // connection predicate keeps an offline charger in PERSISTED, which is still
 // definitely unattempted and can be retried when it reconnects. Per-row
 // failures are isolated so one poison row cannot block unrelated operations.
-func recoverDispatchableV1ChargerOperations(ctx context.Context, operations v1ChargerOperationRecoveryStore, dispatcher v1ChargerOperationDispatcher, chargerOCPPIdentity string, connected func(*store.V1ChargerOperation) bool, logger *slog.Logger) error {
+func recoverDispatchableV1ChargerOperations(ctx, finalizationParent context.Context, operations v1ChargerOperationRecoveryStore, dispatcher v1ChargerOperationDispatcher, chargerOCPPIdentity string, connected func(*store.V1ChargerOperation) bool, logger *slog.Logger) error {
 	pending, err := operations.ListV1DispatchableChargerOperations(ctx, chargerOCPPIdentity, v1ChargerOperationRecoveryBatch)
 	if err != nil {
 		return err
@@ -60,7 +66,7 @@ func recoverDispatchableV1ChargerOperations(ctx context.Context, operations v1Ch
 		if !connected(operation) {
 			continue
 		}
-		if _, _, _, err := dispatchClaimedV1ChargerOperation(ctx, operations, dispatcher, operation.CMSOperationID); err != nil && logger != nil {
+		if _, _, _, err := dispatchClaimedV1ChargerOperation(ctx, finalizationParent, operations, dispatcher, operation.CMSOperationID); err != nil && logger != nil {
 			logger.Warn("failed to recover persisted charger operation", "cms_operation_id", operation.CMSOperationID, "error", err)
 		}
 	}
@@ -86,19 +92,22 @@ func (h *HAL) DispatchV1ChargerOperation(ctx context.Context, cmsOperationID str
 		// Diagnostics are never allowed to alter physical-command safety.
 		_, _ = traces.EnsureV1Trace(ctx, store.V1Trace{TraceID: op.TraceID, CPOID: op.CPOID, CMSChargerOperationID: op.CMSOperationID, HALChargerOperationID: op.HALOperationID, ChargerOCPPIdentity: op.ChargerOCPPIdentity, OCPPConnectorNumber: op.OCPPConnectorNumber})
 	}
-	return dispatchClaimedV1ChargerOperation(ctx, h.v1Store, h, cmsOperationID)
+	return dispatchClaimedV1ChargerOperation(ctx, h.operationRecoveryCtx, h.v1Store, h, cmsOperationID)
 }
 
-// DispatchPendingV1ChargerOperations is invoked when a charge point connects.
-// It does not poll offline rows, so recovery stays bounded without a hot loop.
+// DispatchPendingV1ChargerOperations advances one connected charger per
+// lifecycle-worker pass. Rotating across current connections keeps a pass
+// bounded, eventually drains batches larger than the connection-triggered
+// limit, and never polls an offline charger's PERSISTED rows.
 func (h *HAL) DispatchPendingV1ChargerOperations(ctx context.Context) error {
 	if h == nil || h.v1Store == nil {
 		return nil
 	}
-	return recoverDispatchableV1ChargerOperations(ctx, h.v1Store, h, "", func(operation *store.V1ChargerOperation) bool {
-		_, connected := h.connections.current(h.canonicalIdentity(operation.ChargerOCPPIdentity))
-		return connected
-	}, h.logger)
+	chargerOCPPIdentity, ok := h.nextV1ChargerOperationRecoveryIdentity()
+	if !ok {
+		return nil
+	}
+	return h.dispatchPendingV1ChargerOperationsForCharger(ctx, chargerOCPPIdentity)
 }
 
 func (h *HAL) dispatchPendingV1ChargerOperationsForCharger(ctx context.Context, chargerOCPPIdentity string) error {
@@ -106,7 +115,7 @@ func (h *HAL) dispatchPendingV1ChargerOperationsForCharger(ctx context.Context, 
 		return nil
 	}
 	chargerOCPPIdentity = h.canonicalIdentity(chargerOCPPIdentity)
-	return recoverDispatchableV1ChargerOperations(ctx, h.v1Store, h, chargerOCPPIdentity, func(operation *store.V1ChargerOperation) bool {
+	return recoverDispatchableV1ChargerOperations(ctx, h.operationRecoveryCtx, h.v1Store, h, chargerOCPPIdentity, func(operation *store.V1ChargerOperation) bool {
 		_, connected := h.connections.current(h.canonicalIdentity(operation.ChargerOCPPIdentity))
 		return connected
 	}, h.logger)
@@ -206,7 +215,10 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 			h.logger.Warn("failed to dispatch overdue v1 stop", "hal_transaction_id", transaction.HALTransactionID, "error", err)
 		}
 	}
-	return h.DispatchPendingV1Stops(ctx)
+	if err := h.DispatchPendingV1Stops(ctx); err != nil {
+		return err
+	}
+	return h.DispatchPendingV1ChargerOperations(ctx)
 }
 
 func v1DeadlineStopCause(source, legacyLimitType string) (string, string) {

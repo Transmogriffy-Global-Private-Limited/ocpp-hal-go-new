@@ -3,6 +3,7 @@ package ocpp16hal
 import (
 	"fmt"
 	"reflect"
+	"sort"
 	"sync"
 	"time"
 
@@ -82,6 +83,18 @@ func (t *connectionTracker) current(chargerID string) (*connectionRecord, bool) 
 	}
 	copy := record
 	return &copy, true
+}
+
+func (t *connectionTracker) identities() []string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	identities := make([]string, 0, len(t.active))
+	for identity := range t.active {
+		identities = append(identities, identity)
+	}
+	sort.Strings(identities)
+	return identities
 }
 
 func connectionKey(chargePoint ocpp16.ChargePointConnection) string {
