@@ -215,10 +215,7 @@ func (h *HAL) EnforceV1Deadlines(ctx context.Context) error {
 			h.logger.Warn("failed to dispatch overdue v1 stop", "hal_transaction_id", transaction.HALTransactionID, "error", err)
 		}
 	}
-	if err := h.DispatchPendingV1Stops(ctx); err != nil {
-		return err
-	}
-	return h.DispatchPendingV1ChargerOperations(ctx)
+	return h.DispatchPendingV1Stops(ctx)
 }
 
 func v1DeadlineStopCause(source, legacyLimitType string) (string, string) {

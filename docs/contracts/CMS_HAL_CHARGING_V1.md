@@ -950,9 +950,10 @@ The post-OCPP state write is bounded but independent of CMS request
 cancellation and is cancelled by HAL shutdown. If that write fails, the row
 remains `DELIVERY_ATTEMPTED` and is reconciled rather than resent. Rows still
 `PERSISTED` are definitely unattempted and are scanned in bounded batches when
-their mapped charger connects. The lifecycle worker fairly revisits one active
-charger per pass, so batches eventually drain without polling offline chargers.
-Each row is claimed atomically before the same dispatcher runs. A duplicate
+their mapped charger connects. A dedicated sequential recovery worker fairly
+revisits one active charger per pass, so batches eventually drain without
+polling offline chargers or delaying charging deadline and stop recovery. Each
+row is claimed atomically before the same dispatcher runs. A duplicate
 POST may retry only an existing `PERSISTED` row; attempted and terminal rows
 never trigger another physical dispatch. An offline charger remains
 `PERSISTED` rather than being misclassified as ambiguous.

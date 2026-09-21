@@ -6,10 +6,12 @@
   `RECONCILIATION_REQUIRED`, preserving the fact that their OCPP call may have
   crossed the network boundary. It never replays them.
 - A mapped charger connection triggers a bounded scan of only durable
-  `PERSISTED` rows. The existing lifecycle worker then rotates one active
-  charger per bounded pass, draining later batches and operations created after
-  connection without polling offline rows. Each candidate uses the same atomic
-  claim and typed OCPP dispatcher as HTTP acceptance.
+  `PERSISTED` rows. An independent sequential charger-operation recovery worker
+  then rotates one active charger per bounded pass, draining later batches and
+  operations created after connection without polling offline rows. Each
+  candidate uses the same atomic claim and typed OCPP dispatcher as HTTP
+  acceptance. Slow administrative OCPP recovery cannot delay charging deadline
+  enforcement, automatic stops, or pending stop recovery.
 - Final operation bookkeeping has a five-second context detached from the CMS
   request but cancelled during HAL shutdown. If it cannot persist, the durable
   `DELIVERY_ATTEMPTED` fence remains and startup classifies it for

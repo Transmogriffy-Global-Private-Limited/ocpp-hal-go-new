@@ -9,12 +9,15 @@
   state-gated delivery claims, a partial PostgreSQL recovery index in migration
   `023`, and focused tests for restart, racing claimants, ambiguity, terminal
   rows, mixed batches, and lifecycle wiring.
-- The lifecycle worker now rotates across active charger identities so bounded
-  batches drain eventually, including rows accepted after a charger connected.
-  Final operation persistence is bounded and detached from CMS request
-  cancellation, but remains cancelled by HAL shutdown. A failed final write
-  leaves `DELIVERY_ATTEMPTED` for reconciliation rather than risking resend;
-  duplicate `PERSISTED` requests reuse the same safe claim path.
+- A dedicated sequential recovery worker now rotates across active charger
+  identities so bounded batches drain eventually, including rows accepted after
+  a charger connected. It is separate from deadline enforcement, automatic
+  stops, and pending-stop recovery, so a slow administrative OCPP call cannot
+  delay charging lifecycle work. Final operation persistence is bounded and
+  detached from CMS request cancellation, but remains cancelled by HAL shutdown.
+  A failed final write leaves `DELIVERY_ATTEMPTED` for reconciliation rather
+  than risking resend; duplicate `PERSISTED` requests reuse the same safe claim
+  path.
 
 Verification: focused `internal/store`, `internal/ocpp16hal`, and
 `internal/httpapi` tests pass.

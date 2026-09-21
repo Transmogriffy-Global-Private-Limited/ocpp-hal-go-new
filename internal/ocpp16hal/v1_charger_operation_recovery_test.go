@@ -20,12 +20,18 @@ var recoveryOperationSequence atomic.Uint64
 
 type lifecycleRecoveryStoreSpy struct {
 	store.V1Store
-	recovered bool
+	mu                     sync.Mutex
+	recovered              bool
+	deadlinePasses         int
+	chargerOperationPasses int
+	chargerOperationListed chan struct{}
 }
 
 func (s *lifecycleRecoveryStoreSpy) RecoverV1CommandDelivery(context.Context) error { return nil }
 func (s *lifecycleRecoveryStoreSpy) RecoverV1StopDelivery(context.Context) error    { return nil }
 func (s *lifecycleRecoveryStoreSpy) RecoverV1ChargerOperationDelivery(context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.recovered = true
 	return nil
 }
@@ -33,7 +39,29 @@ func (s *lifecycleRecoveryStoreSpy) ListV1DispatchableStops(context.Context, int
 	return nil, nil
 }
 func (s *lifecycleRecoveryStoreSpy) ListV1OverdueTransactions(context.Context, time.Time, int) ([]*store.V1Transaction, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deadlinePasses++
 	return nil, nil
+}
+func (s *lifecycleRecoveryStoreSpy) ListV1DispatchableChargerOperations(context.Context, string, int) ([]*store.V1ChargerOperation, error) {
+	s.mu.Lock()
+	s.chargerOperationPasses++
+	listed := s.chargerOperationListed
+	s.mu.Unlock()
+	if listed != nil {
+		select {
+		case listed <- struct{}{}:
+		default:
+		}
+	}
+	return nil, nil
+}
+
+func (s *lifecycleRecoveryStoreSpy) counts() (int, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.deadlinePasses, s.chargerOperationPasses
 }
 
 type chargerOperationRecoveryDispatcher struct {
@@ -290,6 +318,39 @@ func TestV1ChargerOperationRecoveryRotatesActiveConnections(t *testing.T) {
 		if !ok || identity != expected {
 			t.Fatalf("identity=%q ok=%t, want %q", identity, ok, expected)
 		}
+	}
+}
+
+func TestEnforceV1DeadlinesDoesNotRecoverChargerOperations(t *testing.T) {
+	operations := &lifecycleRecoveryStoreSpy{}
+	hal := New(state.NewRegistry(), operations, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	hal.connections.register("charger-a", "key-a", "")
+	if err := hal.EnforceV1Deadlines(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	deadlines, chargerOperations := operations.counts()
+	if deadlines != 1 || chargerOperations != 0 {
+		t.Fatalf("deadline passes=%d charger-operation passes=%d", deadlines, chargerOperations)
+	}
+}
+
+func TestConnectionAndPeriodicRecoveryRaceHasOnePhysicalDispatch(t *testing.T) {
+	operations := store.NewV1MemoryStore()
+	dispatcher := &chargerOperationRecoveryDispatcher{calls: map[string]int{}, failures: map[string]error{}}
+	op := newRecoveryOperationForCharger(t, operations, "connected-race")
+	var group sync.WaitGroup
+	for range 2 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			if err := recoverDispatchableV1ChargerOperations(context.Background(), context.Background(), operations, dispatcher, op.ChargerOCPPIdentity, func(*store.V1ChargerOperation) bool { return true }, nil); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	group.Wait()
+	if calls := dispatcher.count(op.CMSOperationID); calls != 1 {
+		t.Fatalf("physical dispatches=%d, want 1", calls)
 	}
 }
 

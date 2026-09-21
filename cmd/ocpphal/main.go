@@ -66,6 +66,7 @@ func main() {
 			}
 		}
 	}()
+	go hal.RunV1ChargerOperationRecovery(workerCtx)
 	go runTraceRetention(workerCtx, logger, v1Store, cfg.V1TraceRetentionDays, time.Duration(cfg.V1TraceRetentionIntervalSeconds)*time.Second)
 	factWorker, err := v1facts.New(cfg, v1Store, logger)
 	if err != nil {
