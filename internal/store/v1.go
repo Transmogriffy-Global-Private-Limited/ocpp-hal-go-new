@@ -378,6 +378,8 @@ type V1Store interface {
 	GetV1ChargerOperation(context.Context, string) (*V1ChargerOperation, error)
 	ClaimV1ChargerOperationDelivery(context.Context, string) (*V1ChargerOperation, bool, error)
 	MarkV1ChargerOperationDelivery(context.Context, string, string, string, string) (*V1ChargerOperation, error)
+	RecoverV1ChargerOperationDelivery(context.Context) error
+	ListV1DispatchableChargerOperations(context.Context, string, int) ([]*V1ChargerOperation, error)
 	GetV1Credential(context.Context, string) (*V1Credential, error)
 	MaterializeV1Start(context.Context, V1StartMaterialization) (*V1Transaction, bool, error)
 	UpdateV1Meter(context.Context, string, int64, int64, time.Time) (*V1Transaction, error)

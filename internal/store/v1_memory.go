@@ -2,6 +2,8 @@ package store
 
 import (
 	"context"
+	"slices"
+	"strings"
 	"sync"
 	"time"
 )
@@ -88,6 +90,46 @@ func (s *V1MemoryStore) MarkV1ChargerOperationDelivery(_ context.Context, id, st
 		op.CompletedAt = &now
 	}
 	return cloneV1ChargerOperation(op), nil
+}
+
+func (s *V1MemoryStore) RecoverV1ChargerOperationDelivery(_ context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	now := time.Now().UTC()
+	for _, op := range s.operations {
+		if op.State == "DELIVERY_ATTEMPTED" {
+			op.State, op.ErrorCategory, op.UpdatedAt = "RECONCILIATION_REQUIRED", "recovery_ambiguous", now
+			op.CompletedAt = &now
+		}
+	}
+	return nil
+}
+
+func (s *V1MemoryStore) ListV1DispatchableChargerOperations(_ context.Context, chargerOCPPIdentity string, limit int) ([]*V1ChargerOperation, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	operations := make([]*V1ChargerOperation, 0, limit)
+	for _, op := range s.operations {
+		if op.State == "PERSISTED" && (chargerOCPPIdentity == "" || op.ChargerOCPPIdentity == chargerOCPPIdentity) {
+			operations = append(operations, cloneV1ChargerOperation(op))
+		}
+	}
+	slices.SortFunc(operations, func(left, right *V1ChargerOperation) int {
+		if left.CreatedAt.Before(right.CreatedAt) {
+			return -1
+		}
+		if right.CreatedAt.Before(left.CreatedAt) {
+			return 1
+		}
+		return strings.Compare(left.CMSOperationID, right.CMSOperationID)
+	})
+	if len(operations) > limit {
+		operations = operations[:limit]
+	}
+	return operations, nil
 }
 
 func (s *V1MemoryStore) CreateV1StartCommand(_ context.Context, input V1StartCommandInput) (*V1RemoteCommand, bool, error) {

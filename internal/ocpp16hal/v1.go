@@ -3,6 +3,7 @@ package ocpp16hal
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"math/big"
 	"strings"
 	"time"
@@ -11,6 +12,105 @@ import (
 
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 )
+
+const v1ChargerOperationRecoveryBatch = 100
+
+type v1ChargerOperationRecoveryStore interface {
+	ClaimV1ChargerOperationDelivery(context.Context, string) (*store.V1ChargerOperation, bool, error)
+	MarkV1ChargerOperationDelivery(context.Context, string, string, string, string) (*store.V1ChargerOperation, error)
+	ListV1DispatchableChargerOperations(context.Context, string, int) ([]*store.V1ChargerOperation, error)
+}
+
+type v1ChargerOperationDispatcher interface {
+	DispatchChargerOperation(context.Context, *store.V1ChargerOperation) (string, *core.GetConfigurationConfirmation, error)
+}
+
+// dispatchClaimedV1ChargerOperation is the one state-gated physical dispatch
+// path for both HTTP acceptance and recovery. Its claim commits the possible
+// delivery boundary before it can invoke OCPP.
+func dispatchClaimedV1ChargerOperation(ctx context.Context, operations v1ChargerOperationRecoveryStore, dispatcher v1ChargerOperationDispatcher, cmsOperationID string) (*store.V1ChargerOperation, *core.GetConfigurationConfirmation, bool, error) {
+	op, claimed, err := operations.ClaimV1ChargerOperationDelivery(ctx, cmsOperationID)
+	if err != nil || !claimed {
+		return op, nil, false, err
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+	defer cancel()
+	result, configuration, dispatchErr := dispatcher.DispatchChargerOperation(callCtx, op)
+	state, category := "OCPP_CONFIRMED", ""
+	if dispatchErr != nil {
+		state, category, result, configuration = "RECONCILIATION_REQUIRED", "delivery_ambiguous", "", nil
+	}
+	completed, err := operations.MarkV1ChargerOperationDelivery(ctx, cmsOperationID, state, result, category)
+	return completed, configuration, true, err
+}
+
+// recoverDispatchableV1ChargerOperations drains a bounded durable batch. The
+// connection predicate keeps an offline charger in PERSISTED, which is still
+// definitely unattempted and can be retried when it reconnects. Per-row
+// failures are isolated so one poison row cannot block unrelated operations.
+func recoverDispatchableV1ChargerOperations(ctx context.Context, operations v1ChargerOperationRecoveryStore, dispatcher v1ChargerOperationDispatcher, chargerOCPPIdentity string, connected func(*store.V1ChargerOperation) bool, logger *slog.Logger) error {
+	pending, err := operations.ListV1DispatchableChargerOperations(ctx, chargerOCPPIdentity, v1ChargerOperationRecoveryBatch)
+	if err != nil {
+		return err
+	}
+	for _, operation := range pending {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if !connected(operation) {
+			continue
+		}
+		if _, _, _, err := dispatchClaimedV1ChargerOperation(ctx, operations, dispatcher, operation.CMSOperationID); err != nil && logger != nil {
+			logger.Warn("failed to recover persisted charger operation", "cms_operation_id", operation.CMSOperationID, "error", err)
+		}
+	}
+	return nil
+}
+
+// DispatchV1ChargerOperation makes a persisted CPO operation eligible for its
+// single physical dispatch only while this process has a current connection.
+// The connection check is a preflight only; the durable claim remains the
+// authority before the OCPP network boundary.
+func (h *HAL) DispatchV1ChargerOperation(ctx context.Context, cmsOperationID string) (*store.V1ChargerOperation, *core.GetConfigurationConfirmation, bool, error) {
+	if h == nil || h.v1Store == nil {
+		return nil, nil, false, store.ErrV1OperationNotFound
+	}
+	op, err := h.v1Store.GetV1ChargerOperation(ctx, cmsOperationID)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	if _, connected := h.connections.current(h.canonicalIdentity(op.ChargerOCPPIdentity)); !connected {
+		return op, nil, false, nil
+	}
+	if traces, ok := h.v1Store.(store.V1TraceStore); ok && op.TraceID != "" {
+		// Diagnostics are never allowed to alter physical-command safety.
+		_, _ = traces.EnsureV1Trace(ctx, store.V1Trace{TraceID: op.TraceID, CPOID: op.CPOID, CMSChargerOperationID: op.CMSOperationID, HALChargerOperationID: op.HALOperationID, ChargerOCPPIdentity: op.ChargerOCPPIdentity, OCPPConnectorNumber: op.OCPPConnectorNumber})
+	}
+	return dispatchClaimedV1ChargerOperation(ctx, h.v1Store, h, cmsOperationID)
+}
+
+// DispatchPendingV1ChargerOperations is invoked when a charge point connects.
+// It does not poll offline rows, so recovery stays bounded without a hot loop.
+func (h *HAL) DispatchPendingV1ChargerOperations(ctx context.Context) error {
+	if h == nil || h.v1Store == nil {
+		return nil
+	}
+	return recoverDispatchableV1ChargerOperations(ctx, h.v1Store, h, "", func(operation *store.V1ChargerOperation) bool {
+		_, connected := h.connections.current(h.canonicalIdentity(operation.ChargerOCPPIdentity))
+		return connected
+	}, h.logger)
+}
+
+func (h *HAL) dispatchPendingV1ChargerOperationsForCharger(ctx context.Context, chargerOCPPIdentity string) error {
+	if h == nil || h.v1Store == nil {
+		return nil
+	}
+	chargerOCPPIdentity = h.canonicalIdentity(chargerOCPPIdentity)
+	return recoverDispatchableV1ChargerOperations(ctx, h.v1Store, h, chargerOCPPIdentity, func(operation *store.V1ChargerOperation) bool {
+		_, connected := h.connections.current(h.canonicalIdentity(operation.ChargerOCPPIdentity))
+		return connected
+	}, h.logger)
+}
 
 // DispatchV1Stop is the sole HAL-side RemoteStop dispatcher. The store claim
 // and recorded DELIVERY_ATTEMPTED state prevent a second worker from guessing
@@ -44,9 +144,9 @@ func (h *HAL) DispatchV1Stop(ctx context.Context, halTransactionID string) (*sto
 	return h.v1Store.MarkV1StopDelivery(ctx, halTransactionID, status, status, "")
 }
 
-// RecoverV1Lifecycle marks only delivery windows with proven pre-network state
-// as replayable. A durable DELIVERY_ATTEMPTED marker is intentionally left as
-// AMBIGUOUS because the wire outcome cannot be reconstructed safely.
+// RecoverV1Lifecycle restores only proven pre-network work. Every durable
+// DELIVERY_ATTEMPTED marker becomes an explicit ambiguous/reconciliation state
+// because the wire outcome cannot be reconstructed safely.
 func (h *HAL) RecoverV1Lifecycle(ctx context.Context) error {
 	if h.v1Store == nil {
 		return nil
@@ -55,6 +155,9 @@ func (h *HAL) RecoverV1Lifecycle(ctx context.Context) error {
 		return err
 	}
 	if err := h.v1Store.RecoverV1StopDelivery(ctx); err != nil {
+		return err
+	}
+	if err := h.v1Store.RecoverV1ChargerOperationDelivery(ctx); err != nil {
 		return err
 	}
 	if err := h.DispatchPendingV1Stops(ctx); err != nil {

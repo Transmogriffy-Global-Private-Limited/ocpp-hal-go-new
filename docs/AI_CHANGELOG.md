@@ -1,5 +1,20 @@
 # AI-assisted changelog
 
+## 2026-09-21 - Recover only definitely unattempted charger operations (source only)
+
+- Added startup conversion of HAL charger operations from
+  `DELIVERY_ATTEMPTED` to `RECONCILIATION_REQUIRED`; a possibly sent OCPP call
+  is never automatically replayed.
+- Added a bounded, connection-triggered `PERSISTED` recovery scan, atomic
+  state-gated delivery claims, a partial PostgreSQL recovery index in migration
+  `023`, and focused tests for restart, racing claimants, ambiguity, terminal
+  rows, mixed batches, and lifecycle wiring.
+
+Verification: focused `internal/store` and `internal/ocpp16hal` tests pass.
+PostgreSQL integration remains skipped without `TEST_DATABASE_URL`; migration
+`023` is source-only and unapplied. No database, deployment, restart, commit,
+or push occurred.
+
 ## 2026-09-10 - Make TriggerMessage Accepted coverage atomic and closure final (source only)
 
 - HAL migration `022` commits an indexed durable diagnostic window in the same

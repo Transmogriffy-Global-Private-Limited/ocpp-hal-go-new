@@ -2,10 +2,8 @@ package httpapi
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/Transmogriffy-Global-Private-Limited/ocpp-hal-go-new/internal/store"
 	"github.com/lorenzodonini/ocpp-go/ocpp1.6/core"
@@ -158,26 +156,11 @@ func (s *Server) v1ChargerOperations(w http.ResponseWriter, r *http.Request) {
 	}
 	var configuration *core.GetConfigurationConfirmation
 	if !duplicate {
-		if traces, ok := s.v1Store.(store.V1TraceStore); ok {
-			// Trace failure is diagnostic-only and cannot change operation delivery semantics.
-			_, _ = traces.EnsureV1Trace(r.Context(), store.V1Trace{TraceID: request.TraceID, CPOID: request.CPOID, CMSChargerOperationID: request.CMSOperationID, HALChargerOperationID: op.HALOperationID, ChargerOCPPIdentity: request.ChargerOCPPIdentity, OCPPConnectorNumber: request.OCPPConnectorNumber})
-		}
-		if _, claimed, claimErr := s.v1Store.ClaimV1ChargerOperationDelivery(r.Context(), request.CMSOperationID); claimErr != nil {
-			s.writeV1StoreError(w, claimErr)
+		var dispatchErr error
+		op, configuration, _, dispatchErr = s.hal.DispatchV1ChargerOperation(r.Context(), request.CMSOperationID)
+		if dispatchErr != nil {
+			s.writeV1StoreError(w, dispatchErr)
 			return
-		} else if claimed {
-			result, dispatchConfiguration, dispatchErr := s.dispatchV1ChargerOperation(r.Context(), request, op)
-			configuration = dispatchConfiguration
-			state, category := "OCPP_CONFIRMED", ""
-			if dispatchErr != nil {
-				state, category, result = "RECONCILIATION_REQUIRED", "delivery_ambiguous", ""
-				configuration = nil
-			}
-			op, err = s.v1Store.MarkV1ChargerOperationDelivery(r.Context(), request.CMSOperationID, state, result, category)
-			if err != nil {
-				s.writeV1StoreError(w, err)
-				return
-			}
 		}
 	}
 	response := map[string]any{"operation": v1ChargerOperationView(op), "correlation_id": correlation, "duplicate": duplicate}
@@ -199,36 +182,6 @@ func (s *Server) v1ChargerOperation(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"operation": v1ChargerOperationView(op)})
-}
-
-func (s *Server) dispatchV1ChargerOperation(ctx context.Context, request v1ChargerOperationRequest, operation *store.V1ChargerOperation) (string, *core.GetConfigurationConfirmation, error) {
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Second)
-	defer cancel()
-	if operation != nil {
-		return s.hal.DispatchChargerOperation(ctx, operation)
-	}
-	switch request.Kind {
-	case "RESET":
-		result, err := s.hal.Reset(ctx, request.ChargerOCPPIdentity, strings.ToLower(request.Parameters["type"]))
-		return result, nil, err
-	case "UNLOCK_CONNECTOR":
-		result, err := s.hal.UnlockConnector(ctx, request.ChargerOCPPIdentity, request.OCPPConnectorNumber)
-		return result, nil, err
-	case "CHANGE_AVAILABILITY":
-		result, err := s.hal.ChangeAvailability(ctx, request.ChargerOCPPIdentity, request.OCPPConnectorNumber, strings.ToLower(request.Parameters["type"]))
-		return result, nil, err
-	case "CLEAR_CACHE":
-		result, err := s.hal.ClearCache(ctx, request.ChargerOCPPIdentity)
-		return result, nil, err
-	case "CHANGE_CONFIGURATION":
-		result, err := s.hal.ChangeConfiguration(ctx, request.ChargerOCPPIdentity, request.Parameters["key"], request.Parameters["value"])
-		return result, nil, err
-	case "TRIGGER_MESSAGE":
-		result, err := s.hal.TriggerMessage(ctx, request.ChargerOCPPIdentity, request.Parameters["requested_message"], request.OCPPConnectorNumber)
-		return result, nil, err
-	default:
-		return "", nil, errors.New("unsupported charger operation")
-	}
 }
 
 func v1SafeConfigurationView(confirmation *core.GetConfigurationConfirmation) map[string]any {

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"strconv"
 
 	"github.com/jackc/pgx/v5/pgtype"
 )
@@ -123,4 +124,58 @@ func (s *PostgresStore) MarkV1ChargerOperationDelivery(ctx context.Context, id, 
 		return nil, err
 	}
 	return s.GetV1ChargerOperation(ctx, id)
+}
+
+// RecoverV1ChargerOperationDelivery preserves the physical-command safety
+// boundary after a process interruption. DELIVERY_ATTEMPTED may already have
+// crossed OCPP, so it is terminally ambiguous and is never made dispatchable.
+func (s *PostgresStore) RecoverV1ChargerOperationDelivery(ctx context.Context) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE v1_charger_operations SET state='RECONCILIATION_REQUIRED',error_category='recovery_ambiguous',completed_at=NOW(),updated_at=NOW() WHERE state='DELIVERY_ATTEMPTED'`)
+	return err
+}
+
+// ListV1DispatchableChargerOperations returns only rows whose durable state
+// proves they have not crossed the OCPP boundary. Claiming remains the atomic
+// delivery fence; this read intentionally holds no transaction across I/O.
+func (s *PostgresStore) ListV1DispatchableChargerOperations(ctx context.Context, chargerOCPPIdentity string, limit int) ([]*V1ChargerOperation, error) {
+	if limit <= 0 {
+		return nil, nil
+	}
+	query := `SELECT cms_operation_id::text FROM v1_charger_operations WHERE state='PERSISTED'`
+	args := []any{}
+	if chargerOCPPIdentity != "" {
+		query += ` AND charger_ocpp_identity=$1`
+		args = append(args, chargerOCPPIdentity)
+	}
+	query += ` ORDER BY created_at,cms_operation_id LIMIT $` + strconv.Itoa(len(args)+1)
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0)
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			rows.Close()
+			return nil, err
+		}
+		ids = append(ids, id)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, err
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	operations := make([]*V1ChargerOperation, 0, len(ids))
+	for _, id := range ids {
+		op, err := s.GetV1ChargerOperation(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		operations = append(operations, op)
+	}
+	return operations, nil
 }

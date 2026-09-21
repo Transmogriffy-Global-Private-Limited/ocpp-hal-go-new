@@ -32,6 +32,8 @@ type HAL struct {
 	configurationReconcileTimeout           time.Duration
 	vendorConfigurationProfile              string
 	vendorConfigurationVendor               string
+	operationRecoveryCtx                    context.Context
+	cancelOperationRecovery                 context.CancelFunc
 	runtimeMu                               sync.Mutex
 	pendingRuntime                          map[string]pendingRuntimeProjection
 	identityMu                              sync.RWMutex
@@ -46,6 +48,7 @@ type pendingRuntimeProjection struct {
 }
 
 func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *HAL {
+	operationRecoveryCtx, cancelOperationRecovery := context.WithCancel(context.Background())
 	traces, _ := v1Store.(store.V1TraceStore)
 	observer := newOperationObserver(traces, logger)
 	h := &HAL{
@@ -58,6 +61,8 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 		heartbeatIntervalSeconds:                defaultHeartbeatIntervalSeconds,
 		configurationMeterSampleIntervalSeconds: defaultMeterValueSampleIntervalSeconds,
 		configurationReconcileTimeout:           20 * time.Second,
+		operationRecoveryCtx:                    operationRecoveryCtx,
+		cancelOperationRecovery:                 cancelOperationRecovery,
 		pendingRuntime:                          make(map[string]pendingRuntimeProjection),
 		wiredIdentity:                           make(map[string]string),
 	}
@@ -90,6 +95,11 @@ func New(registry *state.Registry, v1Store store.V1Store, logger *slog.Logger) *
 
 		h.registry.Touch(chargePointID)
 		h.persistRuntimeProjection(context.Background(), pendingRuntimeProjection{identity: chargePointID, generation: int64(current.Generation), online: true, observedAt: current.ConnectedAt})
+		go func(ctx context.Context, chargePointID string) {
+			if err := h.dispatchPendingV1ChargerOperationsForCharger(ctx, chargePointID); err != nil && ctx.Err() == nil {
+				h.logger.Warn("persisted charger-operation recovery pass failed", "error", err)
+			}
+		}(h.operationRecoveryCtx, chargePointID)
 	})
 
 	h.cs.SetChargePointDisconnectedHandler(func(chargePoint ocpp16.ChargePointConnection) {
@@ -150,6 +160,9 @@ func (h *HAL) Start(port int, path string) {
 }
 
 func (h *HAL) Stop() {
+	if h.cancelOperationRecovery != nil {
+		h.cancelOperationRecovery()
+	}
 	h.cs.Stop()
 }
 

@@ -4,7 +4,7 @@ Status: In Progress
 Owner: Codex
 Collaborators: Anubhab Dey (CMS/HAL boundary owner)
 Started: 2026-09-04
-Last updated: 2026-09-10 (source-only TriggerMessage follow-on race/closure correction; not deployed)
+Last updated: 2026-09-21 (source-only restart recovery hardening; not deployed)
 
 Development-plan reference: `docs/DEVELOPMENT_PLAN.md` — v1 consumer boundary
 Detailed-plan reference: `docs/contracts/CMS_HAL_CHARGING_V1.md` (to be extended)
@@ -49,8 +49,9 @@ confirmation, and later charger evidence are deliberately distinct.
 
 ## Data and migration impact
 
-Adds source-only forward migrations for `v1_charger_operations` and operation
-trace-root evidence (`021`); neither is applied.
+Adds source-only forward migrations for `v1_charger_operations`, operation
+trace-root evidence (`021`), and the persisted-operation recovery index (`023`);
+none is applied.
 
 ## Current state
 
@@ -86,6 +87,13 @@ windows are allowed and trace failure cannot alter operation, OCPP,
 transaction, connector, fact, or worker behavior. Migration `022` is
 unapplied.
 
+Implemented but uncommitted/source-only: startup turns only possibly sent
+`DELIVERY_ATTEMPTED` rows into `RECONCILIATION_REQUIRED`. A mapped charger
+connection then performs a bounded, indexed scan of definitely unattempted
+`PERSISTED` rows and uses the same state-gated claim and typed dispatcher as
+HTTP acceptance. Offline rows remain `PERSISTED`; recovery never blindly
+replays ambiguity. Migration `023` is unapplied.
+
 ## Verification
 
 Focused configuration-key normalization and CMS HAL reconciliation package
@@ -98,15 +106,16 @@ full Go test, vet, build, and diff checks pass. PostgreSQL, paired CMS, and
 mapped-charger verification remain blocked on an explicit disposable
 environment; no deployment/restart occurred.
 
+Focused DB-free charger-operation recovery tests cover persisted restart,
+racing claimants, attempted/terminal non-replay, mixed-batch isolation, and
+lifecycle wiring. PostgreSQL lifecycle and hardware checks remain blocked on a
+selected disposable environment.
+
 ## Handoff
 
 Never redeliver an operation left ambiguous after physical dispatch. Exact CMS
-operation-ID lookup is the only reconciliation path.
-
-Known follow-up: current source has no recovery route for an operation that
-was persisted but could not be read before its initial claim. `PERSISTED`
-proves no delivery attempt; the state-gated claim is the safe fence, but no
-automatic recovery behavior is introduced by this readback fix.
+operation-ID lookup is the only reconciliation path. The prior `PERSISTED`
+restart-recovery gap is resolved by the bounded connection-triggered scan.
 
 ## Completion
 

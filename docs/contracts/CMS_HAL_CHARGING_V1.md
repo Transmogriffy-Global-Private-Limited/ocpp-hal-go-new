@@ -944,8 +944,13 @@ as `Idempotency-Key` to `POST /v1/charger-operations`. HAL validates the
 durable CPO/changer/(when applicable) connector mapping, persists its own
 operation row, records `DELIVERY_ATTEMPTED` before OCPP dispatch, and records
 either `OCPP_CONFIRMED` with the exact OCPP result or
-`RECONCILIATION_REQUIRED` for ambiguous delivery. It never replays the latter.
-`GET /v1/charger-operations?cms_operation_id=...` is exact recovery only.
+`RECONCILIATION_REQUIRED` for ambiguous delivery. On HAL startup,
+`DELIVERY_ATTEMPTED` becomes `RECONCILIATION_REQUIRED`; it is never replayed.
+Rows still `PERSISTED` are definitely unattempted and are scanned in bounded
+batches when their mapped charger connects, then claimed atomically before the
+same dispatcher runs. An offline charger remains `PERSISTED` rather than being
+misclassified as ambiguous. `GET /v1/charger-operations?cms_operation_id=...`
+is exact recovery only.
 Every operation carries a stable CMS trace ID. HAL creates/extends the existing
 trace root with both operation IDs and records only action-specific safe OCPP
 CALL, CALLRESULT, or CALLERROR evidence after the pinned library accepts the
